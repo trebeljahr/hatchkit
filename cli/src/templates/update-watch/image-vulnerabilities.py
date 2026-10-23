@@ -14,6 +14,19 @@ WORK = Path('/var/lib/hatchkit-backups')
 REPORTS = Path('/var/lib/hatchkit-security/image-reports')
 SCRATCH = Path('/var/cache/hatchkit-security/tmp')
 
+def write_json(name, value):
+    path = WORK / name
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(value, indent=2) + '\n')
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+def progress(started, total, completed, errors=0, phase='running'):
+    write_json('image-vulnerability-progress.json', {
+        'startedAt': started, 'checkedAt': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
+        'phase': phase, 'imagesTotal': total, 'imagesCompleted': completed, 'errors': errors})
+
 class CommandError(RuntimeError):
     def __init__(self, program, code, diagnostic):
         super().__init__(program + ' failed (exit ' + str(code) + ')')
@@ -89,14 +102,14 @@ def scan():
     images = running_images()
     REPORTS.mkdir(parents=True, exist_ok=True, mode=0o700)
     findings, errors, inventories = [], [], []
-    initial = {'checkedAt': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
-               'ok': False, 'complete': False, 'findings': [], 'errors': ['scan in progress']}
-    (WORK / 'image-vulnerability-status.json').write_text(json.dumps(initial) + '\n')
+    started = dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')
+    progress(started, len(images), 0)
     print(json.dumps({'phase': 'database', 'images': len(images)}), flush=True)
     command(['/usr/local/bin/grype', 'db', 'update'], 900)
     db = json.loads(command(['/usr/local/bin/grype', 'db', 'status', '-o', 'json']))
     scanner_version = json.loads(command(['/usr/local/bin/grype', 'version', '-o', 'json']))['version']
     for image, containers in sorted(images.items()):
+        progress(started, len(images), len(inventories), len(errors))
         path = REPORTS / (image.removeprefix('sha256:') + '.json')
         partial = path.with_suffix('.partial')
         try:
@@ -124,6 +137,7 @@ def scan():
             errors.append({'image': image, 'error': type(error).__name__,
                            **({'exitCode': error.code, 'diagnostic': error.diagnostic}
                               if isinstance(error, CommandError) else {})})
+        progress(started, len(images), len(inventories), len(errors))
     if running_images() != images:
         errors.append({'error': 'Running image inventory changed during scan; repeat required'})
     return {'checkedAt': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
@@ -140,10 +154,18 @@ def main():
         except Exception as error:
             report = {'checkedAt': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
                       'ok': False, 'complete': False, 'findings': [], 'errors': [type(error).__name__]}
-        path = WORK / 'image-vulnerability-status.json'
-        temporary = path.with_suffix('.tmp')
-        temporary.write_text(json.dumps(report, indent=2) + '\n')
-        temporary.replace(path)
+        # Keep the last complete ledger through refreshes and failed attempts.
+        # Progress/failure is separate and must still be checked for coverage.
+        write_json('image-vulnerability-attempt.json', report)
+        if report['complete']:
+            write_json('image-vulnerability-status.json', report)
+        try:
+            previous_progress = json.loads((WORK / 'image-vulnerability-progress.json').read_text())
+        except (OSError, ValueError):
+            previous_progress = {}
+        progress(previous_progress.get('startedAt', report['checkedAt']),
+                 previous_progress.get('imagesTotal', 0), len(report.get('images', [])),
+                 len(report['errors']), 'complete' if report['complete'] else 'failed')
         print(json.dumps({'ok': report['ok'], 'complete': report['complete'],
                           'images': len(report.get('images', [])), 'findings': len(report['findings']),
                           'errors': report['errors']}))

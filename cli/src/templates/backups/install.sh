@@ -7,6 +7,9 @@ command -v docker >/dev/null
 cd "$(dirname "$0")"
 python3 runner.py plan --config ./config.json >/dev/null
 install -d -m 700 /etc/hatchkit-backups /opt/hatchkit-backups /var/lib/hatchkit-backups
+install -d -m 700 /var/cache/hatchkit-security/python
+install -d -m 755 /etc/systemd/system/hatchkit-.service.d
+install -m 644 hatchkit-python-cache.conf /etc/systemd/system/hatchkit-.service.d/python-cache.conf
 if [ -e /etc/hatchkit-backups/config.json ]; then
   cmp -s config.json /etc/hatchkit-backups/config.json || {
     echo 'Existing host policy differs; review and update it explicitly before reinstalling.' >&2

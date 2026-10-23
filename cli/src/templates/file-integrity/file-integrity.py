@@ -14,6 +14,13 @@ WORK = Path('/var/lib/hatchkit-security/aide')
 STATUS = Path('/var/lib/hatchkit-backups/file-integrity-status.json')
 CONFIG = '/etc/hatchkit-security/aide.conf'
 
+def finding_fingerprint(log):
+    # AIDE's run timestamps change even when its actual diff is identical.
+    # Keep file timestamps/attributes inside the diff: those are findings.
+    stable = '\n'.join(line for line in log.read_text(errors='replace').splitlines()
+                       if not line.startswith(('Start timestamp:', 'End timestamp:')))
+    return hashlib.sha256(stable.encode()).hexdigest()
+
 def check():
     now = dt.datetime.now(dt.timezone.utc)
     try:
@@ -34,7 +41,7 @@ def check():
              'exitCode': code, 'issue': issue, 'log': str(log)}
     if issue:
         # Hash the private diff to detect changed incidents without sending file contents.
-        fingerprint = hashlib.sha256(log.read_bytes()).hexdigest()
+        fingerprint = finding_fingerprint(log)
         last = previous.get('lastSentAt')
         due = not last or now - dt.datetime.fromisoformat(last) >= dt.timedelta(hours=24)
         state.update({k: previous[k] for k in ('lastSentAt', 'notifiedFingerprint') if k in previous})

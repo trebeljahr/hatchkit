@@ -18,4 +18,30 @@ class PublisherBoundary(unittest.TestCase):
    self.assertTrue(payload['checks']['process']['complete'])
    self.assertFalse(payload['checks']['backups']['complete'])
    self.assertFalse(payload['checks']['advisory']['complete'])
+ def test_vulnerability_counts_are_not_duplicate_external_incidents_but_failed_delivery_is(self):
+  rows={
+   'update-watch-status.json':{'checkedAt':'2026-10-23T00:00:00Z','ok':False,'findings':[{'private':'ledger'}],
+       'services':[{'service':x}for x in ('host-docker','host-containerd','host-runc','host-tailscale')]},
+   'image-vulnerability-status.json':{'checkedAt':'2026-10-23T00:00:00Z','ok':False,'complete':True,'findings':[{}],'errors':[]}}
+  original=pathlib.Path.read_text
+  def read(path,*a,**kw):
+   if str(path)=='/etc/hatchkit-backups/config.json':return json.dumps({'projects':[]})
+   return original(path,*a,**kw)
+  with patch.object(pub,'read',side_effect=lambda name:rows.get(name,{})),patch.object(pathlib.Path,'read_text',read):
+   good=pub.metadata();self.assertTrue(good['checks']['advisory']['ok']);self.assertTrue(good['checks']['images']['ok'])
+   rows['update-watch-status.json']['mailError']='SMTPError'
+   bad=pub.metadata();self.assertFalse(bad['checks']['advisory']['ok'])
+   self.assertEqual(bad['checks']['advisory']['findings'],1)
+ def test_image_refresh_setup_failure_and_stall_are_distinct(self):
+  now=pub.dt.datetime(2026,10,23,tzinfo=pub.dt.timezone.utc)
+  progress={'phase':'running','checkedAt':now.isoformat(),'startedAt':now.isoformat(),'errors':0}
+  last={'checkedAt':now.isoformat(),'complete':True,'findings':[{}],'errors':[]}
+  normal=pub.image_metadata(last,progress,now)
+  self.assertTrue(normal['complete']);self.assertTrue(normal['ok']);self.assertEqual(normal['phase'],'refreshing')
+  initial=pub.image_metadata({},progress,now)
+  self.assertFalse(initial['complete']);self.assertEqual(initial['phase'],'initializing')
+  failed=pub.image_metadata(last,progress|{'phase':'failed'},now)
+  self.assertFalse(failed['ok']);self.assertEqual(failed['phase'],'failed')
+  stalled=pub.image_metadata(last,progress,now+pub.dt.timedelta(minutes=21))
+  self.assertFalse(stalled['complete']);self.assertEqual(stalled['phase'],'failed')
 if __name__=='__main__':unittest.main()

@@ -22,6 +22,28 @@ def aggregate(name,projects,time_key):
  return {'checkedAt':min(times)if complete else None,'ok':complete and all(r.get('ok')is True for r in selected),
          'complete':complete,'findings':sum(r.get('ok')is not True for r in selected)}
 
+def image_metadata(images,progress,now=None):
+ now=now or dt.datetime.now(dt.timezone.utc)
+ row={'checkedAt':images.get('checkedAt'),'ok':images.get('complete')is True and not images.get('errors'),
+      'complete':images.get('complete')is True,'findings':0,'phase':'complete'}
+ if progress:
+  row.update(progressAt=progress.get('checkedAt'),startedAt=progress.get('startedAt'))
+  try:
+   phase=progress['phase']
+   if phase=='running':
+    last=dt.datetime.fromisoformat(progress['checkedAt'])
+    started=dt.datetime.fromisoformat(progress['startedAt'])
+    if last>now+dt.timedelta(minutes=5)or started>now+dt.timedelta(minutes=5)or now-last>dt.timedelta(minutes=20)or now-started>dt.timedelta(hours=2)or progress.get('errors'):
+     phase='failed'
+    else:phase='refreshing'if row['complete']else'initializing'
+   if phase not in('complete','refreshing','initializing'):phase='failed'
+  except (KeyError,ValueError,TypeError):phase='failed'
+  row['phase']=phase
+  if phase in('failed','initializing'):
+   row.update(ok=False,complete=False)
+   if not row['checkedAt']:row['checkedAt']=progress.get('checkedAt')
+ return row
+
 def metadata():
  cfg=json.loads(pathlib.Path('/etc/hatchkit-backups/config.json').read_text())
  projects=[p['name']for p in cfg['projects']]
@@ -30,11 +52,14 @@ def metadata():
   ('full','host-integrity-status.json',()),('advisory','update-watch-status.json',()),
   ('files','file-integrity-status.json',())]}
  advisory=read('update-watch-status.json')
+ # The host watcher/triage owns vulnerability notifications. This independent
+ # monitor owns coverage and failed delivery, not a second copy of its ledger.
+ checks['advisory']['ok']=checks['advisory']['complete'] and not advisory.get('mailError')
+ checks['advisory']['findings']=int(bool(advisory.get('mailError')))
  if not {'host-docker','host-containerd','host-runc','host-tailscale'}<={r.get('service')for r in advisory.get('services',[])}:
   checks['advisory']['complete']=False
  images=read('image-vulnerability-status.json')
- checks['images']={'checkedAt':images.get('checkedAt'),'ok':images.get('ok')is True,
-                   'complete':images.get('complete')is True,'findings':len(images.get('findings')or[])}
+ checks['images']=image_metadata(images,read('image-vulnerability-progress.json'))
  checks['backups']=aggregate('status.json',projects,'verifiedAt')
  checks['restore']=aggregate('restore-check-all.json',projects,'checkedAt')
  return {'schema':1,'checks':checks}

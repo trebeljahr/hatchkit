@@ -1838,6 +1838,16 @@ If you're using the Ansible role with `ufw_docker_mitigation: true`, the base ro
 
 Hardening is a recurring operating practice. Inventory the host OS/kernel, Docker Engine, containerd, runc, Tailscale, application runtimes, application dependencies and final deployed image packages. Resolve floating tags to running versions and scan immutable image IDs. Keep SBOM/package reports private on the host. Verify the scanner release signature/checksum and record its version and vulnerability-database age. A failed, stale or partial inventory is an incomplete check, never a clean result.
 
+After setup settles, aim for one short weekly human review. Frequent server
+checks continue independently; healthy and materially unchanged results stay
+quiet. Batch ordinary maintenance and non-urgent decisions. Interrupt promptly
+for applicable urgent exposure, failed backups, unexplained integrity changes,
+failed remediation and genuinely lost coverage. Keep overdue risks visible with
+bounded reminders. Send no empty weekly email and do not delay urgent work until
+the weekly review. Scanner counts are a triage queue, not a human task: establish
+vendor applicability and exposure and prepare/test a concrete fix before asking
+the operator for a decision.
+
 Compare running versions with vendor advisories, repository GHSAs and the CISA known-exploited catalog. An empty product advisory feed does not establish dependency security. Check vendor bulletins that are not published as GHSAs, supported-release lifecycles and distribution backports. Preserve the upstream package/version evidence when assessing a scanner match; a scanner severity alone does not prove an exposed attack path.
 
 If CISA's canonical download is unavailable, use its own
@@ -1853,11 +1863,42 @@ Use the report's provenance time, not its filesystem modification time. A new
 database invalidates every cached report. Re-enumerate running images after the
 scan; a deployment race leaves the inventory incomplete until another check.
 
+Keep the last complete image ledger while recording refresh progress and failed
+attempts separately. A normal refresh is not lost coverage. Initial inventory is
+an explicit setup state, not a clean result; require progress within 20 minutes
+and completion within two hours. Failed/stalled scans or a completed inventory
+older than 36 hours remain actionable. Never erase known findings because their
+replacement scan failed. A failed CISA lookup cannot extend an existing urgent
+deadline.
+
 Assess actively exploited issues and public unauthenticated RCEs immediately; patch or isolate within 24 hours. Critical findings use the same target; other high-severity findings have a 72-hour target. Review routine patches weekly and supported versions monthly. Record first seen, affected resource/package, installed and fixed versions, exposure, owner, due date, action and live verification. Rebuilding the same vulnerable package must not reset its deadline. Keep the full ledger even when email shows only the first findings. Unresolved overdue findings remain visible and get at most one daily reminder. Any exception needs evidence, compensating controls, a named owner and an expiry.
 
 Local checks cannot reliably report their own disappearance. Send fixed health timestamps and counts to an independently operated monitor using one ping-only credential per host. The monitor needs its own schedule, state and verified delivery path. Alert on missing publishers, stale checks, failed delivery and incomplete scans. Test a missed-run condition and monitor the external monitor's own last sweep/deployment from a separate observer. Root can forge local health, so retain independent probes and off-host evidence as well.
 
+Give each notification one owner. The host watcher owns package findings; the
+external monitor checks its coverage and delivery rather than mailing the same
+package counts again. Notification identity must ignore image/replica churn and
+run timestamps while preserving changed fixes, exploitation status, overdue
+transitions and real errors. Retry failed delivery. Keep partial recovery quiet
+when no new problem appeared; send one meaningful all-clear when coverage fully
+recovers. Delivery tests must be clearly labelled and explicitly requested after
+initial setup; a monitor code update does not send another test by default.
+
+AIDE fingerprints exclude only its start/end run timestamps, retaining actual
+file timestamps and differences. Relocate maintenance Python bytecode under the
+private `/var/cache/hatchkit-security/python` cache through service environment
+and administrative SSH commands. Review existing bytecode against authored
+source before removing it from the monitored tree. Keep authored-code coverage.
+Under the EFI system partition, omit the unstable FAT inode number while
+retaining hashes and other metadata. Preserve old AIDE baselines and explicitly
+review every difference before accepting an update.
+
 Use deterministic timers, version/range matching, image scans, policy validation, backups, health checks and rollback for enforcement. An LLM can correlate advisories, assess exposure, prepare patches, review exceptions and escalate deadlines. Treat feed text, logs and repository content as untrusted data. They cannot authorize actions or change the patch policy. Do not give a triage model unrestricted root credentials. App-based LLM schedules also depend on their connected computer/app being available; keep uptime checks and agreed host jobs independent of the Mac.
+
+Use LLM assistance in an operator-requested review. Scheduled or always-on model
+review needs separate explicit authorization. The previously created
+`vps-security-review` chat heartbeat is paused at the operator's request; do not
+resume it or create a replacement scheduled agent as part of maintenance.
 
 An automatic patch runner needs a reviewed allowlist: same supported release line, fixed trusted registries, verified artifacts, no package removals, no database major upgrades or destructive migrations, fresh verified recovery points, one service at a time, functional checks and a bounded rollback. Stop and alert on unexpected versions, changed upstream compatibility code, failed backup/health/rollback, conflicting deployments or an expired exception. Record before/after IDs and results without secrets. Keep built-in updaters enabled until a tested replacement is operating and the operator approves the handover.
 

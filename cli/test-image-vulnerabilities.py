@@ -31,7 +31,7 @@ class ImageScanTests(unittest.TestCase):
    if argv[:2]==['docker','ps']:return 'a b'
    if argv[:2]==['docker','inspect']:return '"one"\t"sha256:1"\n"two"\t"sha256:2"'
    if argv[1:3]==['db','update']:
-    self.assertFalse(json.loads((self.root/'image-vulnerability-status.json').read_text())['complete']);return ''
+    self.assertEqual(json.loads((self.root/'image-vulnerability-progress.json').read_text())['phase'],'running');self.assertFalse((self.root/'image-vulnerability-status.json').exists());return ''
    if argv[1:3]==['db','status']:return json.dumps(DB)
    if argv[1]=='version':return json.dumps({'version':'0.121.0'})
    if argv[1]=='docker:sha256:2':raise iv.CommandError('grype',1,'private.stderr')
@@ -62,4 +62,16 @@ class ImageScanTests(unittest.TestCase):
   self.assertEqual(result['findings'][0]['containers'],['new-container'])
   self.assertTrue(result['images'][0]['cached']);self.assertFalse(result['complete'])
   self.assertIn('inventory changed',result['errors'][0]['error'])
+ def test_failed_attempt_retains_last_complete_ledger_and_explicit_failed_progress(self):
+  old={'checkedAt':NOW.isoformat(),'ok':False,'complete':True,'findings':[{'id':'old-risk'}]}
+  path=self.root/'image-vulnerability-status.json';path.write_text(json.dumps(old))
+  with patch.object(iv,'scan',side_effect=RuntimeError('scanner failed')),contextlib.redirect_stdout(io.StringIO()):self.assertEqual(iv.main(),1)
+  self.assertEqual(json.loads(path.read_text()),old)
+  self.assertFalse(json.loads((self.root/'image-vulnerability-attempt.json').read_text())['complete'])
+  self.assertEqual(json.loads((self.root/'image-vulnerability-progress.json').read_text())['phase'],'failed')
+ def test_completed_attempt_replaces_ledger_only_after_success(self):
+  complete={'checkedAt':NOW.isoformat(),'ok':True,'complete':True,'findings':[],'errors':[],'images':[]}
+  with patch.object(iv,'scan',return_value=complete),contextlib.redirect_stdout(io.StringIO()):self.assertEqual(iv.main(),0)
+  self.assertEqual(json.loads((self.root/'image-vulnerability-status.json').read_text()),complete)
+  self.assertEqual(json.loads((self.root/'image-vulnerability-progress.json').read_text())['phase'],'complete')
 if __name__=='__main__':unittest.main()

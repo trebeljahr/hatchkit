@@ -603,6 +603,43 @@ class Check(unittest.TestCase):
         sent=len(self.sent);check(NOW+dt.timedelta(hours=25));self.assertEqual(len(self.sent),sent)
         check(NOW+dt.timedelta(hours=48));self.assertEqual(len(self.sent),sent+1)
 
+    def test_rebuild_and_replica_changes_are_quiet_but_a_new_fix_is_actionable(self):
+        rows=[{'kind':'image-package','service':'sha256:old','id':'CVE-2026-1234',
+               'name':'pkg','version':'1','severity':'high','summary':'test','fixed':None,
+               'containers':['app-old']}]
+        def check(when):
+            with patch.object(uw,'scan',side_effect=lambda *a,**kw:{'services':[], 'findings':[dict(r)for r in rows], 'skipped':[]}):
+                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
+        first=check(NOW)
+        rows[0]['service']='sha256:new';rows[0]['containers']=['app-renamed','another-replica']
+        rows.append(dict(rows[0]))
+        check(NOW+dt.timedelta(hours=1));self.assertEqual(len(self.sent),1)
+        for row in rows:row['fixed']='1.1'
+        check(NOW+dt.timedelta(hours=2));self.assertEqual(len(self.sent),2)
+        self.assertEqual(first['findings'][0]['dueAt'],check(NOW+dt.timedelta(hours=3))['findings'][0]['dueAt'])
+
+    def test_unavailable_exploitation_feed_cannot_extend_existing_urgent_deadline(self):
+        row={'kind':'image-package','service':'image','id':'CVE-2026-1234','name':'pkg',
+             'version':'1','severity':'high','summary':'test','knownExploited':True}
+        with patch.object(uw,'scan',return_value={'services':[],'findings':[dict(row)],'skipped':[]}):
+            first,_=uw.check(None,[],None,self.work,self.config,self.send,NOW)
+        row.pop('knownExploited')
+        with patch.object(uw,'scan',return_value={'services':[],'findings':[dict(row)],'skipped':['CISA unavailable']}):
+            next_run,_=uw.check(None,[],None,self.work,self.config,self.send,NOW+dt.timedelta(hours=1))
+        self.assertTrue(next_run['findings'][0]['knownExploited'])
+        self.assertEqual(first['findings'][0]['dueAt'],next_run['findings'][0]['dueAt'])
+
+    def test_notification_identity_upgrade_does_not_resend_acknowledged_ledger(self):
+        row={'kind':'image-package','service':'image','id':'CVE-2026-1234','name':'pkg',
+             'version':'1','severity':'high','summary':'test'}
+        with patch.object(uw,'scan',side_effect=lambda *a,**kw:{'services':[],'findings':[dict(row)],'skipped':[]}):
+            first,_=uw.check(None,[],None,self.work,self.config,self.send,NOW)
+            first.pop('notificationIdentityVersion')
+            first['notifiedFingerprint']=__import__('hashlib').sha256(json.dumps(['findings',first['findings'],None,[]],sort_keys=True).encode()).hexdigest()
+            (self.work/uw.STATUS_NAME).write_text(json.dumps(first))
+            uw.check(None,[],None,self.work,self.config,self.send,NOW+dt.timedelta(hours=1))
+        self.assertEqual(len(self.sent),1)
+
     def test_monitor_upgrade_migrates_legacy_deadline_without_resetting_it(self):
         old={'kind':'image-package','service':'sha256:old','id':'CVE-old','name':'pkg',
              'version':'1','containers':['old-name'],'severity':'critical','summary':'test',
@@ -686,6 +723,21 @@ class HostRuntimeCoverage(unittest.TestCase):
             path.write_text(json.dumps({'checkedAt': NOW.isoformat(), 'complete': False,
                                        'errors': ['image unavailable'], 'findings': []}))
             self.assertTrue(uw.image_package_findings(NOW, path)[1])
+
+    def test_normal_image_refresh_retains_findings_while_failure_or_stall_loses_coverage(self):
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'images.json'
+            rows=[{'id':'existing-risk'}]
+            path.write_text(json.dumps({'checkedAt':NOW.isoformat(),'complete':True,'findings':rows}))
+            progress=path.with_name('image-vulnerability-progress.json')
+            fresh={'phase':'running','checkedAt':NOW.isoformat(),'startedAt':NOW.isoformat(),'errors':0}
+            progress.write_text(json.dumps(fresh))
+            self.assertEqual(uw.image_package_findings(NOW,path),(rows,[]))
+            self.assertEqual(uw.image_package_findings(NOW+dt.timedelta(minutes=21),path)[0],rows)
+            self.assertIn('stalled',uw.image_package_findings(NOW+dt.timedelta(minutes=21),path)[1][0])
+            progress.write_text(json.dumps(fresh|{'phase':'failed'}))
+            self.assertIn('failed',uw.image_package_findings(NOW,path)[1][0])
+            self.assertEqual(uw.image_package_findings(NOW,path)[0],rows)
 
     def test_cisa_matches_aliases_and_missing_feed_fails_visible(self):
         rows=[{'kind':'image-package','service':'image','id':'GHSA-test','aliases':['CVE-2026-1234'],

@@ -276,6 +276,7 @@ def known_exploited_catalog(feeds, now):
     empty, future-dated or more than 14-day-old data as successful coverage.
     A catalog can legitimately remain unchanged between new KEV additions.
     """
+    failures = []
     for url in (KEV_URL, KEV_MIRROR_URL):
         try:
             catalog = feeds.json(url)
@@ -290,10 +291,13 @@ def known_exploited_catalog(feeds, now):
             identifiers = {entry['cveID'] for entry in entries}
             if len(identifiers) != count or not all(re.fullmatch(r'CVE-\d{4}-\d{4,}', value) for value in identifiers):
                 raise FeedError('invalid CISA KEV identifiers')
-            return identifiers, {'source': url, 'dateReleased': catalog['dateReleased'], 'count': count}
-        except (FeedError, AttributeError, KeyError, TypeError, ValueError):
+            return identifiers, {'source': url, 'dateReleased': catalog['dateReleased'], 'count': count,
+                                 'fallbackDiagnostics': failures}
+        except (FeedError, AttributeError, KeyError, TypeError, ValueError) as failure:
+            failures.append({'source': url, 'error': str(failure) if isinstance(failure, FeedError) else type(failure).__name__})
             continue
-    raise FeedError('CISA known exploited vulnerability catalog could not be checked')
+    raise FeedError('CISA known exploited vulnerability catalog could not be checked; '
+                    + '; '.join(row['source'] + ': ' + row['error'] for row in failures))
 
 
 class Feeds:
@@ -691,12 +695,25 @@ def image_package_findings(now, path=None):
     path = Path(path) if path is not None else work_dir()[0] / 'image-vulnerability-status.json'
     try:
         report = json.loads(path.read_text())
+        findings = report.get('findings', [])
         checked = dt.datetime.fromisoformat(report['checkedAt'])
         if now - checked > dt.timedelta(hours=36) or checked > now + dt.timedelta(minutes=5):
-            raise ValueError('stale image scan')
-        findings = report.get('findings', [])
+            return findings, ['Final image vulnerability scan is stale; previous ledger retained, current coverage incomplete']
         if not report.get('complete') or report.get('errors'):
             return findings, ['Final image vulnerability scan is incomplete; inspect its private status']
+        progress_path = path.with_name('image-vulnerability-progress.json')
+        if progress_path.exists():
+            progress = json.loads(progress_path.read_text())
+            phase = progress['phase']
+            if phase == 'failed' or progress.get('errors'):
+                return findings, ['Latest final image scan failed; previous complete ledger retained']
+            if phase == 'running':
+                last = dt.datetime.fromisoformat(progress['checkedAt'])
+                started = dt.datetime.fromisoformat(progress['startedAt'])
+                if last > now + dt.timedelta(minutes=5) or now - last > dt.timedelta(minutes=20) or now - started > dt.timedelta(hours=2):
+                    return findings, ['Final image scan is stalled or exceeded two hours; previous ledger retained']
+            elif phase != 'complete':
+                return findings, ['Final image scan progress is invalid; inspect its private status']
         return findings, []
     except (OSError, ValueError, KeyError, TypeError):
         return [], ['Final image vulnerability scan is missing, invalid or older than 36 hours']
@@ -820,8 +837,8 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
             for finding in findings:
                 ids = {finding.get('id'), finding.get('cve'), *finding.get('aliases', [])}
                 finding['knownExploited'] = bool(ids & exploited)
-        except FeedError:
-            skipped.append('CISA known exploited vulnerability catalog could not be checked')
+        except FeedError as failure:
+            skipped.append(str(failure))
     severity_rank = {'critical': 0, 'high': 1}
     findings.sort(key=lambda f: (f['kind'] != 'auto-update', severity_rank.get(f.get('severity'), 2), f['service']))
     notes = [g['name'] + ' publishes no advisory feed; it is compared with its latest release only.'
@@ -915,6 +932,33 @@ def finding_identity(finding):
     return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
 
 
+def notification_fingerprint(kind, findings, error, skipped):
+    """Keep action changes; ignore image/replica churn, ordering and clock ticks."""
+    rows = {json.dumps({'identity': finding_identity(f),
+                        **{k: f.get(k) for k in ('severity', 'fixed', 'fixState')},
+                        'knownExploited': bool(f.get('knownExploited')), 'overdue': bool(f.get('overdue'))},
+                       sort_keys=True) for f in findings}
+    return hashlib.sha256(json.dumps([kind, sorted(rows), error, sorted(set(skipped))],
+                                     sort_keys=True).encode()).hexdigest() if kind else None
+
+
+def prior_notification_fingerprint(previous):
+    notified = previous.get('notifiedFingerprint')
+    if previous.get('notificationIdentityVersion') == 2 or not notified:
+        return notified
+    old_kind = ('error' if previous.get('error') else 'findings' if previous.get('findings')
+                else 'incomplete' if previous.get('skipped') else None)
+    old_rows = previous.get('findings') or []
+    old_skips = previous.get('skipped') or []
+    legacy = hashlib.sha256(json.dumps([old_kind, old_rows, previous.get('error'), old_skips],
+                                      sort_keys=True).encode()).hexdigest() if old_kind else None
+    # Migrate only an acknowledged exact old report. A failed delivery must
+    # remain retryable, even if its last saved report contains new findings.
+    if notified == legacy:
+        return notification_fingerprint(old_kind, old_rows, previous.get('error'), old_skips)
+    return notified
+
+
 def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_SOURCE, cloudflare=None,
           chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False):
     """Mail new or changed abnormalities; healthy and unchanged runs stay silent."""
@@ -953,22 +997,32 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
         if started:
             identity = finding_identity(old)
             first_seen[identity] = min(first_seen.get(identity, started), started)
+    old_findings = {finding_identity(f): f for f in previous.get('findings', [])}
     for finding in findings:
         identity = finding_identity(finding)
+        old = old_findings.get(identity, {})
+        # A failed feed or revised classification must not silently extend an
+        # already established patch deadline. De-escalation needs reviewed evidence.
+        if old.get('knownExploited'):
+            finding['knownExploited'] = True
         started = first_seen.get(identity, now.isoformat(timespec='seconds'))
         first_seen[identity] = started
         finding['firstSeenAt'] = started
         if finding.get('severity') in ('critical', 'high'):
             hours = 24 if finding.get('severity') == 'critical' or finding.get('knownExploited') else 72
             finding['dueAt'] = (dt.datetime.fromisoformat(started) + dt.timedelta(hours=hours)).isoformat(timespec='seconds')
+            if old.get('dueAt'):
+                finding['dueAt'] = min(dt.datetime.fromisoformat(finding['dueAt']), dt.datetime.fromisoformat(old['dueAt'])).isoformat(timespec='seconds')
             finding['overdue'] = now >= dt.datetime.fromisoformat(finding['dueAt'])
-    fingerprint = hashlib.sha256(json.dumps([kind, findings, error, skipped], sort_keys=True).encode()).hexdigest() if kind else None
+    fingerprint = notification_fingerprint(kind, findings, error, skipped)
+    prior_notified = prior_notification_fingerprint(previous)
     state = {'checkedAt': now.isoformat(timespec='seconds'), 'ok': not error and not findings and not skipped,
              'error': error, 'services': [{'service': s['service'], 'version': s['version'],
                                            'latest': (s['latest'] or {}).get('version')}
                                           for s in (report or {}).get('services', [])],
              'findings': findings, 'skipped': skipped, 'mailed': None, 'messageId': None,
-             'notifiedFingerprint': previous.get('notifiedFingerprint') if kind else None,
+             'notifiedFingerprint': prior_notified if kind else None,
+             'notificationIdentityVersion': 2,
              'findingFirstSeen': first_seen}
     if kev:
         state['kev'] = (report or {}).get('kev')
@@ -977,7 +1031,7 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
         not previous.get('lastNotifiedAt') or
         now - dt.datetime.fromisoformat(previous['lastNotifiedAt']) >= dt.timedelta(hours=24))
     state['lastNotifiedAt'] = previous.get('lastNotifiedAt')
-    if kind and (fingerprint != previous.get('notifiedFingerprint') or overdue_reminder):
+    if kind and (fingerprint != prior_notified or overdue_reminder):
         body = mail_body(report, error)
         try:
             state['messageId'] = send(mail_settings(config), subject, body)

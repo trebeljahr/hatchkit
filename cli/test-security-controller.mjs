@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {sanitize,issuesFor,sweep,CHECKS} from './src/templates/security-controller/worker-core.mjs';
+import {sanitize,issuesFor,pendingFor,sweep,CHECKS} from './src/templates/security-controller/worker-core.mjs';
 const now=Date.parse('2026-10-23T04:00:00Z');
 const healthy={schema:1,checks:Object.fromEntries(Object.keys(CHECKS).map(k=>[k,{checkedAt:new Date(now).toISOString(),ok:true,complete:true,findings:0}]))};
 const clean=sanitize({...healthy,secret:'MUST_NOT_LEAVE_HOST'},now);
@@ -11,14 +11,31 @@ for(const [check,age] of Object.entries(CHECKS)) {
 }
 assert.throws(()=>sanitize({...healthy,checks:{...healthy.checks,files:{ok:true,complete:true,checkedAt:new Date(now+300001).toISOString()}}},now),/future/);
 const incomplete=structuredClone(clean);incomplete.checks.images.complete=false;assert.match(issuesFor('host',incomplete,now)[0],/incomplete/);
+const initializing=structuredClone(clean);
+initializing.checks.images={checkedAt:new Date(now).toISOString(),ok:false,complete:false,findings:0,phase:'initializing',progressAt:new Date(now).toISOString(),startedAt:new Date(now).toISOString()};
+assert.deepEqual(issuesFor('host',initializing,now),[]);
+assert.equal(pendingFor('host',initializing,now).length,1);
+const progressing=structuredClone(initializing);progressing.receivedAt=new Date(now+21*60000).toISOString();
+assert(issuesFor('host',progressing,now+21*60000).some(x=>x.includes('stalled')));
+const refreshing=structuredClone(initializing);Object.assign(refreshing.checks.images,{phase:'refreshing',ok:true,complete:true});
+assert.deepEqual(issuesFor('host',refreshing,now),[]);assert.deepEqual(pendingFor('host',refreshing,now),[]);
+refreshing.checks.images.phase='failed';assert(issuesFor('host',refreshing,now).some(x=>x.includes('failed')));
 const data=new Map([['hosts/app-vps.json',clean],['hosts/ops-vps.json',clean]]);let sent=0,fail=false;
 const env={STATE:{get:async k=>data.has(k)?{json:async()=>structuredClone(data.get(k))}:null,put:async(k,v)=>data.set(k,JSON.parse(v))},EMAIL:{send:async()=>{if(fail)throw Error('delivery failed');sent++;return{messageId:'test'};}},MAIL_FROM:'security@example.com',MAIL_TO:'owner@example.com'};
 await sweep(env,now);assert.equal(sent,0);
+data.set('hosts/ops-vps.json',initializing);const setup=await sweep(env,now);assert.equal(sent,0);assert.equal(setup.ok,false);assert.equal(setup.pending.length,1);data.set('hosts/ops-vps.json',clean);
 data.delete('hosts/ops-vps.json');fail=true;await assert.rejects(sweep(env,now),/delivery failed/);assert(!data.get('sweep.json').lastMailedAt);
 fail=false;await sweep(env,now+1);assert.equal(sent,1);
 await sweep(env,now+2);assert.equal(sent,1);
 data.set('hosts/ops-vps.json',clean);fail=true;await assert.rejects(sweep(env,now+3));
 fail=false;await sweep(env,now+4);assert.equal(sent,2);
+// Partial recovery stays quiet; recurrence and failed delivery remain actionable.
+const twoProblems=structuredClone(clean);twoProblems.checks.files.ok=false;twoProblems.checks.backups.ok=false;
+data.set('hosts/ops-vps.json',twoProblems);await sweep(env,now+5);assert.equal(sent,3);
+const oneProblem=structuredClone(twoProblems);oneProblem.checks.backups.ok=true;
+data.set('hosts/ops-vps.json',oneProblem);await sweep(env,now+6);assert.equal(sent,3);
+data.set('hosts/ops-vps.json',twoProblems);fail=true;await assert.rejects(sweep(env,now+7));
+fail=false;await sweep(env,now+8);assert.equal(sent,4);await sweep(env,now+9);assert.equal(sent,4);
 console.log('External freshness, metadata boundary, quiet healthy runs and delivery retry passed.');
 const {default:api}=await import('./src/templates/security-controller/worker-core.mjs');
 const liveEnv={...env,DEDICATED_PING_KEY:'a'.repeat(43),SHARED_PING_KEY:'b'.repeat(43),READER_KEY:'c'.repeat(43)};

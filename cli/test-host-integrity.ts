@@ -416,7 +416,7 @@ try {
   writeFileSync(join(dir, "report.json"), `${JSON.stringify(report(miner))}\n`);
   fake(`cat "${dir}/report.json"`);
   const rows = await checkHostIntegrity();
-  assert.deepEqual(argv(), ["ssh", TARGET, "python3 - scan --cpu-window 10"]);
+  assert.deepEqual(argv(), ["ssh", TARGET, "export PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python; python3 - scan --cpu-window 10"]);
   assert.equal(stdin(), script, "the CLI's own copy of the script runs on the host");
   assert.equal(rows.filter((r) => r.status === "fail").length, 4);
 

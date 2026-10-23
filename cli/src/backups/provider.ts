@@ -273,7 +273,8 @@ export function backupHostExec(
   timeoutMs = 120_000,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn("tailscale", ["ssh", host.target, command], {
+    const child = spawn("tailscale", ["ssh", host.target,
+      `export PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python; ${command}`], {
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
     });

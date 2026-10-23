@@ -34,6 +34,7 @@ for (const file of [
   "test-update-watch.py",
   "test-image-vulnerabilities.py",
   "test-health-publisher.py",
+  "test-file-integrity.py",
 ]) {
   const python = spawnSync("python3", [file], { stdio: "inherit" });
   assert.equal(python.status, 0, `${file} failed`);
@@ -441,10 +442,10 @@ try {
   assert.deepEqual(sent.feeds, {});
   assert.deepEqual(argv("ops-vps").slice(0, 2), ["ssh", "root@ops-vps"]);
   const command = argv("app-vps")[2];
-  assert.match(command, /^python3 -c '[^']+' scan$/);
+  assert.match(command, /^export PYTHONPYCACHEPREFIX=\/var\/cache\/hatchkit-security\/python; python3 -c '[^']+' scan$/);
 
   // The command runs the script from stdin under a real shell, with PAYLOAD.
-  const boot = spawnSync("sh", ["-c", command], {
+  const boot = spawnSync("sh", ["-c", command.replace("export PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python;", "export PYTHONDONTWRITEBYTECODE=1;")], {
     input: JSON.stringify({
       script: "import json,sys\nprint(json.dumps({'argv': sys.argv, 'feeds': PAYLOAD['feeds']}))",
       feeds: { x: 1 },
