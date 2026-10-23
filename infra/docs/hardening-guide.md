@@ -1934,6 +1934,14 @@ An automatic patch runner needs a reviewed allowlist: same supported release lin
 
 Container policy must survive deployment. Start with measured memory/CPU/PID limits, `no-new-privileges`, dropped capabilities, a supported non-root user and a read-only root plus explicit writable volumes/tmpfs. Test migrations, uploads, queues, temporary files and graceful shutdown per service; database entrypoints may need narrowly scoped initialization capabilities. Preserve data ownership. A runtime `docker update` alone does not make a rolling deployment retain its limits. Verify the newly created container after a real redeploy and alert on drift.
 
+Prove the resource rollback command on a disposable container before applying
+new limits. Docker can ignore zero memory and NanoCPU values in an update;
+`docker update --memory 0 --cpus 0` does not reliably recover an originally
+unlimited container. Keep its original configuration and volumes and test a
+healthy recreation for that recovery case. Recover ambiguous canonical writes
+by comparing only the exact policy values you own, never by overwriting a whole
+application record or another deployment's settings.
+
 A setup-option flag is not proof that an application selected a database backend.
 Configure the intended backend explicitly in a disposable test, query its actual
 schema, and restart initialized data. Include an isolated application restore
