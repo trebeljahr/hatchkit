@@ -353,6 +353,23 @@ await withProject("preserves-next-config", async (dir) => {
   ];
 });
 
+// Exercise the update entry point, including its feature-module loaders and prerequisites.
+for (const feature of ["mcp", "raycast"] as const) {
+  await withProject(`add-${feature}`, async (dir) => {
+    const result = await runUpdate(dir, { presets: { ...presets, desiredFeatures: [feature] } });
+    const manifest = JSON.parse(readFileSync(join(dir, ".hatchkit.json"), "utf8"));
+    return [
+      [`${feature} was added`, result.added.includes(feature)],
+      ["shared client prerequisite was added", manifest.features.includes("client-core")],
+      ["host package exists", existsSync(join(dir, `packages/${feature}/package.json`))],
+      [
+        "public API prerequisite was added when required",
+        feature !== "mcp" || manifest.features.includes("public-api"),
+      ],
+    ];
+  });
+}
+
 {
   const { clearAllSecrets } = await import("./src/utils/secrets.js");
   await clearAllSecrets();

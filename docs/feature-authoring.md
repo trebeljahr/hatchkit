@@ -24,8 +24,8 @@ scaffolding it wrote and code the user built on top of that scaffolding.
 
 ### Idempotent
 
-Applying a feature to a project that already has it changes nothing and reports
-nothing as written.
+Reapplying the same generator to matching output changes nothing and reports
+nothing as written. A new generator version can have an explicit migration.
 
 This is not tidiness. `update` re-applies every selected feature on **every**
 run, so a feature that is not idempotent corrupts the project a little more each
@@ -42,47 +42,33 @@ dry run, and nothing will catch it.
 
 Three facts about hatchkit surprise most people writing their first feature.
 
-### 1. `create` renders no templates. It copies the starter and subtracts.
+### 1. Create copies the starter, strips features, then runs generators.
 
-`hatchkit create` copies `starter/` wholesale into the output directory and then
-mutates the copy (`cli/src/scaffold/app.ts`). The starter ships **every**
-feature; selecting a feature means its files are *not deleted*.
+`hatchkit create` copies `starter/` and removes unselected source, dependencies, environment keys, and imports. Features already represented in the starter need paired file and call-site stripping. Removing `packages/server/src/ws/` while leaving an import in `index.ts` breaks the generated build.
 
-That inversion has a sharp edge: **a deletion almost always needs a paired
-call-site stripper.** Removing `packages/server/src/ws/` leaves
-`packages/server/src/index.ts` importing `./ws/handler.js`, which is a hard
-TS2307 on the user's first `pnpm build`. The existing strippers —
-`stripWebSocketFromServerIndex`, `stripStripeFromServer`,
-`stripNewsletterFromServerApp`, `stripMobileBridgeFromLayout` — all exist for
-that reason. If your feature ships source that something else imports
-unconditionally, you owe a stripper too.
+Other features use additive generators. Server-platform features and i18n run their writers during create and update. Inspect the current call sites in `cli/src/scaffold/app.ts` and `cli/src/scaffold/update.ts` before choosing an implementation.
 
-### 2. `starter/` and `cli/src/templates/` serve different commands.
+The operational layer also runs in both paths. It applies verified deploy, topology guidance, env agreement, self-host distribution, docs integration, deploy recovery, and error reporting when applicable. These are not optional feature flags.
 
-|  | `starter/` | `cli/src/templates/` |
-| --- | --- | --- |
-| Consumed by | `create` (and `update`, which copies out of it) | `adopt`, `signing`, anything operating on a repo hatchkit did not create |
-| Form | a real, buildable, type-checked monorepo | template files with placeholders |
-| Why | a human can open and run it before any scaffold happens | there is no starter copy to take from — the content must be synthesized per project |
+### 2. Starter source and templates can both serve create and update.
 
-Put files in `starter/` when they must exist as working source. Put them in
-`cli/src/templates/<feature>/` when your feature also has to run against a repo
-that was never scaffolded from the starter — which is exactly why `signing`,
-whose three GitHub Actions workflows could have lived in
-`starter/.github/workflows/`, keeps them under `cli/src/templates/signing/`
-instead.
+| Source | Purpose |
+| --- | --- |
+| `starter/` | Working workspace source that create copies and update can reuse. |
+| `cli/src/templates/` | Rendered content for features, adoption, signing, releases, and host operations. |
+| TypeScript renderers under `cli/src/features/` | Generated content and managed edits built from the project's configuration. |
 
-Two gotchas:
+Use working starter source when it belongs in the runnable template. Use a renderer or template when project-specific generation is needed. A command name alone does not determine which source to use.
 
-- **`cli/package.json`'s `files` list ships `dist`, not `starter/`.** A template
-  file parked outside `cli/src/templates/` is missing from the published
-  package, and the failure only appears on a user's machine.
-  `cli/scripts/copy-templates.mjs` copies the whole `src/templates` tree into
-  `dist/` recursively, so a new directory under it needs no registration — but
-  it must be under it.
-- **`cli/src/templates/{base,addons,ml-clients}/` are dead.** Nothing references
-  them. Do not copy their Handlebars conventions; they are not how anything
-  currently works.
+The npm package ships `dist`. `cli/scripts/copy-templates.mjs` copies `src/templates` to `dist/templates` and tracked `starter`, `infra`, and `services` files to `dist/bundle`. New bundled files must be tracked, and path resolution must work in an installed package. Untracked files, dependency directories, and private infrastructure state do not belong in the bundle.
+
+Do not copy conventions from an unused template directory without finding its consuming code first.
+
+### Ownership during update
+
+Preserve user-owned feature source. Generated operational files have a different contract: the generator can refresh them with `writeIfChanged`, and selected security migrations replace recognized old templates. Mark these files as generated, document extension points, and report every replacement through the ledger.
+
+`--force` permits replacement of changed package scripts and dependency pins. It is not a blanket file-overwrite switch. Dry-run must report the same intended changes without writing them.
 
 ### 3. Two placeholder syntaxes, for two different reasons.
 

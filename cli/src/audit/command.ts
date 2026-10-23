@@ -93,7 +93,7 @@ async function auditToken(env: NodeJS.ProcessEnv): Promise<string> {
   if (!stored) {
     throw Object.assign(new Error("No Cloudflare audit token."), {
       hint: [
-        "Create the read-only user token hatchkit-audit (grants: hatchkit-human-tasks.md),",
+        "Create the read-only user token hatchkit-audit (grants: https://hatchkit.trebeljahr.com/docs/operations#cloudflare-audit-token),",
         `then run hatchkit audit cloudflare set-token, or set ${AUDIT_TOKEN_ENV}.`,
         "The operator token is never used for this check.",
       ],

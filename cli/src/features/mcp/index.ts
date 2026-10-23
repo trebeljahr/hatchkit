@@ -24,14 +24,10 @@
  *
  * ── A NOTE FOR WHOEVER REGISTERS THIS ───────────────────────────────
  *
- * `public-api` is applied through `applyServerFeatures`
- * (`features/server-platform/`) and is NOT in the feature registry, so
- * `expandFeatureSelection(["mcp"])` reports it as an unknown feature today.
- * The prerequisite is real and is named here on purpose; the registration
- * pass has to either register the three server-platform features or teach the
- * expansion about them. Until then `apply` also checks for the route table on
- * disk and says so, so a user is told rather than left with ten tools that
- * 404.
+ * `public-api` is applied through `applyServerFeatures`, outside this registry.
+ * Selection expansion recognizes that external feature and includes it among
+ * the implied prerequisites. `apply` also checks for its route table so an
+ * incomplete existing project reports the missing API before the tools run.
  *
  * ============================================================
  * WHERE THE FILES LIVE
@@ -61,7 +57,7 @@ export const mcpFeature = registerFeature({
   // `client-core` is referenced through its definition rather than by string,
   // so importing this module registers the one it needs — an id the registry
   // has never seen reads as "unknown feature" rather than as a prerequisite.
-  // `public-api` has no definition to reference yet; see the header.
+  // `public-api` uses the external server-platform writer; see the header.
   requires: [clientCoreFeature.id, "public-api"],
   // The tools call a server, and the credential is minted from the web app's
   // typed API — so neither a `static` project (no server) nor a `backend` one

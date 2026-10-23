@@ -4,8 +4,8 @@ description: How hatchkit lays a project out across Coolify applications, why /a
 ---
 
 Every hatchkit project records a **topology** in `.hatchkit.json`. It is the
-single field `create`, `adopt` and `sync` all read to decide which Coolify
-applications exist and which domains hang off them.
+field `create`, `adopt` and `sync` read to choose public routing. The separate
+`coolifyRuntime` field determines whether services share a Compose app.
 
 ```json
 {
@@ -13,10 +13,12 @@ applications exist and which domains hang off them.
 }
 ```
 
-| Value | Coolify apps | Front end | API | Datastores |
-|---|---|---|---|---|
-| `single-origin` (default) | one, named `<name>` | `https://<domain>` | `https://<domain>/api` | `mongo` / `redis` services in the same compose |
-| `split` | two, `<name>-client` + `<name>-server` | `https://<domain>` | `https://api.<domain>` | Coolify-managed databases |
+| Topology | Front end | API |
+|---|---|---|
+| `single-origin` (default) | `https://<domain>` | `https://<domain>/api` |
+| `split` | `https://<domain>` | `https://api.<domain>` |
+
+With the default image runtime, a fullstack project has separate client and server apps in either topology. Databases are Coolify-managed resources. With Compose runtime, single-origin groups the selected services in one app.
 
 Manifests written before the field existed are treated as `single-origin`.
 That is what every earlier hatchkit run actually deployed, so the default
@@ -195,8 +197,9 @@ the site down.
 
 ## single-origin
 
-One Coolify application running the project's `docker-compose.yml`, with all
-four services (`server`, `client`, `mongo`, `redis`) inside it. Routing:
+The client and API share a public origin. Image runtime uses separate client and
+server apps. Compose runtime groups selected services in the project's
+`docker-compose.yml`, including local databases when selected. Routing:
 
 ```
 client → https://<domain>
@@ -232,9 +235,9 @@ Two Coolify applications built from the two GHCR images:
 <name>-server → https://api.<domain>
 ```
 
-Choose this when the API needs to scale, restart or roll back independently of
-the front end, or when something outside the browser app is a first-class
-consumer of it.
+Choose this when the API needs its own hostname, including for clients outside
+the browser app. Image runtime permits independent service deployments in either
+topology.
 
 What it costs you:
 
@@ -387,14 +390,14 @@ reported `running:healthy`.
 
 How it works: both images bake the commit in as a `COMMIT_SHA` build arg. The
 server reports it as `version` on `/api/health`; the client writes
-`/version.json` carrying `{"commit", "apiUrl"}`. The deploy job pins
-`SERVER_IMAGE` / `CLIENT_IMAGE` to the immutable `:<sha>` tag, deploys, then
+`/version.json` carrying `{"commit", "apiUrl"}`. The deploy job promotes each immutable `:<sha>` image to `:live` in GHCR,
+then signs the per-app HMAC deploy hooks. Coolify pulls `:live`. The job
 polls both artefacts (cache-busted — a CDN hit would return exactly the stale
 copy being tested for) until they report the pushed commit.
 
-A project brought in with `hatchkit adopt` builds one image, not two, so its
-compose reads a single `APP_IMAGE` and its deploy job pins that one variable.
-Everything else about the gate is the same.
+A typical adopted single-app project builds one image. Its workflow promotes
+that image and verifies the endpoints the project exposes. It does not need
+a broad Coolify API token in CI.
 
 The gate degrades with the project's shape. A `backend` project has no
 `version.json` to poll; a `static` one has no `/api/health`; a `single-origin`

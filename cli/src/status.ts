@@ -1,3 +1,4 @@
+import { additionsForSurface } from "./features/additions.js";
 import { isKeychainUnavailable } from "./utils/keychain-access.js";
 /*
  * Shared status collection — what's configured, what's blocked, what's
@@ -203,7 +204,7 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
     label: "Project backups (R2)",
     configured: config.providers.backups?.status === "configured",
     detail: config.providers.backups
-      ? `intended daily / 3 snapshots; ${backupTargets(config.providers.backups)}; verify with hatchkit backup status`
+      ? `scheduled backups; retention is set per host policy (default 30 verified generations); ${backupTargets(config.providers.backups)}; verify with hatchkit backup status`
       : undefined,
     configureCommand: "hatchkit backup configure --config <provider-config.json>",
   });
@@ -221,7 +222,7 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
     label: "GPU",
     configured: gpuProviders.length > 0,
     detail: gpuProviders.length > 0 ? gpuProviders.join(", ") : undefined,
-    configureCommand: "hatchkit config add gpu",
+    configureCommand: "hatchkit config add modal",
   });
 
   providers.push({
@@ -285,9 +286,9 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
         name: manifest.name,
         dir: projectDir,
         features,
-        // Mirrors SUPPORTED_ADDITIONS in scaffold/update.ts — the other
-        // features' scaffold-time strip is too coarse to re-add cleanly.
-        addableFeatures: (["desktop", "mobile"] as Feature[]).filter((f) => !features.includes(f)),
+        addableFeatures: additionsForSurface(manifest.surfaces).filter(
+          (f) => !features.includes(f),
+        ),
         signing: manifest.signing !== undefined,
         ...(manifest.backups ? { backups: manifest.backups } : {}),
         deployment: describeDeployment(manifest, projectDir),

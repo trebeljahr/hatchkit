@@ -1,6 +1,6 @@
 # hatchkit
 
-> Interactive CLI for scaffolding full-stack projects with composable ML services — from `npx hatchkit` to a deployed app on your own infrastructure in minutes.
+> Scaffold a TypeScript app, connect its services, and deploy it on infrastructure you control.
 
 [![npm](https://img.shields.io/npm/v/hatchkit.svg)](https://www.npmjs.com/package/hatchkit)
 [![CI](https://github.com/trebeljahr/hatchkit/actions/workflows/ci.yml/badge.svg)](https://github.com/trebeljahr/hatchkit/actions/workflows/ci.yml)
@@ -10,12 +10,12 @@
 
 ## What is hatchkit?
 
-Hatchkit turns the messy 2-week ritual of *"start a new product"* into a single guided command. It:
+Hatchkit guides you through creating and maintaining a TypeScript app. You choose which setup and deployment steps it runs.
 
-- **Scaffolds** a production-ready full-stack TypeScript app from a batteries-included starter (websockets, Stripe, analytics, S3, native desktop (Electron) / mobile (Capacitor), auth — pick what you need).
+- **Scaffolds** a TypeScript app with selected features: websockets, Stripe, analytics, S3, Electron desktop, Capacitor mobile, and authentication.
 - **Provisions** observability, email, and analytics clients (GlitchTip, Plausible, Listmonk + SES) paired per environment.
 - **Deploys** DNS, a VPS, and a Coolify app via Terraform — or pushes to an existing server you already own.
-- **Ships ML** by deploying pre-built GPU services (subtitles, image recognition, background removal, 3D extraction) to Modal, RunPod, Hugging Face, or Replicate.
+- **Deploys ML templates to Modal.** RunPod, Hugging Face, and Replicate selections currently print manual setup directions. Review endpoint values before using them.
 - **Encrypts secrets** with dotenvx and keeps private keys in the OS keychain — never in git.
 
 No vendor lock-in. Everything it spins up — your server, your Coolify, your GitHub repo, your DNS — stays yours.
@@ -46,7 +46,7 @@ hatchkit create --yes --name blog --domain blog.example.com \
 
 Run `hatchkit create --help` for the full flag list, or see the [commands reference](https://hatchkit.trebeljahr.com/docs/commands#hatchkit-create).
 
-New to the CLI? Run `hatchkit explain` for a one-page mental model covering every concept, command, and the canonical workflow.
+New to the CLI? Run `hatchkit explain` for concepts, command families, and common workflows.
 
 ---
 
@@ -86,9 +86,9 @@ Full reference: **[Commands](https://hatchkit.trebeljahr.com/docs/commands)**, o
  ┌─────────────┐         ┌─────────────┐          ┌─────────────┐
  │  Scaffold   │         │   Infra     │          │     ML      │
  │             │         │             │          │             │
- │  starter →  │         │ Terraform → │          │  Modal /    │
- │  your repo  │         │ DNS + VPS   │          │  RunPod /   │
- │  + GitHub   │         │ + Coolify   │          │  HF / …     │
+ │  starter →  │         │ Terraform → │          │  Modal      │
+ │  your repo  │         │ DNS + VPS   │          │  templates  │
+ │  + GitHub   │         │ + Coolify   │          │  + manual   │
  └─────────────┘         └─────────────┘          └─────────────┘
         │                       │                        │
         └───────────────────────┼────────────────────────┘
@@ -143,7 +143,10 @@ hatchkit completion fish > ~/.config/fish/completions/hatchkit.fish
 Full docs live under [`docs/`](docs/) and are published at [https://hatchkit.trebeljahr.com/](https://hatchkit.trebeljahr.com/).
 
 - [Getting Started](https://hatchkit.trebeljahr.com/docs/getting-started) — install, onboard, create your first project
-- [Commands reference](https://hatchkit.trebeljahr.com/docs/commands) — every command + every flag
+- [Commands reference](https://hatchkit.trebeljahr.com/docs/commands) — command families, examples, and options
+- [Backups and recovery](https://hatchkit.trebeljahr.com/docs/backups) — registration, retention, alerts, and restore drills
+- [Operations](https://hatchkit.trebeljahr.com/docs/operations) — host security checks, Cloudflare audit credentials, and generated operational files
+- [Migrations](https://hatchkit.trebeljahr.com/docs/migrations) — runtime and client-host migration, rollback, and cleanup
 - [Providers](https://hatchkit.trebeljahr.com/docs/providers) — GitHub, Coolify, Hetzner, DNS, S3, GPU platforms
 - [ML services](https://hatchkit.trebeljahr.com/docs/ml-services) — deploy GPU-backed models the CLI understands
 - [GitHub Pages](https://hatchkit.trebeljahr.com/docs/gh-pages) — `hatchkit gh-pages` for static sites, SPAs, Jekyll docs, and Docusaurus docs

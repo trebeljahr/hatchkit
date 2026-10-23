@@ -155,7 +155,7 @@ const ENV_BY_OPTION: Partial<Record<AuthSecurityOption, Array<{ key: string; com
       {
         key: "SMTP_HOST",
         comment:
-          "Any SMTP host here selects SMTP as the transport, which is what turns email verification on. Leave every mail variable empty and the server logs verification URLs instead of mailing them — the documented way back into a self-host with no mail.",
+          "Selects SMTP for delivery. Production requires verified email by default even without mail; configure and test delivery before rollout. Auth URLs reach production logs only with explicit AUTH_LOG_LINKS=true owner recovery.",
       },
       { key: "SMTP_PORT", comment: "Defaults to 587 when empty." },
       { key: "SMTP_USER", comment: "Omit entirely for a relay that wants no AUTH." },
@@ -213,10 +213,10 @@ export function planAuthAccountSecurity(
     const needsMail = optionsNeedingEmail(options);
     if (needsMail.length > 0) {
       warnings.push(
-        `No email transport is configured for this project, so ${needsMail
+        `No email transport is configured for this project. Configure and test delivery for ${needsMail
           .map((spec) => spec.label)
-          .join(", ")} will stay switched off at runtime until one is. ` +
-          "The code is still written — it decides per request, never at build time — so configuring mail later is a redeploy, not a re-scaffold.",
+          .join(", ")} before rollout. ` +
+          "Production verification remains required by default. Auth links are not logged in production unless the operator explicitly enables AUTH_LOG_LINKS=true for recovery.",
       );
     }
   }

@@ -180,6 +180,18 @@ await test("the template copy of the action is the starter's, byte for byte", ()
 
 const SITE = "https://site.example.com";
 
+/** Routing application was added after recording deployments. Older generated
+ * workflows had neither step, or just the record; a no-record workflow that
+ * already applies routing is a user edit, not a historical template. */
+function beforeRoutingSettings(yml: string): string {
+  const earlier = yml.replace(
+    /\n\n {6}- name: Apply routing settings\n {8}env:\n {10}CLOUDFLARE_API_TOKEN: .+\n {10}CLOUDFLARE_ACCOUNT_ID: .+\n {8}run: pnpm dlx "\$WRANGLER" triggers deploy/,
+    "",
+  );
+  assert.ok(!earlier.includes("Apply routing settings"), "historical fixture has no routing step");
+  return earlier;
+}
+
 await test("cloudflare: the web deploy is recorded after the activation", () => {
   assertRecords(renderDeployWorkflow("main", SITE), {
     job: "deploy",
@@ -201,7 +213,7 @@ await test("cloudflare: the workflow comes with the action, and passes actionlin
 
 await test("cloudflare: a workflow from before the record is replaced; a hand-written one is not", () => {
   const current = renderDeployWorkflow("main", SITE);
-  const before = current
+  const before = beforeRoutingSettings(current)
     .replace("    permissions:\n      contents: read\n      deployments: write\n", "")
     .replace(/\n\n {6}# Leave a GitHub Deployment[\s\S]*$/, "\n");
   assert.ok(!before.includes("record-ship") && !before.includes("deployments"), "fixture");
@@ -216,6 +228,34 @@ await test("cloudflare: a workflow from before the record is replaced; a hand-wr
   applyCloudflareMode(mine, { workerName: "site", siteUrl: SITE }, []);
   assert.equal(readFileSync(join(mine, ".github/workflows/deploy.yml"), "utf-8"), "name: mine\n");
   assert.equal(action(mine), undefined, "no action for a workflow that does not call it");
+});
+
+await test("cloudflare: upgrading the recorded pre-routing workflow is idempotent", () => {
+  const current = renderDeployWorkflow("main", SITE);
+  const dir = scratch("cf-routing-upgrade");
+  writeFile(dir, ".github/workflows/deploy.yml", beforeRoutingSettings(current));
+  applyCloudflareMode(dir, { workerName: "site", siteUrl: SITE }, []);
+  assert.equal(readFileSync(join(dir, ".github/workflows/deploy.yml"), "utf-8"), current);
+  assert.equal(action(dir), recordShipActionSource());
+  const repeated: string[] = [];
+  applyCloudflareMode(dir, { workerName: "site", siteUrl: SITE }, repeated);
+  assert.equal(readFileSync(join(dir, ".github/workflows/deploy.yml"), "utf-8"), current);
+  assert.ok(
+    !repeated.some((change) => change.includes("deploy.yml") || change.includes("record-ship")),
+    repeated.join("\n"),
+  );
+});
+
+await test("cloudflare: intentionally removing the record from the current workflow is preserved", () => {
+  const edited = renderDeployWorkflow("main", SITE)
+    .replace("    permissions:\n      contents: read\n      deployments: write\n", "")
+    .replace(/\n\n {6}# Leave a GitHub Deployment[\s\S]*$/, "\n");
+  assert.ok(edited.includes("Apply routing settings") && !edited.includes("record-ship"));
+  const dir = scratch("cf-edited-current");
+  writeFile(dir, ".github/workflows/deploy.yml", edited);
+  applyCloudflareMode(dir, { workerName: "site", siteUrl: SITE }, []);
+  assert.equal(readFileSync(join(dir, ".github/workflows/deploy.yml"), "utf-8"), edited);
+  assert.equal(action(dir), undefined);
 });
 
 // ---------------------------------------------------------------------------

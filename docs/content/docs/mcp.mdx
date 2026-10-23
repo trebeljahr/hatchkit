@@ -18,6 +18,10 @@ Earlier releases published only the CLI. If npm cannot find the operator package
 
 The operator server has no create, deploy, or provider-write tools. See its [package README](https://github.com/trebeljahr/hatchkit/tree/main/mcp) for installation and host configuration. Its bridge tests run with `pnpm --filter @hatchkit/mcp test`.
 
+The CLI child has no interactive stdin, so native keychain access is denied by default. Doctor reports blocked credential checks as unverified; key lookup reports an access error. Only an operator who authorizes credential access should set `HATCHKIT_KEYCHAIN_ACCESS=allow` in the host environment. This does not bypass OS access controls. Agents must not enable it automatically or retry a denied read. An interactive CLI check is an alternative for a one-off diagnosis.
+
+Valid failure JSON remains available to the model. If the CLI returns no JSON, the bridge reports its exit status and a bounded, redacted diagnostic.
+
 ## Project server: `mcp` feature
 
 `mcp` scaffolds `packages/mcp`, a stdio server that lets a model read and change records through that project's public API.
@@ -42,15 +46,15 @@ Its capability surface is therefore a strict subset of the public API's. Areas t
 
 Two environment variables: a scoped API token and an origin. The origin is normalised — a trailing slash, a pasted versioned base path and a plain origin all mean the same thing — but a value that is not http(s) is refused rather than guessed at. A missing token exits with one sentence naming the variable and where to mint one.
 
-The token sits in plain text in the host's configuration file. The generated `docs-site` page says so, and says where to revoke it.
+The token sits in plain text in the host's configuration file. The generated `packages/mcp/README.md` documents setup and revocation. Build with `pnpm run build:mcp` from the app root; it builds the shared/core dependencies first. Mint, list and revoke tokens through the session-authenticated `trpc.apiTokens` router. No token-settings UI or MCP setup page in `docs-site` is generated.
 
 ## What the model sees
 
-Tool input schemas are built from the same validators the API enforces, imported from the shared package, with the fields the server stamps removed. Nothing is re-declared, so a tightened limit or a new status reaches the tool list with no edit. Where a validator carries a cross-field refinement, zod refuses field removal on it and the schema is rebuilt from its field map — dropping that rebuild silently loses every per-field constraint.
+Item inputs use field validators from the shared package, so their field limits and status values reach the tools. Path ids and webhook inputs are declared locally because those server schemas are not shared. Webhook event inputs use the mirrored event enum. Route metadata, scopes and event names have parity tests against the public API templates. Cross-field refinements still need explicit treatment when assembling a tool schema from fields.
 
 The server declares a short instructions string telling the model what the records are, which lookup tools to call before a write, what unit ambiguous values are in, and what the server deliberately does not cover.
 
-**Capabilities are probed once at start and the tool list is filtered by them.** When the answer is known, a tool the credential cannot call is not registered at all — a model that sees a tool will try it, and a refusal after the fact costs the user a turn. When the probe *fails*, every tool is registered and each call reports the real reason, because exiting would leave the host showing "server exited" with nothing to debug.
+**Scopes are probed once at startup and filter the tool list.** Visible tools still face the API's permission and visibility checks. Webhook writes also require effective `webhooks:manage` permission; scopes alone are insufficient. Effective permissions intersect current member grants with the token's frozen ceiling, so a new grant may need a new token. When the probe fails, every tool is offered and the instructions identify access as unknown. Restart after replacing a token.
 
 Every tool throw is caught at registration and returned as an error result. A throw that escaped to the transport would read to the host as the server dying rather than as a failed call.
 

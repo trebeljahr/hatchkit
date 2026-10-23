@@ -73,7 +73,7 @@ hatchkit add my-app signing
 | `--app-name "My App"` | Skip the app-name prompt. |
 | `--repo owner/repo` | Override the GitHub repo slug detected from `git remote`. |
 | `--no-signing` | Skip everything. Honored by the stepper so `hatchkit create --no-signing` works too. |
-| `--dry-run` | Stepper + preflight + plan; no file writes, no API calls. |
+| `--dry-run` | Stepper, read-only preflight, and plan. No signing changes or file writes. Preflight can read GitHub authentication and repository permissions. |
 | `--only apple,google,azure` | `org-init` only — limit the providers configured this run. |
 
 ### Bundle ID rules
@@ -145,7 +145,7 @@ Re-running `hatchkit signing apply`:
 
 | Where | What |
 |---|---|
-| `~/.hatchkit/<conf>` | Apple/Google/Azure paths + IDs (non-secret). |
+| Hatchkit's OS-specific config directory, or `HATCHKIT_CONF_DIR` | Apple/Google/Azure paths + IDs (non-secret). See [provider state](./providers#credential-storage). |
 | OS keychain (service `hatchkit`) | P12 password (`signing:apple:p12-password`), Azure SP secret (`signing:azure:sp-secret`). |
 | Project filesystem | Apple .p12 + .p8 at user-controlled paths; Android upload keystore at `<projectDir>/.hatchkit/signing/<slug>.keystore`. |
 | GitHub repo secrets | The 20 build-time values pushed via `gh secret set`. |

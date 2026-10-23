@@ -41,12 +41,24 @@ import { getStore } from "../config.js";
 export type LedgerStep =
   | { kind: "scaffold"; path: string }
   | { kind: "github"; repo: string }
-  | { kind: "glitchtip"; project: string }
+  | {
+      kind: "glitchtip";
+      project: string;
+      /** Missing on legacy rows, which cannot safely identify the provider. */
+      baseUrl?: string;
+      organizationSlug?: string;
+    }
   /** LEGACY: OpenPanel project created by hatchkit versions that still
    *  provisioned OpenPanel. New runs never record this kind; rollback
    *  recognizes it on old ledgers and prints a manual-cleanup hint. */
   | { kind: "openpanel"; project: string }
-  | { kind: "plausible"; project: string }
+  | {
+      kind: "plausible";
+      project: string;
+      /** Exact creation identity; never resolve deletion through the mutable cache. */
+      baseUrl?: string;
+      domain?: string;
+    }
   /** SES verified identity hatchkit created. Destroy issues
    *  sesv2:DeleteEmailIdentity, 404-tolerant — re-runs after a partial
    *  rollback won't fail just because the identity is already gone. */
@@ -475,6 +487,13 @@ export class RunLedger {
     if (!existsSync(path)) return null;
     try {
       const data = JSON.parse(readFileSync(path, "utf-8")) as LedgerData;
+      if (
+        data?.name !== name ||
+        !Array.isArray(data.steps) ||
+        !data.steps.every((step) => step && typeof step.kind === "string")
+      ) {
+        return null;
+      }
       return new RunLedger(path, data);
     } catch {
       return null;
@@ -501,6 +520,32 @@ export class RunLedger {
   record(step: LedgerStep): void {
     this.data.steps.push(step);
     this.flush();
+  }
+
+  /** Retire one successfully undone entry without losing unrelated ownership. */
+  forget(step: LedgerStep): void {
+    const index = this.data.steps.indexOf(step);
+    if (index < 0) return;
+    this.data.steps.splice(index, 1);
+    this.flush();
+  }
+
+  /** Follow an authorized provider rename only for identities we already own. */
+  renamePlausibleDomain(baseUrl: string, oldDomain: string, newDomain: string): void {
+    const normalize = (url: string) => url.trim().replace(/\/+$/, "");
+    let changed = false;
+    for (const step of this.data.steps) {
+      if (
+        step.kind === "plausible" &&
+        step.baseUrl &&
+        normalize(step.baseUrl) === normalize(baseUrl) &&
+        step.domain === oldDomain
+      ) {
+        step.domain = newDomain;
+        changed = true;
+      }
+    }
+    if (changed) this.flush();
   }
 
   /** Mark the run finished. The ledger sticks around so `hatchkit

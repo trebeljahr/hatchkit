@@ -758,7 +758,7 @@ function warnOnLowDisk(root: string): void {
     if (free < LOW_DISK_BYTES) {
       console.log(
         chalk.yellow(
-          `! ${(free / 1024 ** 3).toFixed(0)} GB free. A Tauri universal build or an iOS archive can take 10-20 GB while it runs.`,
+          `! ${(free / 1024 ** 3).toFixed(0)} GB free. An Electron universal build or an iOS archive can take 10-20 GB while it runs.`,
         ),
       );
     }

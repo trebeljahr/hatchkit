@@ -22,7 +22,7 @@ detects its own previous output.
 | Option | What it is |
 | --- | --- |
 | `two-factor` | TOTP with ten single-use backup codes, stored encrypted |
-| `email-verification` | Verification required **only where mail can be delivered**, plus the backfill script |
+| `email-verification` | Verified email required by default in production; explicit policy override for mail-free deployments |
 | `credentials` | Change password and change email, without signing the caller out |
 | `google-oauth` | A Google button that renders in every build and decides after mount |
 | `account-deletion` | Password-confirmed, with an idempotent cascade and a second pass |
@@ -86,21 +86,26 @@ twoFactorPlugin → emailOtpPlugin → magicLinkPlugin → passkeyPlugin → bea
 No runtime test catches a wrong order, so the CLI's test suite **reads the generated
 `auth.ts` back off disk** and fails on it.
 
-### Email verification is conditional, and creates a backfill obligation
+### Email verification and existing accounts
 
-`requireEmailVerification` follows `isEmailDeliveryConfigured()` rather than being
-hardcoded — a self-host with no transport would otherwise lock every new account out
-behind a link that only reaches the server log.
+Production requires verified email by default, even without a mail transport.
+Configure and test delivery before rollout. Outside production, the default follows
+whether mail is configured. `AUTH_REQUIRE_EMAIL_VERIFICATION=true` or `false`
+explicitly overrides either default.
 
-The consequence: the first deploy that configures mail would refuse every existing
-account, because every account created while verification was off has
-`emailVerified: false`. Run the backfill once, straight after that deploy:
+Existing unverified accounts must verify on their next password sign-in. Existing
+sessions remain valid. Sign-up and sign-in send verification mail; verification does
+not create a session automatically. Do not blanket-mark addresses verified or run
+the legacy `backfill:email-verified` script as a rollout step.
 
-```bash
-pnpm --filter @starter/server run backfill:email-verified -- --before 2026-01-31T09:00:00Z
-```
+Mail-free deployments must explicitly set `AUTH_REQUIRE_EMAIL_VERIFICATION=false`.
+Use that opt-out only where unverified addresses are an accepted policy. It does
+not prove address ownership.
 
-It is idempotent and never un-verifies, so a second run reports 0.
+Auth links are credentials. Development and test can log them locally. Production
+refuses that fallback unless the operator enables `AUTH_LOG_LINKS=true` for owner
+recovery. Restrict log access and retention, remove the override after recovery,
+and keep it off on hosted or multi-user services.
 
 Note that `sendVerificationEmail` belongs in the `emailVerification` block. Under
 `emailAndPassword` better-auth never calls it, and nothing logs that it was skipped.
@@ -166,7 +171,7 @@ Hatchkit prints these after a run:
 
 - **Google sign-in** — create an OAuth client, then set `GOOGLE_CLIENT_ID` and
   `GOOGLE_CLIENT_SECRET`. Until both are set the button renders disabled with a note.
-- **Email verification** — run the backfill once after the first deploy with mail.
+- **Email verification** — configure and test mail before rollout; existing unverified accounts must verify their addresses.
 - **Passkeys** — `@better-auth/passkey` is added to `package.json` but not installed;
   run your package manager. It is not part of better-auth core.
 

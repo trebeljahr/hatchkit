@@ -198,7 +198,7 @@ restore containers. Repeat native drills after engine upgrades or source changes
 Each project has a separate encrypted restic repository. Every run creates
 native database exports and consistent SQLite copies, uploads an archive,
 downloads it and checks its SHA-256, then keeps the configured verified snapshots (30 by default for new policies) and
-prunes unreferenced data. A fourth snapshot exists briefly before verification
+prunes unreferenced data. One snapshot beyond the configured `keepLast` count exists briefly before verification
 and pruning. Failures never prune previous snapshots. File archives can fail if
 files change while copied; retry after quiescing the relevant writer.
 

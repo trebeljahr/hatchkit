@@ -1,0 +1,128 @@
+---
+title: Operations
+description: Inspect host security checks, configure the Cloudflare audit token, and understand generated operational files.
+---
+
+Use `hatchkit status --json` for configuration, then `hatchkit doctor --json` for live checks. Credential denial means a check is unverified. It does not prove the credential is invalid.
+
+Host commands use registered [backup hosts](./backups) over Tailscale. They do not fall back to public SSH. Read-only scans still require host access and can query upstream services.
+
+## Host security checks
+
+```bash
+hatchkit host integrity --host ops-vps --json
+hatchkit host updates --host ops-vps --json
+hatchkit host updates install --host ops-vps --dry-run
+```
+
+The first two commands scan without changing host configuration. Installation, removal, and test-email commands change state or send mail. Review the install plan before applying it.
+
+| Check | Installed schedule | Coverage |
+|---|---|---|
+| Host integrity quick scan | Five minutes after each pass | Deleted binaries, unexpected processes, temporary files, and required loaded kernel-audit rules. |
+| Host integrity full scan | Daily at 05:00 UTC | Process checks plus an hour of CPU and outbound-peer samples. |
+| Update watch | Every four hours UTC, plus up to 15 minutes | Shared-service and host-runtime versions, security advisories, Node/CA checks, and origin firewall ranges. |
+| Final-image package scan | Daily at 07:00 UTC, plus up to 15 minutes | High and critical findings from Grype against immutable IDs of running images. |
+
+Update watch covers Coolify, Traefik, Plausible, Listmonk, Uptime Kuma, GlitchTip, and ClickHouse. It also checks host Docker, containerd, runc, and Tailscale versions. Container runtime checks look for affected Node versions and known certificate-store paths. These checks do not establish that every runtime or trust store is covered.
+
+The watcher combines supported advisory feeds, the CISA known-exploited catalog, and the last image-scan report. Missing versions, feed errors, and incomplete scans remain visible. A skipped check is not a clean result.
+
+Findings retain their first-seen time and remediation deadline across image rebuilds. Critical findings and known-exploited issues use a 24-hour target; other high findings use 72 hours. New or changed findings send mail. Unchanged overdue findings can repeat once per 24 hours. Healthy runs stay silent. The watcher reports fixes; it does not install them.
+
+### Installation prerequisites
+
+`host integrity install` needs the backup runner and configured backup-alert SMTP. `host updates install` also requires a pinned, signature-verified Grype binary at `/usr/local/bin/grype`. It installs both update-watch and final-image scan timers.
+
+Install dry-runs still validate prerequisites and run read-only scans. They are not offline plans. Grype installation and verification are separate maintenance steps; Hatchkit does not download an arbitrary scanner to bypass a missing prerequisite.
+
+Status files live under `/var/lib/hatchkit-backups/` on the host:
+
+| File | Result |
+|---|---|
+| `host-integrity-quick-status.json` | Latest quick scan |
+| `host-integrity-status.json` | Latest full scan |
+| `update-watch-status.json` | Advisory, version, and runtime checks |
+| `image-vulnerability-status.json` | Final-image findings and scan completeness |
+| `file-integrity-status.json` | Reviewed AIDE baseline check, when installed |
+| `health-publisher-status.json` | Latest independent-monitor publication, when installed |
+
+Detailed image reports remain private under `/var/lib/hatchkit-security/image-reports`. Investigate a failed or stale check before changing its policy. Uninstall commands remove their scheduled checks; inspect retained reports before removing evidence.
+
+## Additional maintenance components
+
+AIDE file checks, kernel-audit configuration, and the independent security monitor have maintained source templates and Ansible/maintenance entry points. They are not additional `hatchkit host` subcommands.
+
+- The [hardening guide](https://github.com/trebeljahr/hatchkit/blob/main/infra/docs/hardening-guide.md) explains reviewed AIDE baselines, containment, recovery, and incident handling.
+- The [file-integrity role](https://github.com/trebeljahr/hatchkit/tree/main/infra/ansible/roles/file_integrity) installs host file/audit coverage. A running audit daemon alone does not prove required rules reached the kernel.
+- The [security-controller templates](https://github.com/trebeljahr/hatchkit/tree/main/cli/src/templates/security-controller) publish fixed timestamps and counts to a separate monitor.
+
+The current health publisher explicitly permits two maintained fleet hosts and one monitor destination. It is not a general-purpose monitor installer for arbitrary hosts. Adapt and review those constraints before deploying it elsewhere. Its five-minute publication sends no logs, records, environment values, or backup keys.
+
+AIDE checks run daily at 04:30 UTC with up to 15 minutes of delay. Establish a trusted baseline first. Never accept the current filesystem automatically after updates. A local root attacker can alter local checks; the independent monitor detects missed or stale reports but cannot prove the host is uncompromised.
+
+## Cloudflare audit token
+
+`hatchkit audit cloudflare` requires a separate **user API token**, created under **My Profile → API Tokens**. An account-owned token cannot list user-owned tokens. The audit never falls back to the operator token.
+
+These grants match the audit's implemented reads:
+
+| Grant | Resource | Purpose |
+|---|---|---|
+| User · API Tokens · Read | User | List user-owned tokens |
+| Account · Account API Tokens · Read | The audited account | List all account-owned tokens |
+| Account · Account Settings · Read | The audited account | Audit logs v2 and members |
+| Account · Workers Scripts · Read | The audited account | List Workers and inspect the audit deployment |
+| Account · Workers R2 Storage · Read | The audited account | List buckets and read audit status |
+| Account · Email Routing Addresses · Read | The audited account | List forwarding destinations |
+| Zone · Zone · Read | All zones being audited | List zones |
+| Zone · Email Routing Rules · Read | All zones being audited | Read rules and catch-all forwarding |
+| Account · OAuth Clients · Read | The audited account, if offered | Optional OAuth-client inventory |
+
+The optional OAuth-client inventory reports skipped coverage when unavailable. Failures of required reads are audit failures. Do not replace these grants with the operator's write permissions.
+
+```bash
+hatchkit audit cloudflare set-token
+hatchkit audit cloudflare --json
+```
+
+`set-token` stores the token in keychain account `cloudflare:audit`. An explicitly supplied `HATCHKIT_CLOUDFLARE_AUDIT_TOKEN` takes precedence. Keep its value out of shell history and repository files. Unattended keychain reads are denied by default; use an authorized interactive setup.
+
+Review findings before accepting inventory. `accept --inventory` accepts current non-token resources only. Accept tokens individually by ID after checking them. `accept` and `forget` change local expected state; `publish` uploads signed expected state to an existing audit Worker.
+
+The scheduled audit is a separate deployment. `audit cloudflare deploy --dry-run` previews it. Applying deployment uses the local operator token to create the Worker and bucket and configure audit/SES credentials. The Worker checks every six hours and repeats open alerts after 24 hours. A local audit also verifies deployment identity, scheduling, and freshness. See [audit commands](./commands#hatchkit-audit-cloudflare).
+
+### Respond to an unexpected token
+
+Confirm the token ID and affected account. If the operator credential leaked, revoke it at its issuer, then revoke unknown tokens it created. Review audit logs for DNS, Worker, email-routing, and zone-setting changes. Preserve evidence before restoring expected configuration.
+
+Create a replacement operator credential locally and rotate affected project credentials. [Per-project isolation](./secrets-rotation) does not revoke an unknown attacker-created token. Do not accept unknown inventory merely to clear an alert.
+
+## Generated operational files
+
+Create and update run seven operational modules when the project supports them. These modules are automatic rather than selectable feature flags.
+
+| Module | Artifacts or behavior |
+|---|---|
+| Verified deploy | `scripts/hatchkit-deploy.mjs`, its library, deploy workflow integration, and `hosted-rollback.yml` |
+| Topology guidance | `docs/deploy-topology.md` |
+| Environment agreement | `docs/env-sources.md` and checks that client/server API origins agree |
+| Self-host distribution | Compose files, `Caddyfile.selfhost`, `.env.selfhost.example`, client image configuration, and smoke workflow |
+| Docs in the client | Docs build script, client image integration, links, robots behavior, and verification workflow |
+| Deploy recovery | Version metadata and browser recovery behavior for replaced assets |
+| Error reporting | Client reporting configuration, scrubbing, and generated privacy notes |
+
+Update can regenerate owned files and managed blocks. User-owned feature files have separate preservation rules. Keep custom extensions outside generated files where an extension point exists. Preview update, read its kept/skipped/manual-step output, and inspect the diff.
+
+### Run a self-host distribution
+
+Use the generated `.env.selfhost.example` as the configuration reference. Supply the deployment domain, required secrets, and image references. Keep the resulting private env file outside Git.
+
+```bash
+docker compose --env-file .env -f docker-compose.selfhost.yml config --quiet
+docker compose --env-file .env -f docker-compose.selfhost.yml up -d
+```
+
+The default distribution pulls published images. To build from a clone, add `-f docker-compose.selfhost.build.yml` and `--build`. The client self-host image uses an empty `NEXT_PUBLIC_API_URL` so it can use the chosen deployment origin.
+
+Configure DNS and certificate access for the chosen domain. Follow the generated mail and authentication guidance: production authentication links do not silently fall back to logs. Validate sign-in, persistent data, backups, and the generated smoke workflow before relying on the deployment.

@@ -148,7 +148,7 @@ function getDefaultModelId(service: MlService): string {
     case "3d-sam-body":
       return "facebook/sam-3d-body";
     case "3d-hunyuan":
-      return "tencent/Hunyuan3D-3";
+      return "tencent/Hunyuan3D-2.1";
     case "3d-trellis":
       return "microsoft/TRELLIS-2";
     case "3d-extraction":

@@ -59,9 +59,8 @@ export type HelpTopic =
 
 /** A `--help` or `-h` anywhere in the argv is a request for
  *  documentation, never an instruction to act — it wins over whatever
- *  subcommand it sits next to. No hatchkit flag takes a value, so there
- *  is no `--flag --help` case where the word is an argument rather than
- *  a request. */
+ *  subcommand it sits next to. Even after a flag that normally takes a value, a literal help token
+ *  is treated as documentation rather than an instruction to act. */
 export function isHelpRequest(argv: readonly string[]): boolean {
   return argv.some((arg) => arg === "--help" || arg === "-h");
 }
@@ -111,3 +110,19 @@ const HELP_TOPIC_BY_COMMAND: Readonly<Record<string, HelpTopic>> = {
 export function helpTopicForCommand(command: string | undefined): HelpTopic | undefined {
   return command === undefined ? undefined : HELP_TOPIC_BY_COMMAND[command];
 }
+
+/** Public command names, shared by completion and contract checks. */
+export const CLI_COMMANDS = [
+  ...Object.keys(HELP_TOPIC_BY_COMMAND),
+  "backup",
+  "host",
+  "audit",
+  "mac-runner",
+  "infra",
+  "signing",
+  "provision",
+  "release",
+  "ses",
+  "listmonk",
+  "help",
+] as const;

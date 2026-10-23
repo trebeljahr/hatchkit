@@ -69,7 +69,7 @@ export function isApiTokenScope(value: unknown): value is ApiTokenScope {
  * event name the server stopped accepting and every subscription it created
  * would be refused as invalid.
  */
-export const WEBHOOK_EVENTS: readonly string[] = ["item.created", "item.updated", "item.deleted"];
+export const WEBHOOK_EVENTS = ["item.created", "item.updated", "item.deleted"] as const;
 
 export type ApiRoute = {
   method: "get" | "post" | "patch" | "delete";

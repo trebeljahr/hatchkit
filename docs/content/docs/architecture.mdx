@@ -45,7 +45,7 @@ git + github → scaffold infra → terraform → coolify → ML deploy → summ
 Key properties of the pipeline:
 
 - **Lazy provider ensure.** We only prompt for Hetzner credentials if you actually selected "new VPS". We only prompt for GitHub if you said yes to the repo. Fails **early**, not after files are on disk.
-- **Dry-run parity.** `--dry-run` still runs scaffold + infra generation so you see exactly what would change, but never mutates remote systems.
+- **Dry-run planning.** `create --dry-run` prints the resolved plan without scaffolding files or deploying resources.
 - **Unique ports.** A per-machine ports registry (`config.json#ports`) assigns collision-free `server` / `client` / `nativeHmr` ports so you can run many hatchkit apps locally.
 - **Repo URL flows into infra.** GitHub runs **before** infra scaffold so the generated Coolify env has the real `GITHUB_REPO_URL` in it, not a placeholder.
 
@@ -100,11 +100,14 @@ Every hatchkit commit (`create`, `adopt`, their GitHub Pages and Cloudflare Work
 
 ## Scaffolding strategy
 
-Feature stripping, not feature addition.
+Create combines two sources:
 
-- The starter is maximal — it contains every feature hatchkit can produce.
-- At scaffold time hatchkit **removes** anything you didn't pick (files, package.json deps, env keys, import paths).
-- Why: features that can interact (auth + stripe + s3 + websockets) are battle-tested once in the starter rather than N times in hatchkit's scaffold code.
+- It copies the working starter and removes unselected source, dependencies, environment keys, and imports.
+- It runs additive generators for features such as server migrations, public API, and i18n.
+
+Create and update also apply the [operational layer](./operations#generated-operational-files). These modules produce deployment checks, self-host files, and other maintained artifacts when the project supports them.
+
+Published CLI packages include templates under `dist/templates` and tracked starter, infra, and ML assets under `dist/bundle`. A source checkout and an installed package resolve those assets through the same path helpers.
 
 ## Update strategy
 

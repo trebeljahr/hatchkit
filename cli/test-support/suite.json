@@ -2,6 +2,8 @@
   "test-keychain-isolation.ts",
   "test-readiness.ts",
   "test-help-safety.ts",
+  "test-documentation-contracts.ts",
+  "test-remove-ownership.ts",
   "test-dev-setup.ts",
   "test-dns-preflight.ts",
   "test-dns-link.ts",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { updateItemSchema } from "@starter/shared";
 import { z } from "zod";
-import { API_ROUTES, API_TOKEN_SCOPES } from "../routes.js";
+import { API_ROUTES, API_TOKEN_SCOPES, WEBHOOK_EVENTS } from "../routes.js";
 import { TOOL_DEFINITIONS, UNTOOLED_ROUTES } from "../tools.js";
 
 describe("the tool list against the route table", () => {
@@ -109,6 +109,19 @@ describe("input schemas", () => {
     assert.throws(() => objectFor("create_item").parse({ title: "" }));
     assert.throws(() => objectFor("create_item").parse({ title: "x".repeat(201) }));
     assert.doesNotThrow(() => objectFor("create_item").parse({ title: "ok" }));
+  });
+
+  it("offers only the webhook events the API accepts", () => {
+    const schema = objectFor("create_webhook");
+    for (const event of WEBHOOK_EVENTS) {
+      assert.doesNotThrow(() => schema.parse({ url: "https://example.test/hook", events: [event] }));
+    }
+    assert.throws(() => schema.parse({ url: "https://example.test/hook", events: ["item.nonexistent"] }));
+    assert.throws(() => schema.parse({ url: "https://example.test/hook", events: [] }));
+    const json = z.toJSONSchema(schema, { io: "input" }) as unknown as {
+      properties: { events: { items: { enum: string[] } } };
+    };
+    assert.deepEqual(json.properties.events.items.enum, [...WEBHOOK_EVENTS]);
   });
 });
 

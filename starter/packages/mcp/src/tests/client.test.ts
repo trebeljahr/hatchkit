@@ -183,6 +183,7 @@ describe("problem hints", () => {
       "not-found",
       "conflict",
       "payload-too-large",
+      "permission-required",
       "internal-error",
     ];
     const seen = new Set<string>();

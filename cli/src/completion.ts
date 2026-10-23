@@ -8,30 +8,15 @@
  * all three shells regenerate.
  */
 
-const TOP_LEVEL = [
-  "setup",
-  "init",
-  "status",
-  "doctor",
-  "explain",
-  "create",
-  "adopt",
-  "update",
-  "server",
-  "add",
-  "assets",
-  "backup",
-  "host",
-  "audit",
-  "release",
-  "keys",
-  "config",
-  "completion",
-  "help",
-] as const;
+import { CLI_COMMANDS as TOP_LEVEL } from "./help-routing.js";
 
 const ASSETS_SUB = ["seed", "push", "pull", "migrate", "list"] as const;
 const BACKUP_SUB = [
+  "hosts",
+  "add-host",
+  "remove-host",
+  "timer",
+  "restore-check",
   "snapshots",
   "restore",
   "scripts",
@@ -51,9 +36,11 @@ const BACKUP_SUB = [
 
 const CONFIG_ADD = [
   "coolify",
+  "coolify-github-app",
   "ghcr",
   "hetzner",
   "cloudflare",
+  "cloudflare-workers",
   "dns",
   "s3",
   "modal",
@@ -62,21 +49,51 @@ const CONFIG_ADD = [
   "replicate",
   "glitchtip",
   "plausible",
-  "resend",
+  "listmonk",
+  "ses",
   "search-console",
   "stripe",
 ] as const;
 
 const RELEASE_SUB = ["plan", "cut", "status", "check"] as const;
-const CONFIG_SUB = ["add", "reset"] as const;
+const CONFIG_SUB = ["add", "pause", "resume", "reset"] as const;
 const KEYS_SUB = ["show", "set", "rotate", "push"] as const;
 const SERVER_SUB = ["add"] as const;
+const EXTRA_SUBCOMMANDS: Record<string, readonly string[]> = {
+  host: ["integrity", "updates"],
+  audit: ["cloudflare"],
+  infra: ["plan", "apply", "output"],
+  "mac-runner": ["on", "off", "status", "serve", "run"],
+  signing: ["org-init", "apply"],
+  secrets: ["rotate", "isolate"],
+  provision: ["s3"],
+  dns: ["publish", "link-to-cloudflare"],
+  plausible: ["rename", "merge"],
+  email: ["setup", "status", "ses-mail-from"],
+  cloudflare: ["token", "https", "redirect"],
+  listmonk: ["user", "list", "isolation-plan"],
+  ses: [
+    "verify",
+    "unverify",
+    "list",
+    "status",
+    "operator-plan",
+    "verify-policy",
+    "isolate",
+    "smtp",
+    "webhook-auth",
+  ],
+};
 const SHELLS = ["zsh", "bash", "fish"] as const;
 
 export function renderCompletion(shell: "zsh" | "bash" | "fish"): string {
   if (shell === "zsh") return zsh();
   if (shell === "bash") return bash();
   return fish();
+}
+
+function shellQuote(value: string): string {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
 }
 
 function zsh(): string {
@@ -89,7 +106,7 @@ function zsh(): string {
 _hatchkit() {
   local -a commands
   commands=(
-${TOP_LEVEL.map((c) => `    '${c}:${topDesc(c)}'`).join("\n")}
+${TOP_LEVEL.map((c) => `    ${shellQuote(`${c}:${topDesc(c)}`)}`).join("\n")}
   )
 
   local curcontext="$curcontext" state line
@@ -104,6 +121,12 @@ ${TOP_LEVEL.map((c) => `    '${c}:${topDesc(c)}'`).join("\n")}
       ;;
     sub)
       case \${words[2]} in
+${Object.entries(EXTRA_SUBCOMMANDS)
+  .map(
+    ([command, subs]) =>
+      `        ${command}) _values '${command} subcommand' ${subs.map((sub) => `'${sub}'`).join(" ")} ;;`,
+  )
+  .join("\n")}
         config)
           _values 'config subcommand' ${CONFIG_SUB.map((s) => `'${s}'`).join(" ")}
           ;;
@@ -170,6 +193,15 @@ _hatchkit_complete() {
   fi
 
   case "\${words[1]}" in
+${Object.entries(EXTRA_SUBCOMMANDS)
+  .map(
+    ([command, subs]) => `    ${command})
+      if [[ $cword -eq 2 ]]; then
+        COMPREPLY=( $(compgen -W "${subs.join(" ")}" -- "$cur") )
+      fi
+      ;;`,
+  )
+  .join("\n")}
     config)
       if [[ $cword -eq 2 ]]; then
         COMPREPLY=( $(compgen -W "$config_sub" -- "$cur") )
@@ -230,6 +262,10 @@ function fish(): string {
     lines.push(`complete -c hatchkit -n "__fish_use_subcommand" -a "${c}" -d "${topDesc(c)}"`);
   }
   lines.push("");
+  for (const [command, subs] of Object.entries(EXTRA_SUBCOMMANDS)) {
+    for (const sub of subs)
+      lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from ${command}" -a "${sub}"`);
+  }
   for (const s of CONFIG_SUB) {
     lines.push(`complete -c hatchkit -n "__fish_seen_subcommand_from config" -a "${s}"`);
   }
@@ -283,7 +319,7 @@ function topDesc(cmd: string): string {
     case "server":
       return "Retrofit a server into a client-only project";
     case "add":
-      return "Provision GlitchTip / Plausible / Resend / email / search services";
+      return "Provision GlitchTip / Plausible / Listmonk + SES / email / search services";
     case "assets":
       return "Move bytes between local S3 and prod buckets";
     case "backup":
@@ -303,6 +339,6 @@ function topDesc(cmd: string): string {
     case "help":
       return "Show help for a command";
     default:
-      return "";
+      return cmd.replaceAll("-", " ");
   }
 }

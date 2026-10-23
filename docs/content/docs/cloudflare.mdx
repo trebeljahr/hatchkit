@@ -232,3 +232,31 @@ pnpm build && pnpm dlx wrangler deploy
 ```
 
 `wrangler login` uses your local Cloudflare identity. The CI token belongs only in its repo secret.
+
+
+## Manage one Worker's CI token
+
+```bash
+hatchkit cloudflare token --worker my-site --dry-run
+hatchkit cloudflare token --worker my-site
+hatchkit cloudflare token --worker my-site --rotate --dry-run
+```
+
+This helper mints or rotates one Worker's deploy token and sets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the repository. It does not generate a deployment workflow. The name defaults to `wrangler.jsonc`; use `--create-worker` only when creation is intended.
+
+The operator token stays local. Review the plan before applying it. Token scope does not remove the runtime-binding limits described above.
+
+## Manage redirects
+
+```bash
+hatchkit cloudflare https add www.example.com --dry-run
+hatchkit cloudflare https remove www.example.com --dry-run
+hatchkit cloudflare redirect add old.example.com https://new.example.com --status 308 --dry-run
+hatchkit cloudflare redirect remove old.example.com --dry-run
+```
+
+`https` maintains Hatchkit's host-specific HTTP-to-HTTPS rule for each zone. It excludes `/.well-known/` and does not change the zone-wide Always Use HTTPS setting. Each write is read back to detect a lost concurrent edit.
+
+`redirect` sends a retired hostname to another HTTPS origin while retaining path and query. Status can be `301` or `308`. Removing `--dry-run` changes live zone rules. Verify the destination before applying a permanent redirect.
+
+For a Coolify client migration that must preserve API routes, use [migrate-client](./migrations#move-the-client-to-cloudflare) and its cutover checks.

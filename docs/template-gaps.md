@@ -1,9 +1,10 @@
-# Template gaps
+# Template gaps — historical audit
 
-What the hatchkit starter template does **not** yet have, measured against a
-reference project that was built on it and then carried to production across a
-web client, two native shells, a browser extension, a launcher extension, an MCP
-server, a public API and a self-host distribution.
+This document preserves the September 25, 2026 audit and its original implementation evidence. It is not the current feature inventory or an active completion checklist. Several families below now ship, including i18n, extension, Raycast, token authentication, client core, and public API.
+
+Unchecked rows record the audit's status on that date. They do not establish that a capability is absent today. A feature name alone also does not prove every historical invariant is covered.
+
+Use the [current command reference](content/docs/commands.mdx), [architecture](content/docs/architecture.mdx), and `cli/src/features/` for current behavior. Keep these original rows as evidence when reviewing individual invariants.
 
 ## How to read this
 
@@ -24,7 +25,7 @@ could not be separated from that domain it is listed under
 to copy: the reference solved the problem for one product, and the template has
 to solve it for any.
 
-## Status
+## Status at the audit date
 
 | value | meaning |
 | --- | --- |
@@ -37,7 +38,7 @@ Tick a row only when the work is merged into `main` **and** the invariant has a
 test. An untested implementation is `[~]`: these invariants all describe silent
 failures, so "it seemed to work" is not evidence.
 
-## Landing status
+## Landing status at the audit date
 
 Audited against `main` on 2026-09-25, by reading the four surfaces a feature has
 to appear in — the interactive stepper, the create flags, `hatchkit update`, and

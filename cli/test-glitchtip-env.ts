@@ -315,6 +315,52 @@ await check("a DSN on the configured host passes", async () => {
   });
 });
 
+await check("creation records the returned slug before a later DSN failure", async () => {
+  const owned: unknown[] = [];
+  route = (method, url) => {
+    if (method === "POST") return json({ slug: "disambiguated-project" }, 201);
+    if (method === "GET" && url === `${GT}/api/0/projects/org/disambiguated-project/keys/`) {
+      assert.equal(owned.length, 1);
+      return json([]);
+    }
+    return undefined;
+  };
+  await assert.rejects(
+    provisionGlitchtipClient("requested-project", "javascript-node", (entry) => owned.push(entry)),
+    /no client keys/,
+  );
+  assert.deepEqual(owned, [
+    { projectSlug: "disambiguated-project", baseUrl: GT, organizationSlug: "org" },
+  ]);
+});
+
+await check("a racing 409 never records a preexisting project as owned", async () => {
+  const owned: unknown[] = [];
+  calls.length = 0;
+  route = (method) => (method === "POST" ? json({}, 409) : undefined);
+  await assert.rejects(
+    provisionGlitchtipClient("existing-project", "javascript-node", (entry) => owned.push(entry)),
+    /No ownership was recorded/,
+  );
+  assert.deepEqual(owned, []);
+  assert.equal(calls.length, 1);
+});
+
+await check(
+  "a successful response without a slug never invents an ownership identity",
+  async () => {
+    const owned: unknown[] = [];
+    calls.length = 0;
+    route = (method) => (method === "POST" ? json({}, 201) : undefined);
+    await assert.rejects(
+      provisionGlitchtipClient("missing-slug", "javascript-node", (entry) => owned.push(entry)),
+      /returned no slug/,
+    );
+    assert.deepEqual(owned, []);
+    assert.equal(calls.length, 1);
+  },
+);
+
 // conv3d (browser-only) was created as javascript-node like every project.
 console.log("\n── 2b. project platform ──");
 await check("javascript-node only where a server reports", () => {

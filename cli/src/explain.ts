@@ -24,7 +24,7 @@ const MODEL: ExplainModel = {
   tagline: "Scaffold, deploy, and provision full-stack projects on your own infra.",
   what_it_does: [
     "Scaffolds opinionated full-stack projects (web + optional desktop/mobile + optional host-free client kit + optional ML) from a starter template.",
-    "Wires them up to your own infra: Hetzner (server), DNS (Cloudflare/INWX), Coolify (deploys), GitHub (repo).",
+    "Wires them up to your own infra: Hetzner (server), Cloudflare DNS (optional INWX registrar setup), Coolify (deploys), GitHub (repo).",
     "Provisions per-project clients/sites in third-party services (GlitchTip errors, Plausible analytics, Listmonk+SES email, Email Routing, Search Console).",
     "Manages per-project dotenvx private keys in your OS keychain.",
   ],
@@ -57,12 +57,12 @@ const MODEL: ExplainModel = {
     {
       name: "dotenvx key",
       description:
-        "Per-project private key that decrypts .env.production at runtime. Generated at scaffold time; lives in the OS keychain under service `hatchkit`; pushed to Coolify via `hatchkit keys push`.",
+        "Per-project private key for encrypted .env.production. Generated at scaffold time and stored in the OS keychain under service `hatchkit`. `keys push` sends it to Coolify and/or GitHub Actions when that deployment needs it; current runtime images receive resolved environment values.",
     },
     {
       name: "Deferred step",
       description:
-        "An optional step the user skipped ('I don't have that credential right now') or that failed with a recoverable provider error. Recorded in .hatchkit.json under `deferred[]` with the exact follow-up command. Never aborts the run, never triggers rollback (nothing was created), and clears itself once the step succeeds. Surfaced by `hatchkit status` and `hatchkit doctor`.",
+        "An optional step the user skipped ('I don't have that credential right now') or that failed with a recoverable provider error. Recorded in .hatchkit.json under `deferred[]` with the exact follow-up command. Does not abort the run or automatically roll back earlier successes. Partial resources can remain; inspect the ledger before retrying or using destroy. Clears itself once the step succeeds. Surfaced by `hatchkit status` and `hatchkit doctor`.",
     },
   ],
   commands: [
@@ -76,13 +76,13 @@ const MODEL: ExplainModel = {
       name: "hatchkit host integrity [--cpu-window <s>] | install|uninstall [--dry-run] | test",
       summary:
         "Read-only scan of the backup host for signs of a compromised container: deleted binaries, process names the image does not explain, new files in /tmp, /var/tmp and /dev/shm, a container above 50 % of a core, and outbound peers outside private ranges and Cloudflare that stay connected (sampled once a minute).",
-      when: "`hatchkit doctor` runs it with a 10 s CPU sample (a CPU finding there only warns). `install` adds a daily timer next to the backup runner that averages CPU over one hour and mails findings through the backup-alert SMTP; it needs `backup install` and `backup alerts` first. Never prints env values, command lines or file contents. Exceptions go in /etc/hatchkit-backups/host-integrity.json; each finding in --json carries the entry that would allow it.",
+      when: "`hatchkit doctor` runs it with a 10 s CPU sample (a CPU finding there only warns). `install` adds quick checks every five minutes and a daily timer that averages CPU over one hour and mails findings through the backup-alert SMTP; it needs `backup install` and `backup alerts` first. Never prints env values, command lines or file contents. Exceptions go in /etc/hatchkit-backups/host-integrity.json; each finding in --json carries the entry that would allow it.",
     },
     {
       name: "hatchkit host updates [--host <name>] | install|uninstall --host <name> [--dry-run] | test --host <name>",
       summary:
         "Read-only check of the shared services on every backup host (Coolify, Traefik, Plausible CE, Listmonk, Uptime Kuma, GlitchTip, ClickHouse): the running version, resolved from labels or the binary when the tag floats, against each GitHub repository's security advisories and latest release. Flags every high or critical advisory that covers the running version, and Coolify's auto-update failing.",
-      when: "`hatchkit doctor` shows it as one row (GitHub read through the local gh login). `install` adds a weekly timer next to the backup runner that mails findings through the backup-alert SMTP; it needs `backup install` and `backup alerts` on that host first. GlitchTip publishes no advisories and is compared with its latest tag only.",
+      when: "`hatchkit doctor` shows it as one row (GitHub read through the local gh login). `install` adds a four-hour advisory timer and a daily final-image Grype scan. It needs `backup install`, `backup alerts`, and a verified Grype binary on that host first. New or changed findings and daily overdue reminders go through backup-alert SMTP. Node/CA runtime checks, host engine advisories, KEV matching and remediation deadlines appear in the saved report. GlitchTip publishes no advisories and is compared with its latest tag only.",
     },
     {
       name: "hatchkit audit cloudflare [--json] [--hours <n>] | accept|forget <kind>:<value> | deploy --from <addr> [--dry-run] | publish | set-token | set-ses-key | test-mail",
@@ -155,13 +155,14 @@ const MODEL: ExplainModel = {
     },
     {
       name: "hatchkit keys push <project>",
-      summary: "Upsert the private key onto the project's Coolify app via API.",
-      when: "After scaffold + initial Coolify deploy, so the app can decrypt env at runtime.",
+      summary:
+        "Push the private key to Coolify (default), GitHub Actions (--target gh), or both. --dry-run prints the targets without reading credentials or writing.",
+      when: "When the selected deployment target needs the dotenvx key, or after key rotation.",
     },
     {
       name: "hatchkit config add <provider>",
       summary:
-        "Configure one provider (coolify / ghcr / hetzner / cloudflare / dns / cloudflare-workers / s3 / gpu / glitchtip / plausible / listmonk / ses / stripe).",
+        "Configure one provider (coolify / coolify-github-app / ghcr / hetzner / cloudflare / dns / cloudflare-workers / s3 / modal / runpod / hf / replicate / glitchtip / plausible / listmonk / ses / search-console / stripe).",
       when: "Rotating a token, or adding an optional provider you skipped during setup.",
     },
     {
@@ -175,7 +176,7 @@ const MODEL: ExplainModel = {
     "2. `hatchkit status` — confirm everything's green.",
     "3. `hatchkit create` — scaffold a new project; pick features, deploy target, ML services. Pass any answer as a flag to skip its prompt, or `--yes` to run it unattended.",
     "4. `hatchkit add <project>` — provision per-project clients/sites (GlitchTip, Plausible, Listmonk + SES, Email Routing, Search Console).",
-    "5. `hatchkit keys push <project>` — ship the dotenvx key to Coolify so prod can decrypt.",
+    "5. `hatchkit keys push <project>` — send the dotenvx key to a deployment target that needs it.",
     "6. `hatchkit doctor` — sanity-check before/after anything risky.",
     "7. `hatchkit update` (from project dir) — extend an existing project with new features.",
   ],
@@ -193,8 +194,8 @@ const MODEL: ExplainModel = {
       role: "VMs (and optional S3 object storage) for new deploy targets.",
     },
     {
-      name: "DNS (Cloudflare / INWX)",
-      role: "Automates domain records during Terraform.",
+      name: "DNS (Cloudflare; INWX registrar support)",
+      role: "Cloudflare manages DNS records; INWX can manage registrar nameservers.",
     },
     {
       name: "S3 (Hetzner / AWS / R2)",

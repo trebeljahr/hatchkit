@@ -25,7 +25,7 @@ import { TOOL_DEFINITIONS, type ToolContext } from "./tools.js";
  * Five things, and each one is a mistake a model makes without it: what the
  * records are and how they relate; which lookup to run before a write; what
  * ambiguous values mean; what the server will not do; and that the tool list
- * it can see is already narrowed to what this credential may call.
+ * scope discovery does not bypass the API's authorization checks.
  */
 export const SERVER_INSTRUCTIONS = `${PRODUCT_NAME}'s public REST API, over a scoped API token.
 
@@ -35,19 +35,20 @@ it belongs to one member of one tenant. A WEBHOOK SUBSCRIPTION is an HTTPS
 endpoint this tenant wants told when an item changes, plus the log of attempts
 to reach it.
 
-Call list_items or get_item before update_item or delete_item. Every write
-addresses a record by the id a read returned, and an id from another tenant
-answers "not found" rather than admitting that it exists — so a guessed id
-reads exactly like a deleted one.
+When read tools are available, call list_items or get_item before update_item
+or delete_item. With a write-only token, use an exact id the caller already
+obtained; do not guess one or request broader scopes merely to enrich a result.
+An id from another tenant answers "not found" rather than admitting it exists.
 
 Timestamps are ISO-8601 in UTC and always end in Z. "limit" counts records, not
 bytes or pages; leave it out and the server picks, and it caps whatever you
 send. "cursor" is the nextCursor value from the previous page and nothing else.
 
 This server does not sign anyone in, mint or revoke credentials, manage tenant
-membership, or reach anything the public API has no route for. Its tool list is
-already filtered to what this token may call, so a tool you cannot see is one
-this credential was not granted rather than one that does not exist.`;
+membership, or reach anything the public API has no route for. Discovery checks
+token scopes, not row visibility or effective member permissions. Every call is
+authorized by the API. Creating or deleting webhook subscriptions also requires
+the effective webhooks:manage permission, even with the webhooks:write scope.`;
 
 /** What the capability probe learned. */
 export type ProbeOutcome =
@@ -61,9 +62,8 @@ type IdentityAnswer = {
 /**
  * Ask the API what this credential may do.
  *
- * Known capabilities mean a tool the credential cannot call is never
- * registered: a model that can see a tool will try it, and a refusal after the
- * fact costs the user a turn and a confusing message.
+ * Known scopes exclude tools outside the credential's route scopes. Effective
+ * member permissions and record visibility still apply to every API call.
  *
  * A FAILED probe is not fatal, and that is the important half. Exiting here
  * would leave the host showing "server exited" with no reason — the one state
@@ -135,7 +135,11 @@ export function createMcpServer(options: CreateServerOptions): {
   const { client, probe } = options;
   const server = new McpServer(
     { name: options.name ?? SERVER_NAME, version: options.version ?? SERVER_VERSION },
-    { instructions: SERVER_INSTRUCTIONS },
+    {
+      instructions: `${SERVER_INSTRUCTIONS}\n\n${probe.known
+        ? "The startup probe succeeded. The tool list is filtered by this token's scopes; visible tools can still fail permission or visibility checks. Restart this process after replacing the token."
+        : "The startup probe failed. Every tool is offered because the token's scopes are unknown; a visible tool does not prove access. Call get_token_info to diagnose the credential or connection."}`,
+    },
   );
 
   const ctx: ToolContext = { client, scopes: probe.known ? probe.scopes : null };

@@ -315,7 +315,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     inputShape: {
       url: z.url().max(2000).describe("HTTPS endpoint this tenant's events are posted to."),
       events: z
-        .array(z.string().min(1))
+        .array(z.enum(WEBHOOK_EVENTS))
         .min(1)
         .describe(`One or more of: ${WEBHOOK_EVENTS.join(", ")}.`),
     },

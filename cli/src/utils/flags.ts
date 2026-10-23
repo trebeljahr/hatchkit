@@ -28,7 +28,6 @@ import type {
   Feature,
   GitHubRepoVisibility,
   GpuPlatform,
-  MlService,
   ProjectConfig,
   S3Provider,
   Surface,
@@ -87,17 +86,8 @@ export const KNOWN_FEATURES: readonly Feature[] = [
   "raycast",
   "mcp",
 ];
-export const KNOWN_ML_SERVICES: readonly MlService[] = [
-  "3d-sam-objects",
-  "3d-sam-body",
-  "3d-hunyuan",
-  "3d-trellis",
-  "3d-extraction",
-  "subtitles",
-  "image-recognition",
-  "background-removal",
-  "custom-hf",
-];
+export { KNOWN_ML_SERVICES } from "../features/additions.js";
+import { KNOWN_ML_SERVICES } from "../features/additions.js";
 export const KNOWN_SURFACES: readonly Surface[] = ["fullstack", "split", "backend", "static"];
 export const KNOWN_TOPOLOGIES: readonly Topology[] = ["single-origin", "split"];
 export const KNOWN_DEPLOYMENT_MODES: readonly DeploymentMode[] = [

@@ -540,7 +540,7 @@ async function checkGpu(platform: string): Promise<CheckResult> {
       name,
       status: "fail",
       detail: "API key missing from keychain",
-      hint: [`Re-run: \`hatchkit config add gpu\` and pick ${platform}.`],
+      hint: [`Re-run: \`hatchkit config add ${platform}\`.`],
     };
   }
   const gpuHint =
@@ -551,7 +551,7 @@ async function checkGpu(platform: string): Promise<CheckResult> {
         return [
           `${label} API key is invalid or expired.`,
           `Create a new one: ${createUrl}`,
-          "Then re-run: `hatchkit config add gpu`",
+          `Then re-run: \`hatchkit config add ${platform}\``,
         ];
       }
       return undefined;

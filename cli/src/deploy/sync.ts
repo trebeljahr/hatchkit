@@ -88,7 +88,7 @@
  * so MONGODB_URI reaches the server through Coolify env or not at all.
  *
  * Still out of scope (other commands own these):
- *   · ML services / GPU     → `hatchkit add gpu`
+ *   · ML services / GPU     → `hatchkit config add modal`
  *   · S3 buckets / tokens   → `hatchkit provision s3`
  *
  * Idempotent by design: reads current state first, only PATCHes when the

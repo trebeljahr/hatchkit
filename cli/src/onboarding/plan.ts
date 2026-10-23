@@ -228,7 +228,7 @@ export function renderOnboardingDeploymentModeSummary(
 export function renderOnboardingSurfaceSummary(surface: Surface): string {
   switch (surface) {
     case "fullstack":
-      return "full-stack (single package, server runtime)";
+      return "full-stack (server runtime, shared observability)";
     case "split":
       return "split server + client packages (server runtime)";
     case "backend":

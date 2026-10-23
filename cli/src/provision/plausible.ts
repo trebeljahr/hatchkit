@@ -7,7 +7,8 @@
  * in the OS keychain and is used only by hatchkit.
  */
 
-import { ensurePlausible } from "../config.js";
+import { ensurePlausible, getPlausibleConfig } from "../config.js";
+import { RunLedger, loadAllLedgers } from "../utils/run-ledger.js";
 import { SECRET_KEYS, deleteSecret, getSecret, setSecret } from "../utils/secrets.js";
 
 export interface PlausibleSite {
@@ -265,7 +266,17 @@ export async function renamePlausibleSite(
   newDomain: string,
 ): Promise<PlausibleRenameResult> {
   const cfg = await ensurePlausible();
-  return renameSite(cfg.url.replace(/\/$/, ""), cfg.apiKey, oldDomain, newDomain);
+  const result = await renameSite(cfg.url.replace(/\/$/, ""), cfg.apiKey, oldDomain, newDomain);
+  // A domain is the provider's deletion identity. Follow the rename in
+  // every matching ownership row, including when no --project was given.
+  for (const ledger of loadAllLedgers()) {
+    RunLedger.load(ledger.name)?.renamePlausibleDomain(
+      result.baseUrl,
+      result.oldDomain,
+      result.newDomain,
+    );
+  }
+  return result;
 }
 
 /** Core of {@link renamePlausibleSite}, split out for testing with an
@@ -349,22 +360,56 @@ export async function updateCachedPlausibleDomain(
   return true;
 }
 
-export async function deletePlausibleSite(projectName: string): Promise<DeleteResult> {
-  const cfg = await ensurePlausible();
-  const domain = (await getSecret(siteDomainKey(projectName))) ?? projectName;
+export async function deletePlausibleSite(
+  projectName: string,
+  identity: { domain: string; baseUrl: string },
+): Promise<DeleteResult> {
+  const cfg = await getPlausibleConfig();
+  if (!cfg?.apiKey)
+    throw new Error(
+      "Plausible credentials are unavailable. Restore the recorded provider configuration before retrying removal.",
+    );
+  const baseUrl = cfg.url.trim().replace(/\/+$/, "");
+  if (baseUrl !== identity.baseUrl.trim().replace(/\/+$/, "")) {
+    throw new Error(
+      "Plausible provider differs from the recorded site. Resource preserved; restore the recorded configuration or review it manually.",
+    );
+  }
+  const domain = identity.domain;
   const res = await fetch(siteUrl(cfg.url, domain), {
     method: "DELETE",
     headers: authHeaders(cfg.apiKey),
   });
 
-  await deleteSecret(siteDomainKey(projectName));
-
-  if (res.status === 404 || isSitesApiUnavailableStatus(res.status)) return "not-found";
+  if (isSitesApiUnavailableStatus(res.status)) {
+    throw new PlausibleSitesApiUnavailableError(
+      baseUrl,
+      res.status,
+      await responseText(res),
+      `Review deletion of '${domain}' in the Plausible dashboard. Ownership and the cached domain were preserved.`,
+    );
+  }
+  if (res.status === 404) {
+    // A CE instance without the Sites API also returns 404. Only retire
+    // ownership when the Stats API independently confirms absence.
+    if ((await statsApiSeesSite(baseUrl, cfg.apiKey, domain)) !== false) {
+      throw new Error(
+        `Plausible could not confirm that '${domain}' is gone. Review it in the dashboard; ownership and the cached domain were preserved.`,
+      );
+    }
+    if ((await getSecret(siteDomainKey(projectName))) === domain) {
+      await deleteSecret(siteDomainKey(projectName));
+    }
+    return "not-found";
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(
       `Plausible delete site failed: ${res.status} ${res.statusText}${text ? ` — ${text}` : ""}`,
     );
+  }
+  if ((await getSecret(siteDomainKey(projectName))) === domain) {
+    await deleteSecret(siteDomainKey(projectName));
   }
   return "deleted";
 }

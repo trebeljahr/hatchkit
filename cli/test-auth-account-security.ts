@@ -36,11 +36,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import {
-  AUTH_SECURITY_DEFAULT_OPTIONS,
-  AUTH_SECURITY_OPTIONS,
-  type AuthSecurityOption,
-} from "./src/features/auth-account-security/types.js";
+import { authAccountSecurityFeature } from "./src/features/auth-account-security/definition.js";
+import { renderAuthSecurityDocs } from "./src/features/auth-account-security/docs.js";
+import { applyAuthAccountSecurity } from "./src/features/auth-account-security/index.js";
+import { AUTH_SECURITY_SPECS, specFor } from "./src/features/auth-account-security/options.js";
+import { planAuthAccountSecurity } from "./src/features/auth-account-security/plan.js";
 import {
   ORDERED_SERVER_PLUGINS,
   assertPluginOrder,
@@ -49,12 +49,12 @@ import {
   findPluginOrderViolation,
   serverPluginsFor,
 } from "./src/features/auth-account-security/plugin-order.js";
-import { AUTH_SECURITY_SPECS, specFor } from "./src/features/auth-account-security/options.js";
-import { planAuthAccountSecurity } from "./src/features/auth-account-security/plan.js";
-import { renderAuthSecurityDocs } from "./src/features/auth-account-security/docs.js";
 import { renderAuthSecurityTemplate } from "./src/features/auth-account-security/render.js";
-import { applyAuthAccountSecurity } from "./src/features/auth-account-security/index.js";
-import { authAccountSecurityFeature } from "./src/features/auth-account-security/definition.js";
+import {
+  AUTH_SECURITY_DEFAULT_OPTIONS,
+  AUTH_SECURITY_OPTIONS,
+  type AuthSecurityOption,
+} from "./src/features/auth-account-security/types.js";
 import { FeatureLedger, getFeature } from "./src/features/contract.js";
 
 const STARTER = join(import.meta.dirname, "..", "starter");
@@ -283,7 +283,8 @@ await expect("options that need mail warn when there is no transport", () => {
     hasEmailTransport: false,
   });
   assert.equal(plan.warnings.length > 0, true);
-  assert.match(plan.warnings.join(" "), /never at build time/);
+  assert.match(plan.warnings.join(" "), /Configure and test delivery/);
+  assert.match(plan.warnings.join(" "), /AUTH_LOG_LINKS=true/);
 });
 
 await expect("a native project is warned about the methods it cannot finish", () => {
@@ -382,21 +383,27 @@ await expect("a file the user has edited is never overwritten", async () => {
   assert.equal(readFileSync(challenge, "utf-8"), "// my own version\n");
 });
 
-await expect("email verification becomes conditional, and ships the backfill", async () => {
-  const dir = makeProject();
-  await apply(dir, ["email-verification"]);
-  const auth = readFileSync(join(dir, "packages/server/src/auth/auth.ts"), "utf-8");
-  assert.match(auth, /requireEmailVerification: requireEmailVerification\(isEmailConfigured\(\)\)/);
-  // sendVerificationEmail must live in the emailVerification block —
-  // better-auth never calls it from under emailAndPassword.
-  assert.match(auth, /emailVerification: emailVerificationOptions\(/);
-  assert.ok(
-    existsSync(join(dir, "packages/server/src/scripts/backfill-email-verified.ts")),
-    "the backfill script must ship with the option that creates the obligation",
-  );
-  const pkg = JSON.parse(readFileSync(join(dir, "packages/server/package.json"), "utf-8"));
-  assert.ok(pkg.scripts["backfill:email-verified"]);
-});
+await expect(
+  "email verification uses the production policy and retains the legacy migration tool",
+  async () => {
+    const dir = makeProject();
+    await apply(dir, ["email-verification"]);
+    const auth = readFileSync(join(dir, "packages/server/src/auth/auth.ts"), "utf-8");
+    assert.match(
+      auth,
+      /requireEmailVerification: requireEmailVerification\(isEmailConfigured\(\)\)/,
+    );
+    // sendVerificationEmail must live in the emailVerification block —
+    // better-auth never calls it from under emailAndPassword.
+    assert.match(auth, /emailVerification: emailVerificationOptions\(/);
+    assert.ok(
+      existsSync(join(dir, "packages/server/src/scripts/backfill-email-verified.ts")),
+      "the legacy migration tool remains available without becoming a rollout requirement",
+    );
+    const pkg = JSON.parse(readFileSync(join(dir, "packages/server/package.json"), "utf-8"));
+    assert.ok(pkg.scripts["backfill:email-verified"]);
+  },
+);
 
 // ── 4. The token-shell answers ────────────────────────────────────────
 console.log("\ntoken-shell verdicts:");
@@ -455,8 +462,30 @@ await expect("the docs are written into the project", async () => {
   const dir = makeProject();
   const audit = await apply(dir, ALL_OPTIONS);
   assert.ok(existsSync(join(dir, "docs/account-security.md")));
-  assert.ok(audit.manualResidue.some((step) => /backfill/.test(step)));
+  assert.ok(audit.manualResidue.some((step) => /Do not run the legacy backfill/.test(step)));
+  const docs = readFileSync(join(dir, "docs/account-security.md"), "utf-8");
+  assert.match(docs, /Production requires verified email by default/);
+  assert.match(docs, /AUTH_REQUIRE_EMAIL_VERIFICATION=false/);
+  assert.match(docs, /Do not blanket-mark/);
+  assert.doesNotMatch(docs, /Run the backfill once|only where a transport exists/);
 });
+
+await expect(
+  "no-mail guidance preserves production verification and explicit logging opt-in",
+  () => {
+    const input = {
+      options: ["email-verification"] as AuthSecurityOption[],
+      hasNativeClient: false,
+      hasEmailTransport: false,
+    };
+    const plan = planAuthAccountSecurity(input);
+    const docs = renderAuthSecurityDocs({ ...input, projectName: "Test App", plan });
+    assert.match(plan.warnings.join("\n"), /Production verification remains required/);
+    assert.match(docs, /AUTH_LOG_LINKS=true/);
+    assert.match(docs, /Missing mail does not disable production verification/);
+    assert.doesNotMatch(docs, /stay switched off|links are written to the server log/);
+  },
+);
 
 // ── 5. The feature-authoring contract ─────────────────────────────────
 console.log("\nfeature contract:");

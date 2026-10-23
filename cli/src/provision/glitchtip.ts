@@ -18,13 +18,19 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GlitchtipConfig } from "../config.js";
-import { ensureGlitchtip } from "../config.js";
+import { ensureGlitchtip, getGlitchtipConfig } from "../config.js";
 import { ERROR_REPORTING_DSN_VAR } from "../features/error-reporting/render.js";
 import type { RemoteProject } from "./project-lookup.js";
 
 export interface GlitchtipClient {
   projectSlug: string;
   dsn: string;
+}
+
+export interface GlitchtipCreatedProject {
+  projectSlug: string;
+  baseUrl: string;
+  organizationSlug: string;
 }
 
 /** The server env var hatchkit's starter reads its DSN from
@@ -89,7 +95,7 @@ export function assertDsnHost(cfg: GlitchtipConfig, dsn: string, next: string): 
 }
 
 function adoptNext(projectSlug: string): string {
-  return `re-run with --adopt (project '${projectSlug}' exists). Nothing was written.`;
+  return `re-run with --adopt (project '${projectSlug}' exists). No app environment was written.`;
 }
 
 function requireOrg(cfg: GlitchtipConfig): { base: string; org: string } {
@@ -220,6 +226,7 @@ export function packageUsesNext(dirs: ReadonlyArray<string | undefined>): boolea
 export async function provisionGlitchtipClient(
   clientName: string,
   platform: GlitchtipPlatform = "javascript-node",
+  onCreated?: (project: GlitchtipCreatedProject) => void,
 ): Promise<GlitchtipClient> {
   const cfg = await ensureGlitchtip();
   const { base, org } = requireOrg(cfg);
@@ -243,7 +250,12 @@ export async function provisionGlitchtipClient(
     }),
   });
 
-  if (!createRes.ok && createRes.status !== 409) {
+  if (createRes.status === 409) {
+    throw new Error(
+      `GlitchTip project '${clientName}' already exists. No ownership was recorded. Re-run with --adopt to use it.`,
+    );
+  }
+  if (!createRes.ok) {
     throw new Error(
       `GlitchTip create project failed: HTTP ${createRes.status} ${await createRes.text()}`,
     );
@@ -252,11 +264,14 @@ export async function provisionGlitchtipClient(
   // GlitchTip disambiguates a taken slug rather than reusing it, so the
   // created project is not necessarily at `clientName` — read the slug
   // back off the create response and address the keys by that.
-  let slug = clientName;
-  if (createRes.ok) {
-    const created = (await createRes.json().catch(() => ({}))) as { slug?: string };
-    if (typeof created.slug === "string" && created.slug) slug = created.slug;
+  const created = (await createRes.json().catch(() => ({}))) as { slug?: string };
+  if (typeof created.slug !== "string" || !created.slug) {
+    throw new Error(
+      "GlitchTip created a project but returned no slug. Check the GlitchTip dashboard before retrying; its identity could not be recorded.",
+    );
   }
+  const slug = created.slug;
+  onCreated?.({ projectSlug: slug, baseUrl: base, organizationSlug: org });
 
   const dsn = await getGlitchtipDsn(cfg, slug);
   if (!dsn) throw new Error(`GlitchTip project '${slug}' has no client keys`);
@@ -267,14 +282,32 @@ export async function provisionGlitchtipClient(
 export type DeleteResult = "deleted" | "not-found";
 
 /** Delete a GlitchTip project. 404 → "not-found" (already gone). */
-export async function deleteGlitchtipClient(clientName: string): Promise<DeleteResult> {
-  const cfg = await ensureGlitchtip();
+export async function deleteGlitchtipClient(
+  clientName: string,
+  identity: { baseUrl: string; organizationSlug: string },
+): Promise<DeleteResult> {
+  const cfg = await getGlitchtipConfig();
+  if (!cfg?.token)
+    throw new Error(
+      "GlitchTip credentials are unavailable. Restore the recorded provider configuration before retrying removal.",
+    );
   const { base, org } = requireOrg(cfg);
+  if (
+    base.replace(/\/+$/, "") !== identity.baseUrl.trim().replace(/\/+$/, "") ||
+    org !== identity.organizationSlug
+  ) {
+    throw new Error(
+      "GlitchTip provider or organization differs from the recorded project. Resource preserved; restore the recorded configuration or review it manually.",
+    );
+  }
 
-  const res = await fetch(`${base}/api/0/projects/${org}/${clientName}/`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${cfg.token}` },
-  });
+  const res = await fetch(
+    `${base}/api/0/projects/${encodeURIComponent(org)}/${encodeURIComponent(clientName)}/`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${cfg.token}` },
+    },
+  );
 
   if (res.status === 404) return "not-found";
   if (!res.ok) {

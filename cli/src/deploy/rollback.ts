@@ -88,7 +88,7 @@ interface RollbackOptions {
  *  Surfaces as a yellow "skipped" with the hint lines, and the step stays
  *  in the ledger so a follow-up `hatchkit destroy` can pick it up after
  *  the user clears the blocker. */
-class RollbackSkip extends Error {
+export class RollbackSkip extends Error {
   hints: string[];
   constructor(message: string, hints: string[]) {
     super(message);
@@ -217,7 +217,7 @@ export function printRecipe(ledger: RunLedger): void {
   // Reverse order: undo the latest step first.
   const lines: string[] = [];
   for (const step of [...ledger.steps].reverse()) {
-    const cmd = recipeFor(step);
+    const cmd = recipeFor(step, ledger.name);
     if (cmd) lines.push(cmd);
   }
   for (const line of lines) {
@@ -226,7 +226,7 @@ export function printRecipe(ledger: RunLedger): void {
   console.log();
 }
 
-function recipeFor(step: LedgerStep): string | null {
+function recipeFor(step: LedgerStep, ledgerName: string): string | null {
   switch (step.kind) {
     case "mlService":
       return chalk.dim(`# manual: delete ${step.name} from your ${step.platform} dashboard`);
@@ -255,14 +255,22 @@ function recipeFor(step: LedgerStep): string | null {
     case "tfvars":
       return `rm ${shellEscape(step.path)}`;
     case "glitchtip":
-      return `hatchkit remove ${shellEscape(step.project)} glitchtip --yes`;
+      return provisionedStepIdentityIssue(step)
+        ? chalk.dim(
+            `# manual: review legacy GlitchTip project '${step.project}' in its original provider; its exact ownership identity is missing`,
+          )
+        : `hatchkit remove ${shellEscape(ledgerName)} glitchtip --yes`;
     case "openpanel":
       // Legacy ledger entry: hatchkit no longer talks to OpenPanel.
       return chalk.dim(
         `# manual (legacy): delete OpenPanel project '${step.project}' in the OpenPanel dashboard if it still exists`,
       );
     case "plausible":
-      return `hatchkit remove ${shellEscape(step.project)} plausible --yes`;
+      return provisionedStepIdentityIssue(step)
+        ? chalk.dim(
+            `# manual: review the original Plausible site for '${step.project}'; its exact ownership identity is missing`,
+          )
+        : `hatchkit remove ${shellEscape(ledgerName)} plausible --yes`;
     case "sesDomain":
       return chalk.dim(
         `# manual: delete SES identity ${step.domain} via 'aws sesv2 delete-email-identity --email-identity ${step.domain}'`,
@@ -581,7 +589,7 @@ async function countOtherCoolifyApps(
   }
 }
 
-function describeStep(step: LedgerStep): string {
+export function describeStep(step: LedgerStep): string {
   switch (step.kind) {
     case "scaffold":
       return `delete local repo ${chalk.cyan(step.path)}`;
@@ -592,7 +600,7 @@ function describeStep(step: LedgerStep): string {
     case "openpanel":
       return `(legacy) OpenPanel project ${chalk.cyan(step.project)} — manual cleanup`;
     case "plausible":
-      return `delete Plausible site for ${chalk.cyan(step.project)}`;
+      return `delete Plausible site ${chalk.cyan(step.domain ?? `(legacy project ${step.project})`)}`;
     case "sesDomain":
       return `delete SES identity ${chalk.cyan(step.domain)}`;
     case "sesDns": {
@@ -681,6 +689,72 @@ function describeStep(step: LedgerStep): string {
   }
 }
 
+export type ProvisionedRemovalStep = Extract<
+  LedgerStep,
+  {
+    kind:
+      | "glitchtip"
+      | "plausible"
+      | "listmonkList"
+      | "listmonkRole"
+      | "listmonkApiUser"
+      | "r2Token"
+      | "cloudflareEmailRoutingRule";
+  }
+>;
+
+/** Pure preflight: dry-run must not need provider credentials or network access. */
+export function provisionedStepIdentityIssue(step: ProvisionedRemovalStep): string | undefined {
+  const present = (value: unknown): value is string =>
+    typeof value === "string" && value.trim() !== "";
+  const id = (value: unknown) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+  let complete = false;
+  switch (step.kind) {
+    case "glitchtip":
+      complete = present(step.project) && present(step.baseUrl) && present(step.organizationSlug);
+      break;
+    case "plausible":
+      complete = present(step.project) && present(step.baseUrl) && present(step.domain);
+      break;
+    case "listmonkList":
+      complete = present(step.listmonkUrl) && id(step.listId);
+      break;
+    case "listmonkRole":
+      complete =
+        present(step.listmonkUrl) &&
+        id(step.roleId) &&
+        present(step.name) &&
+        (step.roleType === "user" || step.roleType === "list");
+      break;
+    case "listmonkApiUser":
+      complete = present(step.listmonkUrl) && id(step.userId) && present(step.username);
+      break;
+    case "r2Token":
+      complete =
+        present(step.accountId) &&
+        present(step.tokenId) &&
+        (step.audience === "account" || step.audience === "user");
+      break;
+    case "cloudflareEmailRoutingRule":
+      complete = present(step.zoneId) && present(step.ruleId);
+      break;
+  }
+  return complete
+    ? undefined
+    : "The ledger lacks an exact provider/resource identity. Review the original resource manually; current names and caches are not proof of ownership.";
+}
+
+/** Undo one allowlisted service resource. The caller retains all other ledger entries. */
+export async function undoProvisionedStep(
+  step: ProvisionedRemovalStep,
+  ledgerName: string,
+): Promise<"done" | "skipped" | "not-found"> {
+  const issue = provisionedStepIdentityIssue(step);
+  if (issue) throw new RollbackSkip(issue, []);
+  return undoStep(step, ledgerName);
+}
+
 async function undoStep(
   step: LedgerStep,
   ledgerName: string,
@@ -701,8 +775,15 @@ async function undoStep(
       return "done";
     }
     case "glitchtip": {
+      const issue = provisionedStepIdentityIssue(step);
+      if (issue || !step.baseUrl || !step.organizationSlug) {
+        throw new RollbackSkip(issue ?? "Missing GlitchTip identity", []);
+      }
       const { deleteGlitchtipClient } = await import("../provision/glitchtip.js");
-      const result = await deleteGlitchtipClient(step.project);
+      const result = await deleteGlitchtipClient(step.project, {
+        baseUrl: step.baseUrl,
+        organizationSlug: step.organizationSlug,
+      });
       return result === "not-found" ? "not-found" : "done";
     }
     case "tfvars":
@@ -879,8 +960,15 @@ async function undoStep(
         [`Open the OpenPanel dashboard and delete project '${step.project}' if it's still listed.`],
       );
     case "plausible": {
+      const issue = provisionedStepIdentityIssue(step);
+      if (issue || !step.baseUrl || !step.domain) {
+        throw new RollbackSkip(issue ?? "Missing Plausible identity", []);
+      }
       const { deletePlausibleSite } = await import("../provision/plausible.js");
-      const result = await deletePlausibleSite(step.project);
+      const result = await deletePlausibleSite(step.project, {
+        baseUrl: step.baseUrl,
+        domain: step.domain,
+      });
       return result === "not-found" ? "not-found" : "done";
     }
     case "sesDomain": {
@@ -922,12 +1010,30 @@ async function undoStep(
       return outcome === "cleared" ? "done" : "not-found";
     }
     case "listmonkList": {
-      const { deleteListmonkListById } = await import("../provision/listmonk.js");
-      const result = await deleteListmonkListById(step.listId);
+      const issue = provisionedStepIdentityIssue(step);
+      if (issue) throw new RollbackSkip(issue, []);
+      const { getListmonkConfig } = await import("../config.js");
+      const { deleteListmonkListById, normalizeListmonkUrl } = await import(
+        "../provision/listmonk.js"
+      );
+      const auth = await getListmonkConfig();
+      if (!auth?.apiToken)
+        throw new Error(
+          "Listmonk credentials are unavailable. Restore the recorded provider configuration before retrying removal.",
+        );
+      if (normalizeListmonkUrl(auth.url) !== normalizeListmonkUrl(step.listmonkUrl)) {
+        throw new RollbackSkip(
+          "Configured Listmonk URL differs from the recorded list's provider. Resource preserved.",
+          [],
+        );
+      }
+      const result = await deleteListmonkListById(step.listId, auth);
       return result === "not-found" ? "not-found" : "done";
     }
     case "listmonkRole":
     case "listmonkApiUser": {
+      const issue = provisionedStepIdentityIssue(step);
+      if (issue) throw new RollbackSkip(issue, []);
       // Roles and users need users:* / roles:*, which only the admin
       // credential has; hatchkit's own API user lacks them.
       const { getListmonkAdminAuth } = await import("../config.js");
@@ -936,6 +1042,13 @@ async function undoStep(
         const { listmonkAdminSetupSteps } = await import("../provision/listmonk-project-user.js");
         throw new Error(
           `Deleting a Listmonk ${step.kind === "listmonkRole" ? "role" : "API user"} needs the hatchkit-admin credential:\n${listmonkAdminSetupSteps().join("\n")}`,
+        );
+      }
+      const { normalizeListmonkUrl } = await import("../provision/listmonk.js");
+      if (normalizeListmonkUrl(admin.url) !== normalizeListmonkUrl(step.listmonkUrl)) {
+        throw new RollbackSkip(
+          "Configured Listmonk URL differs from the recorded user's or role's provider. Resource preserved.",
+          [],
         );
       }
       const { deleteListmonkApiUserIfNamed, deleteListmonkRoleIfUnheld } = await import(

@@ -158,7 +158,7 @@ async function mail(
 }
 
 const RUNBOOK =
-  "Runbook: revoke hatchkit-cloudflare first, then every unknown token; review the audit log for DNS, Worker, Email Routing and zone-setting changes; rotate the per-Worker CI tokens. Details: ai-work-notes projects/hatchkit/cloudflare-daily-audit-design.md.";
+  "Runbook: revoke hatchkit-cloudflare first, then every unknown token; review the audit log for DNS, Worker, Email Routing and zone-setting changes; rotate the per-Worker CI tokens. Details: https://hatchkit.trebeljahr.com/docs/operations#cloudflare-audit-token.";
 
 export async function runScheduledAudit(
   env: AuditWorkerEnv,

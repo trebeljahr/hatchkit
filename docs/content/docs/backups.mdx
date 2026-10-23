@@ -1,0 +1,105 @@
+---
+title: Backups and recovery
+description: Configure backup hosts, register data sources, verify captures, and restore into isolated environments.
+---
+
+Hatchkit backs up registered server databases, persistent files, and configuration to encrypted restic repositories in R2. Asset buckets are separate. A manifest policy records intent; `backup status` reports actual capture and restore results.
+
+## Inspect coverage
+
+```bash
+hatchkit backup plan --json
+hatchkit backup hosts --json
+hatchkit backup status --json
+hatchkit backup sources --json
+```
+
+`plan` reads the current manifest. `hosts` lists configured backup hosts. `status` and `sources` read host policies over Tailscale. They do not fall back to public SSH. A missing source remains a failure until its policy is explicitly repaired.
+
+## Configure a host
+
+The host needs Python 3, Docker, GNU tar, and restic 0.16 or newer. Use a private R2 Standard bucket with object credentials restricted to that bucket. EU buckets require the `.eu.r2.cloudflarestorage.com` endpoint.
+
+Prepare a private provider JSON file:
+
+```json
+{
+  "repositoryBase": "s3:https://ACCOUNT.eu.r2.cloudflarestorage.com/BUCKET",
+  "host": {
+    "transport": "tailscale",
+    "target": "root@backup-host",
+    "serverUuid": "COOLIFY_SERVER_UUID"
+  },
+  "autoRegister": true,
+  "credentialsFile": "/private/path/credentials.json",
+  "passwordFile": "/private/path/restic-password"
+}
+```
+
+Credential input files must have mode `0600`. Configuration stores the bucket keys and recovery password in the OS keychain, separately from app credentials. Keep an independent secure recovery copy of the password.
+
+```bash
+hatchkit backup configure --config provider.json
+hatchkit backup install --dry-run
+hatchkit backup install
+```
+
+Install writes the maintained runner and private credentials over Tailscale. It preserves registered sources and refuses a changed repository or recovery password. It writes the schedule but does not enable it.
+
+For several hosts, use `backup add-host --name NAME --target root@HOST --server-uuid UUID --schedule HH:MM`. Preview with `--dry-run`. Each project belongs to one host policy and one restic repository. Two hosts must not independently write and prune the same project repository. Pass `--host NAME` to host-specific commands when several hosts exist.
+
+## Register and verify data
+
+With `autoRegister: true`, create can register standard managed and generated Compose database sources on a configured backup host. Existing or adopted projects need explicit registration. External databases, custom file mounts, and asset buckets are not automatically covered.
+
+`backup register --config project-sources.json --dry-run` previews a policy containing a Coolify `serverUuid` and a `project` object. The [maintained bundle README](https://github.com/trebeljahr/hatchkit/blob/main/cli/src/templates/backups/README.md) documents source selectors and complete policy examples.
+
+Registration does not prove a successful backup. Run a capture, inspect its result, then enable scheduling:
+
+```bash
+hatchkit backup run --host backup-host
+hatchkit backup status --host backup-host --json
+hatchkit backup timer --enable --host backup-host --dry-run
+hatchkit backup timer --enable --host backup-host
+```
+
+Enabling the timer requires a fresh verified capture for every registered project. The default daily start is 16:00 UTC, with up to 15 minutes of delay. Host schedules can differ.
+
+New policies retain **30 verified generations**. `keepLast` accepts 3–365. Existing policies keep their configured count until explicitly changed. The runner captures native database dumps or SQLite-safe file copies, encrypts them, downloads the new archive, and verifies its checksum before pruning. A temporary extra snapshot can exist before verification completes. Failed verification preserves previous recovery points.
+
+## Alerts and source changes
+
+```bash
+hatchkit backup alerts --host backup-host --to owner@example.com --from alerts@example.com --dry-run
+hatchkit backup alert-test --host backup-host
+```
+
+Apply the reviewed alerts command without `--dry-run` before sending the test. The sender must be verified in SES. Hourly checks report missing, failed, or stale captures after 36 hours and inactive timers. Unchanged issues repeat at most daily; recovery sends one confirmation.
+
+When a database moves, preview `backup update-source --project NAME --source SOURCE --container NEW --dry-run`. Only a running container with the same engine is accepted. Use `--remove` for a deliberately retired source. `backup deregister --project NAME --dry-run` removes a project from scheduling while retaining snapshots.
+
+`register --replace` replaces a policy on the same host. Registering a project on another host performs a guarded policy move. Inspect the plan and current sources before applying either operation.
+
+## Restore without replacing production
+
+```bash
+hatchkit backup snapshots --project NAME --json
+hatchkit backup restore --project NAME --snapshot SNAPSHOT_ID --dry-run
+hatchkit backup restore --project NAME --snapshot SNAPSHOT_ID
+hatchkit backup restore-check --project NAME --json
+```
+
+`restore` retains private recovered files and isolated containers on the backup host. It does not overwrite production. `restore-check` exercises the newest verified snapshot in disposable containers with no published ports, external network, or production mounts.
+
+The bundle also includes a weekly native restore timer: Sunday 02:00 UTC with up to one hour of delay. Enable it after an initial successful full drill. Backup alerts report failed or missing drills, results older than nine days, and a stopped drill timer when installed.
+
+A successful native import does not prove the application starts with that data. Test the matching app/schema version separately before a production recovery. Preserve current data, plan the write pause and engine-specific import, and review the switch before applying it. See the [recovery procedures](https://github.com/trebeljahr/hatchkit/blob/main/cli/src/templates/backups/README.md) for retained-file handling and cleanup.
+
+`backup timer --disable` stops scheduled captures and keeps snapshots. It does not delete backup data. `backup remove-host` refuses a host that still owns registered projects.
+
+
+## Plan a protected recovery copy
+
+A second recovery history should use credentials that a compromised backup host cannot use to delete it. Keep it separate from the active restic repository's prune lifecycle.
+
+Review destination access, retention, independent password custody, and an actual restore before relying on a protected copy. Uploading backups to a new destination is a separate operation.

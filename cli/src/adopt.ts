@@ -1,3 +1,4 @@
+import { adoptRepositoryIsPrivate } from "./utils/command-input.js";
 /*
  * `hatchkit adopt` — onboard an existing project into hatchkit.
  *
@@ -280,7 +281,11 @@ export interface AdoptPlan {
 
 export async function runAdopt(
   cwd: string,
-  opts: { resume?: boolean; regeneratePipeline?: boolean } = {},
+  opts: {
+    resume?: boolean;
+    regeneratePipeline?: boolean;
+    githubVisibility?: "private" | "public";
+  } = {},
 ): Promise<void> {
   const state = await detectProject(cwd);
 
@@ -385,14 +390,9 @@ export async function runAdopt(
     bootstrapDotenvx: !state.prodEnvIsEncrypted,
     setupGitHub: !state.gitRemoteUrl,
     wireCoolify: !state.coolifyAppMatch,
-    // isPrivate resolution order:
-    //   1. Detected remote visibility (`gh repo view`) — authoritative
-    //      when an origin is set on a GitHub repo.
-    //   2. Fallback: false (public). Fresh `gh repo create` defaults to
-    //      `--public` so no Coolify GitHub App is required for the
-    //      first deploy; the user can flip the stepper row to private
-    //      explicitly when they need it.
-    isPrivate: state.gitRemoteIsPrivate ?? false,
+    // Preserve existing remote visibility. Only newly created repositories
+    // use the explicit flag or the private default.
+    isPrivate: adoptRepositoryIsPrivate(state.gitRemoteIsPrivate, opts.githubVisibility),
     appPort: "3000",
     // Pipeline scaffold defaults OFF when the layout is unrecognised.
     // The Dockerfile templates assume a single-package project rooted
@@ -1651,7 +1651,7 @@ async function editAdoptStep(
     const next = await select<AdoptSurface>({
       message: "What kind of project is this?",
       choices: [
-        { name: "Full-stack (single package, server runtime)", value: "fullstack" },
+        { name: "Full-stack (server runtime, shared observability)", value: "fullstack" },
         { name: "Split server + client packages (server runtime)", value: "split" },
         { name: "Backend only (API / worker, no UI bundle)", value: "backend" },
         { name: "Static (gh-pages / SPA — no server runtime)", value: "static" },
@@ -2759,9 +2759,19 @@ async function executePlan(
         // of what to undo.
         onProvisioned: (event) => {
           if (event.service === "glitchtip") {
-            ledger.record({ kind: "glitchtip", project: event.project });
+            ledger.record({
+              kind: "glitchtip",
+              project: event.project,
+              baseUrl: event.baseUrl,
+              organizationSlug: event.organizationSlug,
+            });
           } else if (event.service === "plausible" && event.created) {
-            ledger.record({ kind: "plausible", project: event.project });
+            ledger.record({
+              kind: "plausible",
+              project: event.project,
+              baseUrl: event.baseUrl,
+              domain: event.domain,
+            });
           } else if (event.service === "sesDomain") {
             ledger.record({ kind: "sesDomain", domain: event.domain });
           } else if (

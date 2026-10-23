@@ -87,18 +87,15 @@ export type GpuPlatform = "modal" | "runpod" | "hf" | "replicate";
  *  `hatchkit adopt` so the manifest field is interchangeable across the
  *  two flows.
  *
- *  The four values disambiguate code topology (one package vs. split
- *  packages vs. single surface) from runtime shape (has a server
- *  runtime vs. pure static). The provisioner uses the latter to decide
- *  whether to mint server-side env (Listmonk/SES creds, server-side
- *  observability DSNs, S3 tokens).
+ *  The four values describe shared or separate observability, a single
+ *  server/client surface, and whether the app has a server runtime.
+ *  The provisioner uses the runtime shape to decide whether to mint
+ *  server-side env (Listmonk/SES creds, observability DSNs, S3 tokens).
  *
- *  · `fullstack` — single repo with a server runtime: Next App Router,
- *                  SvelteKit, Nuxt. One package, server + client share
- *                  the bundle, observability is one project.
- *  · `split`     — distinct `/server` + `/client` packages, both with a
- *                  server runtime. Observability is split per surface
- *                  (strict isolation).
+ *  · `fullstack` — server and client share one observability project.
+ *                  Scaffolds use a server/client/shared workspace;
+ *                  adopted apps can have a different package layout.
+ *  · `split`     — server and client use separate observability projects.
  *  · `backend`   — API / worker, no UI bundle. The client package is
  *                  stripped from the scaffold and Coolify routes only
  *                  the api host.
@@ -915,7 +912,10 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
           message: "What kind of project is this?",
           default: c.surfaces,
           choices: [
-            { name: "Full-stack (single package, server runtime)", value: "fullstack" },
+            {
+              name: "Full-stack (server/client/shared workspace, server runtime)",
+              value: "fullstack",
+            },
             { name: "Split server + client packages (server runtime)", value: "split" },
             { name: "Backend only (API / worker, no UI bundle)", value: "backend" },
             { name: "Static (gh-pages / SPA — no server runtime)", value: "static" },
@@ -1052,97 +1052,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       run: async (c) => {
         const features = await multiselect<Feature>({
           message: "Features:",
-          choices: [
-            {
-              name: "WebSocket/realtime (includes Redis)",
-              value: "websocket",
-              checked: c.features.includes("websocket"),
-            },
-            { name: "Stripe billing", value: "stripe", checked: c.features.includes("stripe") },
-            { name: "S3 file storage", value: "s3", checked: c.features.includes("s3") },
-            {
-              name: "Analytics / observability providers",
-              value: "analytics",
-              checked: c.features.includes("analytics"),
-            },
-            {
-              name: "Workspaces (tenants, members, roles, invitations)",
-              value: "workspaces",
-              checked: c.features.includes("workspaces"),
-            },
-            {
-              name: "Session identity, lifetime + devices list",
-              value: "token-client-auth",
-              checked: c.features.includes("token-client-auth"),
-            },
-            {
-              name: "Desktop app (Electron + itch.io release)",
-              value: "desktop",
-              checked: c.features.includes("desktop"),
-            },
-            {
-              name: "Mobile app (Capacitor / iOS + Android)",
-              value: "mobile",
-              checked: c.features.includes("mobile"),
-            },
-            {
-              // Builds on the shared client core: the protocol lives in
-              // packages/shared and the page half in packages/client, so
-              // a surface that ships neither cannot carry it.
-              name:
-                extensionPrerequisiteProblem(c.surfaces) === null
-                  ? "Browser extension (Chrome + Firefox, MV3)"
-                  : `Browser extension (needs ${EXTENSION_PREREQUISITE})`,
-              value: "extension",
-              checked: c.features.includes("extension"),
-              disabled: extensionPrerequisiteProblem(c.surfaces) !== null,
-            },
-            {
-              name: "Release coordination (one version across every surface)",
-              value: "release",
-              checked: c.features.includes("release"),
-            },
-            {
-              name: "Account security (2FA, account controls, extra sign-in methods)",
-              value: "auth-account-security",
-              checked: c.features.includes("auth-account-security"),
-            },
-            {
-              name: "Shared client core (offline queue, sync client, version handshake)",
-              value: "client-core",
-              checked: c.features.includes("client-core"),
-            },
-            {
-              name: "Migrations + index preparation at boot (server-migrations)",
-              value: "server-migrations",
-              checked: c.features.includes("server-migrations"),
-            },
-            {
-              name: "Scheduler — leased recurring jobs, safe across replicas",
-              value: "scheduler",
-              checked: c.features.includes("scheduler"),
-            },
-            {
-              name: "Public REST API + OpenAPI + signed webhooks (public-api)",
-              value: "public-api",
-              checked: c.features.includes("public-api"),
-            },
-            {
-              name: "Second language (typed catalogs, translated public pages, no routing library)",
-              value: "i18n",
-              checked: c.features.includes("i18n"),
-            },
-            {
-              name: "Raycast launcher extension (5 commands, store-publishable export)",
-              value: "raycast",
-              checked: c.features.includes("raycast"),
-            },
-            {
-              name: "MCP server (stdio, over the public REST API — needs public-api)",
-              value: "mcp",
-              checked: c.features.includes("mcp"),
-            },
-          ],
+          choices: featurePromptChoices(c),
         });
         return { ...c, features };
       },
@@ -1283,53 +1193,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       run: async (c) => {
         const mlServices = await multiselect<MlService>({
           message: "ML services:",
-          choices: [
-            {
-              name: "3D — SAM 3D Objects (Meta, single image → mesh; SOTA real-image textures)",
-              value: "3d-sam-objects",
-              checked: c.mlServices.includes("3d-sam-objects"),
-            },
-            {
-              name: "3D — SAM 3D Body (Meta, single image → posed human body; apparel/try-on)",
-              value: "3d-sam-body",
-              checked: c.mlServices.includes("3d-sam-body"),
-            },
-            {
-              name: "3D — Hunyuan3D 3.0 (Tencent, 8K PBR textures, open weights)",
-              value: "3d-hunyuan",
-              checked: c.mlServices.includes("3d-hunyuan"),
-            },
-            {
-              name: "3D — TRELLIS 2 (Microsoft, sparse-voxel geometry, strong topology)",
-              value: "3d-trellis",
-              checked: c.mlServices.includes("3d-trellis"),
-            },
-            {
-              name: "3D — TripoSR (legacy, fast but lower quality)",
-              value: "3d-extraction",
-              checked: c.mlServices.includes("3d-extraction"),
-            },
-            {
-              name: "Subtitle generation (audio/video → SRT)",
-              value: "subtitles",
-              checked: c.mlServices.includes("subtitles"),
-            },
-            {
-              name: "Image recognition",
-              value: "image-recognition",
-              checked: c.mlServices.includes("image-recognition"),
-            },
-            {
-              name: "Background removal",
-              value: "background-removal",
-              checked: c.mlServices.includes("background-removal"),
-            },
-            {
-              name: "Custom HuggingFace model",
-              value: "custom-hf",
-              checked: c.mlServices.includes("custom-hf"),
-            },
-          ],
+          choices: mlPromptChoices(c),
         });
         return { ...c, mlServices };
       },
@@ -2063,7 +1927,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     const next = await select<Surface>({
       message: "What kind of project is this?",
       choices: [
-        { name: "Full-stack (single package, server runtime)", value: "fullstack" },
+        { name: "Full-stack (server/client/shared workspace, server runtime)", value: "fullstack" },
         { name: "Split server + client packages (server runtime)", value: "split" },
         { name: "Backend only (API / worker, no UI bundle)", value: "backend" },
         { name: "Static (gh-pages / SPA — no server runtime)", value: "static" },
@@ -2157,79 +2021,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
   if (section === "features") {
     const next = await multiselect<Feature>({
       message: "Features:",
-      choices: [
-        {
-          name: "websocket (real-time)",
-          value: "websocket",
-          checked: cfg.features.includes("websocket"),
-        },
-        { name: "stripe (payments)", value: "stripe", checked: cfg.features.includes("stripe") },
-        {
-          name: "analytics (GlitchTip + Plausible)",
-          value: "analytics",
-          checked: cfg.features.includes("analytics"),
-        },
-        { name: "s3 (object storage)", value: "s3", checked: cfg.features.includes("s3") },
-        {
-          name: "workspaces (tenants, members, roles, invitations)",
-          value: "workspaces",
-          checked: cfg.features.includes("workspaces"),
-        },
-        {
-          name: "token-client-auth (named sessions, per-client lifetimes, devices)",
-          value: "token-client-auth",
-          checked: cfg.features.includes("token-client-auth"),
-        },
-        {
-          name: "desktop (Electron wrapper)",
-          value: "desktop",
-          checked: cfg.features.includes("desktop"),
-        },
-        {
-          name: "mobile (Capacitor wrapper)",
-          value: "mobile",
-          checked: cfg.features.includes("mobile"),
-        },
-        {
-          name:
-            extensionPrerequisiteProblem(cfg.surfaces) === null
-              ? "extension (MV3 browser extension, Chrome + Firefox)"
-              : `extension (needs ${EXTENSION_PREREQUISITE})`,
-          value: "extension",
-          checked: cfg.features.includes("extension"),
-          disabled: extensionPrerequisiteProblem(cfg.surfaces) !== null,
-        },
-        {
-          name: "release (one version across every surface)",
-          value: "release",
-          checked: cfg.features.includes("release"),
-        },
-        {
-          name: "auth-account-security (2FA, account controls, extra sign-in methods)",
-          value: "auth-account-security",
-          checked: cfg.features.includes("auth-account-security"),
-        },
-        {
-          name: "client-core (offline queue, sync client, version handshake)",
-          value: "client-core",
-          checked: cfg.features.includes("client-core"),
-        },
-        {
-          name: "i18n (second language — typed catalogs + per-language public pages)",
-          value: "i18n",
-          checked: cfg.features.includes("i18n"),
-        },
-        {
-          name: "raycast (launcher extension — needs client-core)",
-          value: "raycast",
-          checked: cfg.features.includes("raycast"),
-        },
-        {
-          name: "mcp (stdio MCP server — needs client-core and public-api)",
-          value: "mcp",
-          checked: cfg.features.includes("mcp"),
-        },
-      ],
+      choices: featurePromptChoices(cfg),
     });
     let analyticsProviders = cfg.analyticsProviders;
     let provisionServices = cfg.provisionServices;
@@ -2319,9 +2111,9 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
     const serverSize = await select({
       message: "Hetzner server size:",
       choices: [
-        { name: "cpx11 (2 vCPU, 2GB RAM)", value: "cpx11" },
-        { name: "cpx21 (3 vCPU, 4GB RAM, recommended)", value: "cpx21" },
+        { name: "cpx21 (3 vCPU, 4GB RAM)", value: "cpx21" },
         { name: "cpx31 (4 vCPU, 8GB RAM)", value: "cpx31" },
+        { name: "cpx41 (8 vCPU, 16GB RAM)", value: "cpx41" },
       ],
       default: cfg.serverSize ?? "cpx21",
     });
@@ -2340,24 +2132,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
   if (section === "ml") {
     const ml = await multiselect<MlService>({
       message: "ML services:",
-      choices: [
-        { name: "subtitles", value: "subtitles", checked: cfg.mlServices.includes("subtitles") },
-        {
-          name: "image-recognition",
-          value: "image-recognition",
-          checked: cfg.mlServices.includes("image-recognition"),
-        },
-        {
-          name: "background-removal",
-          value: "background-removal",
-          checked: cfg.mlServices.includes("background-removal"),
-        },
-        {
-          name: "3d-extraction",
-          value: "3d-extraction",
-          checked: cfg.mlServices.includes("3d-extraction"),
-        },
-      ],
+      choices: mlPromptChoices(cfg),
     });
     let gpuPlatforms = cfg.gpuPlatforms;
     if (ml.length > 0) {
@@ -2615,4 +2390,154 @@ async function selectExistingServer(): Promise<SelectedServer> {
     ipv4: ips.v4,
     ipv6: ips.v6,
   };
+}
+
+/** Shared by initial setup and review so selected capabilities are never omitted. */
+export function featurePromptChoices(
+  c: Pick<ProjectConfig, "features" | "surfaces" | "mlServices">,
+): Array<{ name: string; value: Feature; checked: boolean; disabled?: boolean }> {
+  return [
+    {
+      name: "WebSocket/realtime (includes Redis)",
+      value: "websocket",
+      checked: c.features.includes("websocket"),
+    },
+    { name: "Stripe billing", value: "stripe", checked: c.features.includes("stripe") },
+    { name: "S3 file storage", value: "s3", checked: c.features.includes("s3") },
+    {
+      name: "Analytics / observability providers",
+      value: "analytics",
+      checked: c.features.includes("analytics"),
+    },
+    {
+      name: "Workspaces (tenants, members, roles, invitations)",
+      value: "workspaces",
+      checked: c.features.includes("workspaces"),
+    },
+    {
+      name: "Session identity, lifetime + devices list",
+      value: "token-client-auth",
+      checked: c.features.includes("token-client-auth"),
+    },
+    {
+      name: "Desktop app (Electron + itch.io release)",
+      value: "desktop",
+      checked: c.features.includes("desktop"),
+    },
+    {
+      name: "Mobile app (Capacitor / iOS + Android)",
+      value: "mobile",
+      checked: c.features.includes("mobile"),
+    },
+    {
+      // Builds on the shared client core: the protocol lives in
+      // packages/shared and the page half in packages/client, so
+      // a surface that ships neither cannot carry it.
+      name:
+        extensionPrerequisiteProblem(c.surfaces) === null
+          ? "Browser extension (Chrome + Firefox, MV3)"
+          : `Browser extension (needs ${EXTENSION_PREREQUISITE})`,
+      value: "extension",
+      checked: c.features.includes("extension"),
+      disabled: extensionPrerequisiteProblem(c.surfaces) !== null,
+    },
+    {
+      name: "Release coordination (one version across every surface)",
+      value: "release",
+      checked: c.features.includes("release"),
+    },
+    {
+      name: "Account security (2FA, account controls, extra sign-in methods)",
+      value: "auth-account-security",
+      checked: c.features.includes("auth-account-security"),
+    },
+    {
+      name: "Shared client core (offline queue, sync client, version handshake)",
+      value: "client-core",
+      checked: c.features.includes("client-core"),
+    },
+    {
+      name: "Migrations + index preparation at boot (server-migrations)",
+      value: "server-migrations",
+      checked: c.features.includes("server-migrations"),
+    },
+    {
+      name: "Scheduler — leased recurring jobs, safe across replicas",
+      value: "scheduler",
+      checked: c.features.includes("scheduler"),
+    },
+    {
+      name: "Public REST API + OpenAPI + signed webhooks (public-api)",
+      value: "public-api",
+      checked: c.features.includes("public-api"),
+    },
+    {
+      name: "Second language (typed catalogs, translated public pages, no routing library)",
+      value: "i18n",
+      checked: c.features.includes("i18n"),
+    },
+    {
+      name: "Raycast launcher extension (5 commands, store-publishable export)",
+      value: "raycast",
+      checked: c.features.includes("raycast"),
+    },
+    {
+      name: "MCP server (stdio, over the public REST API — needs public-api)",
+      value: "mcp",
+      checked: c.features.includes("mcp"),
+    },
+  ];
+}
+
+/** Shared by initial setup and review so selected capabilities are never omitted. */
+export function mlPromptChoices(
+  c: Pick<ProjectConfig, "features" | "surfaces" | "mlServices">,
+): Array<{ name: string; value: MlService; checked: boolean; disabled?: boolean }> {
+  return [
+    {
+      name: "3D — SAM 3D Objects (Meta, single image → mesh; SOTA real-image textures)",
+      value: "3d-sam-objects",
+      checked: c.mlServices.includes("3d-sam-objects"),
+    },
+    {
+      name: "3D — SAM 3D Body (Meta, single image → posed human body; apparel/try-on)",
+      value: "3d-sam-body",
+      checked: c.mlServices.includes("3d-sam-body"),
+    },
+    {
+      name: "3D — Hunyuan3D 2.1 (Tencent, 8K PBR textures, open weights)",
+      value: "3d-hunyuan",
+      checked: c.mlServices.includes("3d-hunyuan"),
+    },
+    {
+      name: "3D — TRELLIS 2 (Microsoft, sparse-voxel geometry, strong topology)",
+      value: "3d-trellis",
+      checked: c.mlServices.includes("3d-trellis"),
+    },
+    {
+      name: "3D — TripoSR (legacy, fast but lower quality)",
+      value: "3d-extraction",
+      checked: c.mlServices.includes("3d-extraction"),
+    },
+    {
+      name: "Subtitle generation (audio/video → SRT)",
+      value: "subtitles",
+      checked: c.mlServices.includes("subtitles"),
+    },
+    {
+      name: "Image recognition",
+      value: "image-recognition",
+      checked: c.mlServices.includes("image-recognition"),
+    },
+    {
+      name: "Background removal",
+      value: "background-removal",
+      checked: c.mlServices.includes("background-removal"),
+    },
+    {
+      name: "Custom HuggingFace model",
+      value: "custom-hf",
+      checked: c.mlServices.includes("custom-hf"),
+    },
+  ];
 }

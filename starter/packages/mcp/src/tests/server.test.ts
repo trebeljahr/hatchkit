@@ -74,12 +74,22 @@ describe("capability probing", () => {
     assert.equal(probe.known, true);
     const { tools } = await client.listTools();
     assert.equal(tools.length, TOOL_DEFINITIONS.length);
+    assert.match(client.getInstructions() ?? "", /filtered by this token's scopes/);
+    assert.match(client.getInstructions() ?? "", /visible tools can still fail permission/);
   });
 
   it("does not register a tool the credential cannot call", async () => {
     const { client } = await connect({ "GET /me": identity(["items:read"]) });
     const names = (await client.listTools()).tools.map((tool) => tool.name).sort();
     assert.deepEqual(names, ["get_item", "get_token_info", "list_items"]);
+  });
+
+  it("explains how to use a write-only token without asking for read scopes", async () => {
+    const { client } = await connect({ "GET /me": identity(["items:write"]) });
+    const names = (await client.listTools()).tools.map((tool) => tool.name);
+    assert.equal(names.includes("get_item"), false);
+    assert.equal(names.includes("delete_item"), true);
+    assert.match(client.getInstructions() ?? "", /With a write-only token, use an exact id/);
   });
 
   it("offers nothing but the free tool to a credential with no capabilities", async () => {
@@ -107,6 +117,8 @@ describe("capability probing", () => {
     assert.equal(probe.known, false);
     const { tools } = await client.listTools();
     assert.equal(tools.length, TOOL_DEFINITIONS.length);
+    assert.match(client.getInstructions() ?? "", /startup probe failed/);
+    assert.match(client.getInstructions() ?? "", /visible tool does not prove access/);
   });
 
   it("treats an identity answer with no scope list as unknown", async () => {
@@ -131,6 +143,24 @@ describe("capability probing", () => {
 });
 
 describe("calling a tool", () => {
+  it("explains webhook permission refusals without claiming a row exists", async () => {
+    const { client } = await connect({
+      "GET /me": identity(["webhooks:write"]),
+      "POST /webhooks": {
+        status: 403,
+        json: problemBody("permission-required", 403, "This token's member may not manage webhook subscriptions."),
+      },
+    });
+    const result = (await client.callTool({
+      name: "create_webhook",
+      arguments: { url: "https://example.test/hooks", events: ["item.created"] },
+    })) as CallToolResult;
+    assert.equal(result.isError, true);
+    assert.match(textOf(result), /webhooks:manage/);
+    assert.match(textOf(result), /frozen permission ceiling/);
+    assert.doesNotMatch(textOf(result), /row exists/);
+  });
+
   it("returns the API's payload as JSON text", async () => {
     const { client } = await connect({
       "GET /me": identity(["items:read"]),

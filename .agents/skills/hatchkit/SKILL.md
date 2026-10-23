@@ -1,313 +1,166 @@
 ---
 name: hatchkit
-description: Use when the user mentions Hatchkit, the hatchkit CLI, scaffolding a new full-stack app, deploying to Coolify/Hetzner/DNS, provisioning GlitchTip/Plausible/Resend/S3/email/Stripe, pushing dotenvx keys, wiring GitHub Pages, or debugging provider credentials. Start with `hatchkit status --json` before recommending next commands.
+description: Use for Hatchkit CLI scaffolding, deployment, provider setup, project maintenance, backups, and host checks. Start with `hatchkit status --json` before recommending operational commands.
 ---
 
-# hatchkit
+# Hatchkit
 
-`hatchkit` is the CLI in this monorepo (`cli/`) for taking a product from idea to
-running app on user-owned infra:
+Hatchkit scaffolds TypeScript apps, configures providers, deploys to user-owned infrastructure, and maintains project state. The repository's CLI lives in `cli/`.
 
-scaffold -> deploy -> provision -> maintain.
+## Orient before acting
 
-It creates full-stack TypeScript apps from `starter/`, can wire DNS/VPS/Coolify
-via Terraform, provisions per-project clients for external services, manages
-dotenvx encryption keys, and exposes JSON/MCP surfaces so agents can reason
-about state without scraping human output.
+Before recommending an operational command, run `hatchkit status --json`. Read `providers[]`, `nextStep`, and `suggestions[]`; use the returned `configureCommand` rather than guessing provider names. If the operator MCP server is configured, prefer `hatchkit_status`, `hatchkit_doctor`, and `hatchkit_explain`.
 
-## First principle: orient before acting
-
-Before recommending a next Hatchkit command, run:
-
-```bash
-hatchkit status --json
-```
-
-Read:
-
-- `providers[]` for configured providers and the exact `configureCommand`.
-- `nextStep` for what the CLI thinks the user should do next.
-- `suggestions[]` for safe follow-up commands.
-
-These reflect the user's current machine state. Do not guess from memory.
-
-If the user has `@hatchkit/mcp` configured, prefer the MCP status tool over a
-shell command.
-
-## Second principle: use machine output
-
-Use JSON where available:
-
-| Command | Purpose | JSON? |
-|---|---|---|
-| `hatchkit status` | Provider state and next step | yes: `--json` |
-| `hatchkit doctor` | Live provider health checks | yes: `--json` |
-| `hatchkit backup status` | Live project backup results, stale/missing captures, timer and restore checks over Tailscale | yes: `--json` |
-| `hatchkit explain` | Mental model, commands, workflows, state | yes: `--json` |
-| `hatchkit overview` | Project overview, optionally `--all` | yes: `--json` |
-| `hatchkit keys show <project>` | Dotenvx private key lookup | yes: `--json` |
-
-When a provider fails, run:
-
-```bash
-hatchkit doctor --json
-```
-
-Surface the failing `checks[].hint[]` lines. They already contain the credential
-rotation URL, required scopes, and exact `hatchkit config add <provider>` command.
-
-## Common commands
-
-| Command | Use |
+| Command | Purpose |
 |---|---|
-| `hatchkit setup` / `init` | One-time interactive onboarding for credentials |
-| `hatchkit config` | Show configured provider status |
-| `hatchkit config add <provider>` | Reconfigure one provider |
-| `hatchkit create` | Scaffold/deploy flow for a new app. Interactive by default; every prompt has a flag, and `--yes` runs it unattended |
-| `hatchkit update` | Add supported features to an existing Hatchkit project |
-| `hatchkit add <project> [services]` | Provision per-project clients/env blocks |
-| `hatchkit remove <project> [services]` | Unprovision selected project clients |
-| `hatchkit keys show <project>` | Print stored dotenvx private key |
-| `hatchkit keys push <project>` | Push dotenvx key to Coolify/GitHub Actions |
-| `hatchkit keys rotate <project>` | Rotate dotenvx keypair |
-| `hatchkit doctor` | Read-only live health check of configured providers |
-| `hatchkit explain` | One-page mental model |
-| `hatchkit gh-pages` | Wire GitHub Pages for the current repo |
-| `hatchkit adopt` | Adopt an existing repo into Hatchkit conventions |
-| `hatchkit sync` | Sync/deploy state for an existing Hatchkit project (incl. manifest `aliases[]` multi-hostname routing) |
-| `hatchkit dns publish` | Upsert A/AAAA records for the manifest's domain + aliases (supports `--dry-run`) |
-| `hatchkit plausible rename <old> <new>` | Move a Plausible site to a new domain, keeping stats history |
-| `hatchkit plausible merge <old> <new> --dry-run` | Community Edition: fold the old site into an existing new site (backups, row copy, goals, old site deleted); production write, dry run first |
-| `hatchkit listmonk user <project>` | Give a project its own Listmonk API user + roles and rewrite its env (`--dry-run` first; needs the `hatchkit-admin` keychain token; never pushes) |
-| `hatchkit listmonk list <project> <key>` | One more private, double-opt-in list pair (live + `<project>-<key>-test`) granted to the project's list role; prints the ids, writes no env (`--dry-run` first; `hatchkit-admin` keychain token) |
-| `hatchkit rename-domain` | Rename project domain and related deploy config |
-| `hatchkit regen-infra` | Regenerate project infra files |
-| `hatchkit provision s3` | Create project S3/R2 buckets and env entries |
-| `hatchkit assets pull` | Mirror remote object storage assets locally |
-| `hatchkit backup configure --config <path>` | Store backup-bucket S3 keys and restic recovery password in OS keychain |
-| `hatchkit backup install [--dry-run]` | Install/update the backup host through Tailscale using Keychain credentials; preserve sources and recovery password |
-| `hatchkit backup register --config <path> [--dry-run]` | Register explicit existing-project database/file sources; refuse replacing a different policy |
-| `hatchkit backup alerts --to <email> --from <verified-ses-email> [--dry-run]` | Configure failure/overdue email using existing SES Keychain credentials |
-| `hatchkit backup alert-test` | Send one test notification to the configured recipient |
-| `hatchkit backup run` | Request a full backup on the configured host |
-| `hatchkit backup plan --json` | Read the current project's intended backup policy, without claiming it is installed |
-| `hatchkit inventory` | Infer/write `.hatchkit.json` metadata |
-| `hatchkit completion <shell>` | Print shell completion |
+| `hatchkit status --json` | Configured providers and suggested next steps |
+| `hatchkit doctor --json` | Read-only live checks and actionable `checks[].hint[]` entries |
+| `hatchkit explain --json` | Concepts, command families, workflows, and state paths |
+| `hatchkit overview --json` | Fleet resources and cross-provider inconsistencies |
+| `hatchkit inventory --json` | Infer project identity and inspect matching resources; `--save` writes a manifest |
+| `hatchkit backup status --json` | Actual captures, source validity, timers, and restore results |
+| `hatchkit keys show PROJECT --json` | Return a live dotenvx key, only when explicitly requested |
 
-Check `hatchkit help <command>` or `hatchkit <command> --help` before using flags
-you have not verified.
+Credential denial means a check is unverified. Do not report it as an invalid credential or a healthy check.
 
-## Providers and services
+## Authority and credentials
 
-Provider config commands include:
+- Follow the user's authorized scope. Create, adopt, add/remove, sync, keys/secrets, migrations, hosting setup, backup configuration, and host installation can write local or remote state.
+- `doctor` is read-only; `doctor --fix` writes providers. Read a subcommand's help before assuming its JSON or dry-run flags make it read-only.
+- Keep `HATCHKIT_KEYCHAIN_ACCESS=deny` during automated work. Live access needs an authorized interactive run or explicit authorization for `HATCHKIT_KEYCHAIN_ACCESS=allow`.
+- After a denied credential read, stop that credential-dependent operation. Do not retry through another runtime or `/usr/bin/security`, weaken ACLs, or export credentials.
+- Run CLI tests through `pnpm --filter hatchkit test` or `pnpm --filter hatchkit exec node scripts/test.mjs test-<name>.ts`. The runner replaces keytar with a temporary fixture store for tests and children. `HATCHKIT_CONF_DIR` and `HATCHKIT_KEYTAR_SERVICE` alone do not isolate the OS keychain.
+- Never print secrets without an explicit request. `keys show` and `hatchkit_keys_show` return secrets. Provider metadata belongs in config; credentials belong in the keychain.
+- `config reset` clears provider metadata and keychain entries. Confirm the intended reset before running it.
+- Review changes to existing deployments before applying them. Prefer supported `--dry-run` or `--recipe` paths. Dry-runs can still read hosts/providers and execute preflight probes.
+- Know the recovery path before a mutation. `destroy PROJECT --recipe` prints rollback steps. `gh-pages --undo --dry-run` and `cloudflare --undo --dry-run` preview their respective cleanup.
+- Removal requires recorded ownership and exact identities. Names, cached credentials, and adoption are not proof. Retain ambiguous or legacy resources. Search Console property ownership is not established for removal.
+- A deferred step may have created some resources before failing. Inspect its reason, ledger, and provider state before retrying.
 
-```bash
-hatchkit config add coolify
-hatchkit config add ghcr
-hatchkit config add hetzner
-hatchkit config add dns
-hatchkit config add s3
-hatchkit config add modal
-hatchkit config add runpod
-hatchkit config add hf
-hatchkit config add replicate
-hatchkit config add glitchtip
-hatchkit config add plausible
-hatchkit config add resend
-hatchkit config add stripe
-```
+## Choose the command family
 
-`hatchkit add <project> [services]` provisions project-scoped resources. Current
-service names include `glitchtip`, `plausible`, `resend`, `s3`, and `email`.
-`all` selects every supported service.
+Use `hatchkit help <command>` for current options. The families below have different side effects.
 
-## Trigger conditions
+| Family | Use |
+|---|---|
+| `setup` / `init`, `config add` | Interactive provider onboarding |
+| `create`, `update`, `server add` | Scaffold a project, add features, or restore server source to a static project |
+| `adopt`, `adopt --resume` | Review and wire an existing repository; can create resources, commit, push, and deploy |
+| `add PROJECT SERVICES`, `remove PROJECT SERVICES` | Provision services or remove ledger-owned resources |
+| `destroy PROJECT` | Reverse recorded create/adopt actions; preview with `--recipe` |
+| `sync` | Reconcile runtime env, routing, deploy hooks/secrets, and generated config; writes can occur without `--deploy` |
+| `regen-infra` | Regenerate tfvars and Coolify stack env files; does not apply Terraform |
+| `keys show/push/rotate`, `secrets rotate/isolate` | Inspect, deliver, rotate, or isolate credentials |
+| `gh-pages`, `cloudflare` | Configure static hosting and repository deployment credentials |
+| `cloudflare token`, `https`, `redirect` | Manage Worker CI credentials or host-specific zone redirects |
+| `migrate-client`, `migrate-runtime`, `migrate-domain` | Move client hosting, runtime, or live provider identities |
+| `rename-domain`, `rename-project`, `set-description` | Update identity; inspect optional remote effects |
+| `dns publish`, `link-to-cloudflare` | Reconcile records or registrar nameservers |
+| `provision s3`, `assets` | Provision buckets or copy/list objects |
+| `email`, `ses`, `listmonk`, `plausible` | Provider-specific setup and maintenance |
+| `signing org-init/apply` | Configure signing providers and project artifacts; dry-run can read GitHub |
+| `release plan/cut/status/check` | Inspect release channels, cut a local commit/tag, or read progress; cut never pushes |
+| `backup` | Configure hosts, register sources, capture, inspect, or restore data |
+| `host integrity`, `host updates` | Read host findings; install/uninstall change schedules and test sends email |
+| `audit cloudflare` | Read account drift; accept/forget change local expectations, deploy/publish write remotely |
+| `mac-runner status/on/off/run/serve` | Inspect or run private-repo Apple CI on this Mac |
+| `infra plan/apply/output` | Manage maintained Terraform stacks; apply changes remote resources |
+| `dev-setup` | Configure host-wide or per-project local HTTPS development |
+| `completion` | Print Bash, Zsh, or Fish completion |
 
-Use Hatchkit context when the user mentions any of:
+## Provider and feature choices
 
-- Hatchkit or the `hatchkit` CLI
-- scaffolding, making, starting, or creating a full-stack app/project
-- deploying, syncing, or maintaining an app on user-owned infra
-- wiring Coolify, Hetzner, DNS/Cloudflare, R2/S3, or Resend
-- provisioning GlitchTip, Plausible, Resend, S3/R2, email, or Stripe
-- pushing, showing, or rotating dotenvx keys
-- wiring GitHub Pages for a static tool
-- adopting an existing repo into Hatchkit conventions
-- debugging provider credentials or setup failures
+Config providers: `coolify`, `coolify-github-app`, `ghcr`, `hetzner`, `cloudflare`, `dns`, `cloudflare-workers` (Cloudflare alias), `s3`, `glitchtip`, `plausible`, `listmonk`, `ses`, `search-console`, `stripe`, `modal`, `runpod`, `hf`, `replicate`.
 
-## Guard rails
+Project services: `glitchtip`, `plausible`, `listmonk-ses`, `s3`, `email`, `search-console`. Resend is no longer offered. Cloudflare handles CLI DNS automation; INWX supports registrar nameserver setup.
 
-- `hatchkit doctor` is safe and read-only. Use it freely for diagnosis.
-- `hatchkit setup` and `config add` are interactive. Do not run them
-  unattended unless the user gave flags/config for automation.
-- `hatchkit create` can write files, initialize git, create GitHub repos,
-  run Terraform, configure DNS, create Coolify apps, and deploy. Be explicit
-  before starting it — driving it from flags does not lower the blast radius.
-- `hatchkit add`, `remove`, `keys push`, `keys rotate`, `gh-pages`, `sync`,
-  `rename-domain`, `regen-infra`, `provision s3`, and `destroy` can mutate local
-  files and/or remote systems. Make sure the user's request authorizes that action.
-- Never log secrets. `hatchkit keys show <project> --json` returns a live
-  dotenvx private key. Only surface it when the user specifically asked.
-- `hatchkit config reset` clears provider metadata and keychain entries. Confirm
-  clearly before suggesting or running it.
-- Prefer `HATCHKIT_CONF_DIR` for isolated test state instead of touching the
-  user's real config during automated checks.
-- For commands that could break an existing setup, default to reporting and
-  handing the user commands instead of executing. Prefer `--dry-run`, `--json`,
-  or `--recipe` modes where supported.
-- Before running a mutating command, know its rollback path and tell the user.
-  Examples: `hatchkit destroy <project> --recipe` prints the rollback recipe
-  without executing; `hatchkit gh-pages --undo --dry-run` previews Pages undo;
-  create/adopt write a run ledger so `hatchkit destroy <project>` can undo
-  resources Hatchkit created. Do not run rollback/destructive cleanup without
-  explicit user approval.
-- Never assume Hatchkit owns pre-existing resources. Rollback ledgers are meant
-  to avoid deleting user-owned state; preserve that model when fixing code.
-
-## Backups for new projects
-
-The backup provider is separate from app asset storage. Credentials live under
-Keychain service `hatchkit`, account `backups:r2:credentials`; never print or copy
-them into app environments. With `autoRegister: true`, create deployments on the
-configured Coolify server register standard managed and Compose databases for
-daily encrypted R2 backups, retaining three verified generations. Failures become
-deferred steps with a registration retry command. External databases, custom
-file mounts, other hosts, adopted projects and R2 asset objects require explicit
-registration/coverage. A manifest policy is intent; inspect `backup status` for
-actual capture and restore results. Backup host operations use Tailscale SSH with
-no public-SSH fallback. Configure/install/register/run/alerts mutate state; alert-test sends email.
-All require the user's applicable authorization. `status`, `plan`, and `--dry-run` are safe
-read-only checks. The maintained bundle README documents installation, restore
-drills, scheduling and how to disable the timer while keeping stored backups.
-
-## Driving `hatchkit create` from flags
-
-`hatchkit create` is interactive by default, but every question it asks has a
-matching CLI flag. This is the path to prefer when acting for a user, because
-it makes the plan reviewable before anything runs.
-
-Precedence: a value passed as a flag is used as-is and **its prompt is
-skipped**. Anything not passed is still prompted for, so partial flag sets
-work — this is hybrid, not all-or-nothing.
-
-`--yes` (alias `--non-interactive`) additionally takes defaults for whatever
-is still unset and hard-fails, naming the missing flag, instead of prompting.
-Pair it with `--dry-run` to print the fully-resolved plan without writing
-anything:
+`create` accepts partial flags and prompts for missing answers. `--yes` / `--non-interactive` takes defaults or fails on a missing required value. Flags override `--config` JSON.
 
 ```bash
 hatchkit create --yes --dry-run --name blog --domain blog.example.com \
   --surfaces fullstack --deployment-mode coolify
 ```
 
-Flags, with their valid values:
-
 | Flag | Values |
 |---|---|
-| `--name <name>` | required under `--yes` |
-| `--domain <host>` | defaults to `<name>.<root domain>` |
-| `--description <text>` | pass empty for "none" |
 | `--surfaces` | `fullstack` `split` `backend` `static` |
-| `--deployment-mode` | `coolify` `gh-pages` `scaffold-only` (`gh-pages` needs `--surfaces static`) |
-| `--deploy-target` | `new` `existing` |
+| `--topology` | `single-origin` `split` |
+| `--deployment-mode` | `coolify` `gh-pages` `cloudflare` `scaffold-only` |
+| `--coolify-runtime` | `image` (new-project default) `compose` |
+| `--deploy-target` | `new` `existing`; existing needs server ID/IP in unattended mode |
 | `--server-size` | `cpx21` `cpx31` `cpx41` |
 | `--server-location` | `nbg1` `fsn1` `hel1` |
-| `--server-id`, `--server-ip` | required with `--deploy-target existing` |
-| `--features` | `websocket` `stripe` `analytics` `s3` `workspaces` `desktop` `mobile` `client-core` `extension` `release` `i18n` `raycast` `mcp` (comma-separated; `extension`, `raycast` and `mcp` need a `fullstack`/`split` surface; `raycast` and `mcp` pull in `client-core`, and `mcp` also needs `public-api`) |
+| `--features` | `websocket` `stripe` `analytics` `s3` `workspaces` `token-client-auth` `desktop` `mobile` `release` `client-core` `extension` `server-migrations` `scheduler` `public-api` `auth-account-security` `i18n` `raycast` `mcp` |
 | `--analytics-providers` | `glitchtip` `plausible` |
 | `--services` | `glitchtip` `plausible` `listmonk-ses` `s3` `email` `search-console` |
 | `--db-engine` | `mongodb` `postgres` |
 | `--db-provider` | `coolify` `external` |
 | `--s3-provider` | `hetzner` `r2` `aws` `existing` `none` |
-| `--s3-endpoint`, `--s3-bucket`, `--s3-access-key`, `--s3-secret-key`, `--s3-region` | required with `--s3-provider existing` |
-| `--email` | `none` `transactional` `mailing-list` `both` |
-| `--email-forwarding` | `off`, or comma-separated local-parts |
-| `--email-catch-all` / `--no-email-catch-all` | forward `*@domain` |
+| `--email` | `none` `transactional` `mailing-list` `both`; enabled choices use Listmonk/SES |
 | `--ml-services` | `3d-sam-objects` `3d-sam-body` `3d-hunyuan` `3d-trellis` `3d-extraction` `subtitles` `image-recognition` `background-removal` `custom-hf` |
-| `--gpu-platforms` | `modal` `runpod` `hf` `replicate` (first is default `ML_BACKEND`) |
-| `--custom-hf-model`, `--custom-hf-gpu-type` | required with `--ml-services custom-hf` |
-| `--scaffold` / `--no-scaffold` | write the app repo |
-| `--github` / `--no-github`, `--github-visibility` (`private` `public`), `--public`, `--private` | GitHub remote |
-| `--install` / `--no-install` | run `pnpm install` |
-| `--deploy` / `--no-deploy` | run the deploy |
-| `--local-dev[=<slug>]` / `--no-local-dev` | Tailscale dev URL |
-| `--config <path>` | JSON `Partial<ProjectConfig>`; individual flags win over it |
+| `--gpu-platforms` | `modal` `runpod` `hf` `replicate`; first sets default `ML_BACKEND` |
+| `--github-visibility` | `private` `public`; also `--private` / `--public` |
+| `--local-dev[=SLUG]` / `--no-local-dev` | Enable or skip Tailscale/Caddy development URLs |
 
-Invalid values fail before anything is written, with the valid set in the
-error. Run `hatchkit create --help` for the authoritative list.
+For the remaining name/domain, storage, forwarding, install, scaffold, GitHub, and deploy flags, read current create help. Prefer a private `--config` file over command-line secrets.
 
-Secrets on the command line end up in shell history — prefer `--config <path>`
-for `--s3-secret-key`.
+`gh-pages` and `cloudflare` deployment modes require a static surface. Extension/Raycast/MCP require fullstack or split. Raycast and MCP pull in client-core; MCP also needs public-api. Fullstack and split both retain client/server/shared packages.
 
-## When something breaks
+Create/update also apply operational generators. User-owned files have preservation rules; owned operational files and recognized security templates can be refreshed. Review dry-run output and diffs. `--force` controls changed package entries, not every file.
 
-If Hatchkit itself is breaking, diagnose and report before changing anything:
+Modal has an automated ML deployment path. Other platform paths print manual guidance and return placeholders or inferred endpoints. Verify endpoints before configuring the app. Even Modal falls back to an example URL if output parsing fails.
 
-1. Capture the command, working directory, Hatchkit version, and relevant output.
-2. Run safe checks first: `hatchkit status --json`, `hatchkit doctor --json`,
-   and the relevant `hatchkit help <command>`.
-3. Inspect the source files for the command path listed below.
-4. Explain likely cause, blast radius, and rollback/undo options.
-5. If the user wants another agent or a follow-up session to fix it, write a
-   concrete repair prompt. Include the failing command/output, suspected files,
-   expected behavior, safety constraints, and validation commands.
+## Static hosting and migration
 
-Repair prompts should tell the fixing agent to preserve existing user setups,
-use `--dry-run`/isolated `HATCHKIT_CONF_DIR` where possible, and ask before any
-real provider/DNS/Coolify/Terraform/keychain mutation.
+`cloudflare` means Workers Static Assets. `gh-pages` means GitHub Pages. Hatchkit has no dedicated Cloudflare Pages mode. Resolve an ambiguous “Pages” request before acting.
 
-## State locations
+An assets-only Worker has `assets.directory` and no `main` script. It requires no PHP, container, or Coolify app. Preserve a hybrid project's API: `clientHost: "cloudflare"` differs from static-only `deploymentMode: "cloudflare"`.
 
-- CLI source: `cli/src/` (`cli/src/index.ts` entrypoint).
-- Starter template: `starter/`.
-- Infra templates/automation: `infra/`.
-- MCP server: `mcp/`.
-- Project manifest: `<project>/.hatchkit.json`.
-- Provider metadata: path from `hatchkit status --json` (`configPath`).
-- Secrets: OS keychain/libsecret, service `hatchkit`.
-- Provisioned env blocks: `<config-dir>/provisioned/<project>.{dev,prod}.env`.
+Adopt can initialize dotenvx, create a remote, configure providers, and push. Review those choices. A public static archive may not need dotenvx. Confirm its real build command and output directory. New adopted GitHub repos default to private unless explicitly selected otherwise.
 
-## Code map
+Keep operator credentials local. CI receives one Worker's deploy token or one Coolify app's deploy-hook secret. Worker scope does not prove isolation from other same-account runtime bindings. Preserve separate operator routing and routine CI deployment responsibilities.
 
-- CLI router/help: `cli/src/index.ts`.
-- Config, providers, keychain metadata: `cli/src/config.ts`.
-- Status snapshots: `cli/src/status.ts`.
-- Provider health checks and hints: `cli/src/doctor.ts`.
-- Mental model output: `cli/src/explain.ts`.
-- Project overview/inventory: `cli/src/overview.ts`, `cli/src/inventory.ts`.
-- Scaffold flow: `cli/src/scaffold/`.
-- Starter template copied into projects: `starter/`.
-- Deploy/Coolify/Terraform/GitHub/GHCR/keys/pages: `cli/src/deploy/`.
-- Rollback, destroy, run ledgers: `cli/src/deploy/rollback.ts`,
-  `cli/src/utils/run-ledger.ts`.
-- Provider provisioning: `cli/src/provision/`.
-- DNS helpers: `cli/src/dns.ts`, `cli/src/utils/cloudflare-api.ts`.
-- Assets mirror/sync: `cli/src/assets/`.
-- MCP server for agents: `mcp/src/index.ts`.
-- Docs source: `docs/content/docs/`.
+Use `migrate-client --dry-run` and `--repo-only` before live client cutover. Runtime migrations preserve a legacy app for rollback. Cleanup removes that recovery path; do not treat cleanup as another harmless verification step. A carried volume can have concurrent writers during rolling deploys.
 
-## MCP
+## Backups and host checks
 
-If `@hatchkit/mcp` is configured, use the read-only tools before shelling out:
+Backup credentials are separate from app asset storage: keychain service `hatchkit`, account `backups:r2:credentials`. Keep an independent recovery copy of the restic password. Never copy backup keys into app env.
 
-- `hatchkit_status` -> `StatusSnapshot`
-- `hatchkit_doctor` -> `{ summary, checks[] }`
-- `hatchkit_explain` -> mental model payload
-- `hatchkit_keys_show({ project })` -> `{ project, found, key }`
+With auto-registration enabled, create registers standard managed and Compose database sources on configured backup hosts. Existing/adopted projects and custom sources need explicit coverage. Asset buckets are separate from registered server-data backups.
 
-The MCP server intentionally does not expose mutating commands.
+New policies retain 30 verified generations. Existing policies retain their configured `keepLast` count (3–365). Registration is intent; inspect `backup status` for actual captures and restores. Hosts use Tailscale without public-SSH fallback.
 
-## Repo development
+`backup install` preserves sources and refuses a changed recovery password or repository. It does not enable capture scheduling. `backup timer --enable` requires fresh verified captures. `--disable` stops captures and keeps snapshots. Source updates and deregistration require an explicit coverage decision.
 
-For this monorepo:
+`backup restore` retains isolated recovered files/containers. `restore-check` uses disposable containers and does not overwrite production. Weekly native drills have a nine-day freshness limit. A native import does not prove the app starts with recovered data.
 
-```bash
-pnpm install
-pnpm --filter hatchkit run dev
-pnpm --filter hatchkit run typecheck
-pnpm --filter hatchkit run check
-pnpm --filter hatchkit install-local
-```
+`host integrity install` schedules five-minute quick checks and a daily full scan. `host updates install` schedules four-hour advisory/runtime checks and a daily Grype image scan. Installation needs backup-alert SMTP; update-watch also needs a pinned, signature-verified `/usr/local/bin/grype`. Install dry-runs still perform read-only scans.
 
-Use `pnpm --filter hatchkit run dev` to run the CLI from source. Use the published
-or installed `hatchkit` binary for user-level state checks.
+Update-watch can repeat unchanged overdue findings daily. Check completeness and freshness, not only a zero finding count. AIDE and independent monitoring have maintenance templates, not general CLI install commands. The current health publisher is restricted to the maintained fleet and destination.
+
+## Cloudflare audit, SES, and Apple jobs
+
+The Cloudflare audit uses a separate read-only user token, never the operator token. Required grants and incident steps are in the [operations guide](https://hatchkit.trebeljahr.com/docs/operations#cloudflare-audit-token). Review unknown token IDs before accepting inventory. `test-mail` sends email.
+
+SES project IAM isolation and newsletter-service isolation have separate planning and verification steps. Read subcommand help and the email guide. Do not substitute the operator's SES credential into an app. `listmonk user` and `listmonk list` can mutate shared provider state.
+
+Before private-repo Apple dispatch, run `mac-runner status --repo owner/name`. When `APPLE_RUNNER` is set, use an authorized `mac-runner run` or `serve`; a plain dispatch can wait without a host. Preserve existing signing material and keep temporary credentials scoped to the job.
+
+## Documentation and code
+
+Read the guide relevant to the current operation:
+
+- [Commands](https://hatchkit.trebeljahr.com/docs/commands)
+- [Cloudflare hosting and tokens](https://hatchkit.trebeljahr.com/docs/cloudflare)
+- [Migrations](https://hatchkit.trebeljahr.com/docs/migrations)
+- [Backups and recovery](https://hatchkit.trebeljahr.com/docs/backups)
+- [Operations and generated-file ownership](https://hatchkit.trebeljahr.com/docs/operations)
+- [Email and SES isolation](https://hatchkit.trebeljahr.com/docs/email)
+
+In this repository, the same pages live under `docs/content/docs/`. CLI routing/help is in `cli/src/index.ts`; state is in `config.ts`, `status.ts`, `doctor.ts`, and `explain.ts`. Scaffold, deployment, provisioning, and backup code live in their corresponding `cli/src/` directories. App templates live in `starter/`, infrastructure in `infra/`, and the operator MCP server in `mcp/`.
+
+The operator MCP server is read-only and inherits keychain denial unless access is explicitly authorized. The generated app MCP server is separate and can mutate app data within its API-token scope. Do not confuse their credentials or authority.
+
+For a failure, capture command, cwd, version, output, safe state checks, suspected source, affected resources, and recovery options. Repair locally within authorization. Any handoff must preserve existing setups and use fake credentials for tests. Record provider/keychain checks that require unavailable access as pending.
+
+The two repository skill copies must remain identical. `cli/test-documentation-contracts.ts` checks synchronization.

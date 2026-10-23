@@ -1,17 +1,11 @@
 """
-3D model extraction — Hunyuan3D 3.0 (Tencent) single image → GLB.
+3D model extraction — Hunyuan3D 2.1 (Tencent) single image → GLB.
 
 DEPLOY: modal deploy pipeline.py
 TEST:   modal run pipeline.py --input-path test.jpg
-COST:   ~$0.05 per model (~60s on A100-40GB at $3.70/hr)
-
-Uses Hunyuan3D 3.0 (Tencent, tencent/Hunyuan3D-3).
-Open-weight benchmark leader for geometry + PBR textures; produces 4K-8K
-textures with proper roughness / metallic / normal maps.
-
-LICENSE: non-commercial by default. Verify Tencent's current license
-terms before shipping commercially — they offer a separate commercial
-license on request.
+Uses tencent/Hunyuan3D-2.1 for geometry and optional texture generation.
+Runtime, GPU cost, and output quality depend on the input and settings.
+Review the upstream code and model licenses before deployment.
 
 NOTE: this template clones the upstream repo at image-build time. Pin a
 commit SHA before going to production so behavior is reproducible.

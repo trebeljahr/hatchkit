@@ -80,6 +80,7 @@ import {
   isCancelInProgress,
   uninstallCancelHandler,
 } from "./utils/cancel-handler.js";
+import { parseGithubVisibility, signingProjectArgument } from "./utils/command-input.js";
 import { exec, execOk } from "./utils/exec.js";
 import {
   KNOWN_ANALYTICS_PROVIDERS,
@@ -249,6 +250,7 @@ async function main(): Promise<void> {
       await runAdopt(resolve("."), {
         resume: args.includes("--resume"),
         regeneratePipeline: args.includes("--regenerate-pipeline"),
+        githubVisibility: parseGithubVisibility(flagValue("--github-visibility")),
       });
       break;
     }
@@ -314,7 +316,7 @@ async function main(): Promise<void> {
       }
       if (sub === "apply" || sub === undefined) {
         const { runSigningSetup } = await import("./features/signing/index.js");
-        const projectDir = resolve(args[2] ?? ".");
+        const projectDir = resolve(signingProjectArgument(args.slice(2)));
         const noSigning = args.includes("--no-signing");
         const dryRun = args.includes("--dry-run");
         const platformsFlag = flagValue("--platforms");
@@ -639,6 +641,28 @@ async function handleKeys(): Promise<void> {
       break;
     }
     case "push": {
+      if (dryRun) {
+        const plan = {
+          project: projectName,
+          dryRun: true,
+          target,
+          repo: repoArg ?? null,
+          actions: [
+            ...(target === "coolify" || target === "both"
+              ? ["Set DOTENV_PRIVATE_KEY_PRODUCTION on the matching Coolify app"]
+              : []),
+            ...(target === "gh" || target === "both"
+              ? ["Set DOTENV_PRIVATE_KEY_PRODUCTION as a GitHub Actions secret"]
+              : []),
+          ],
+        };
+        console.log(
+          isJson
+            ? JSON.stringify(plan)
+            : `Dry run: ${plan.actions.join("; ")}. No credentials read or changes made.`,
+        );
+        break;
+      }
       const repo = repoArg ?? (target === "coolify" ? undefined : await detectRepoSlug());
       if ((target === "gh" || target === "both") && !repo) {
         throw new Error("Couldn't infer GitHub repo for --target=gh. Pass --repo <owner/repo>.");
@@ -1116,9 +1140,21 @@ function addPositionals(rawArgs: string[]): string[] {
 }
 
 function recordProvisionedEvent(ledger: RunLedger, event: ProvisionedEvent): void {
-  if (event.service === "glitchtip") ledger.record({ kind: "glitchtip", project: event.project });
+  if (event.service === "glitchtip") {
+    ledger.record({
+      kind: "glitchtip",
+      project: event.project,
+      baseUrl: event.baseUrl,
+      organizationSlug: event.organizationSlug,
+    });
+  }
   if (event.service === "plausible" && event.created) {
-    ledger.record({ kind: "plausible", project: event.project });
+    ledger.record({
+      kind: "plausible",
+      project: event.project,
+      baseUrl: event.baseUrl,
+      domain: event.domain,
+    });
   }
   if (event.service === "sesDomain") {
     ledger.record({ kind: "sesDomain", domain: event.domain });
@@ -1721,6 +1757,9 @@ async function handleProvisionS3(): Promise<void> {
     return i >= 0 ? args[i + 1] : undefined;
   };
   const provider = flag("--provider");
+  if ((args.includes("--provider") && provider === undefined) || (provider && provider !== "r2")) {
+    throw new Error("Bucket auto-provisioning supports only --provider r2 (the default).");
+  }
   const assetsBucketName = flag("--assets-bucket");
   const stateBucketName = flag("--state-bucket");
   // State bucket is opt-in. Default: only the public assets bucket is
@@ -1870,6 +1909,27 @@ async function handleProvisionS3(): Promise<void> {
     skipCors: skipCors || undefined,
   });
 
+  const provisionedManifest = readManifest(projectDir);
+  if (
+    provisionedManifest &&
+    (result.assets.created || result.state?.created || result.tokenCreated)
+  ) {
+    const ledger = RunLedger.resumeOrStart(provisionedManifest.name);
+    for (const bucket of [result.assets, result.state]) {
+      if (bucket?.created)
+        ledger.record({ kind: "r2Bucket", bucketName: bucket.name, accountId: result.accountId });
+    }
+    if (result.tokenCreated) {
+      ledger.record({
+        kind: "r2Token",
+        tokenId: result.tokenCreated.tokenId,
+        accountId: result.accountId,
+        audience: result.tokenCreated.audience,
+      });
+    }
+    ledger.complete();
+  }
+
   console.log();
   console.log(chalk.green(result.state ? "  ✓ Buckets ready" : "  ✓ Bucket ready"));
   console.log(
@@ -1987,7 +2047,7 @@ async function handleRemove(): Promise<void> {
   //   hatchkit remove raptor-runner all
   //   hatchkit remove raptor-runner glitchtip,listmonk-ses
   //   hatchkit remove raptor-runner all --yes     (skip confirmation)
-  const positional = args.slice(1).filter((a) => !a.startsWith("--"));
+  const positional = args.slice(1).filter((a) => !a.startsWith("-"));
   const dryRun = args.includes("--dry-run");
   const skipConfirm = args.includes("--yes") || args.includes("-y");
   let baseName = positional[0];
@@ -2017,21 +2077,25 @@ async function handleRemove(): Promise<void> {
     services = await multiselect<ProvisionService>({
       message: "Which services to remove?",
       choices: [
-        { name: "GlitchTip (deletes the project)", value: "glitchtip", checked: true },
-        { name: "Plausible (deletes the site)", value: "plausible", checked: false },
+        { name: "GlitchTip (deletes recorded owned projects)", value: "glitchtip", checked: true },
+        { name: "Plausible (deletes recorded owned sites)", value: "plausible", checked: false },
         {
-          name: "Listmonk + SES (deletes the per-project Listmonk lists; keeps the SES identity)",
+          name: "Listmonk + SES (deletes owned lists, API users and roles; keeps SES)",
           value: "listmonk-ses",
           checked: true,
         },
-        { name: "S3 / R2 (deletes per-bucket scoped tokens)", value: "s3", checked: false },
         {
-          name: "Email forwarding (deletes routing rules + DNS records; keeps destination)",
+          name: "S3 / R2 (revokes recorded owned tokens; keeps buckets)",
+          value: "s3",
+          checked: false,
+        },
+        {
+          name: "Email forwarding (deletes owned rules; keeps DNS and destination)",
           value: "email",
           checked: false,
         },
         {
-          name: "Google Search Console (removes property; keeps verification token)",
+          name: "Google Search Console (preserved; property ownership is not recorded)",
           value: "search-console",
           checked: false,
         },
@@ -2055,7 +2119,7 @@ async function handleRemove(): Promise<void> {
   if (!skipConfirm && !dryRun) {
     const { confirm } = await import("@inquirer/prompts");
     const ok = await confirm({
-      message: `Delete clients of "${baseName}" from ${services.join(", ")}? This can't be undone.`,
+      message: `Delete recorded owned resources for "${baseName}" from ${services.join(", ")}? This can't be undone. Adopted and untracked resources stay.`,
       default: false,
     });
     if (!ok) {
@@ -2064,12 +2128,10 @@ async function handleRemove(): Promise<void> {
     }
   }
 
-  // For `s3` removal, hand the orchestrator a projectDir so it can read
-  // the manifest's s3Buckets list. Default: walk up from the named
-  // project directory if it exists; the s3 unprovision falls back to
-  // a keychain sweep when the manifest can't be found.
+  // The ledger identifies remote resources. A matching local manifest
+  // is used only to clear exact R2 token IDs after successful revocation.
   let projectDir: string | undefined;
-  if (services.includes("s3") || services.includes("search-console")) {
+  if (services.includes("s3")) {
     const guess = resolve(baseName);
     if (existsSync(join(guess, ".hatchkit.json"))) {
       projectDir = guess;
@@ -3740,7 +3802,7 @@ async function handleUpdate(): Promise<void> {
   const result = await runUpdate(projectDir, {
     dryRun,
     // `--force` only widens what a feature ADD may replace in package.json
-    // (scripts, dependency pins). Files are never overwritten either way.
+    // (scripts, dependency pins). Owned operational files and recognized security migrations can be refreshed.
     force: args.includes("--force"),
     ...(presets ? { presets } : {}),
   });
@@ -4109,15 +4171,16 @@ function printCommandHelp(cmd: string | undefined): void {
 
 function printProvisionUsage(): void {
   console.log("Usage: hatchkit provision s3 [flags]");
-  console.log("Provisions S3/R2 buckets for the project in the current directory.\n");
+  console.log("Provisions Cloudflare R2 buckets for the project in the current directory.\n");
   console.log("Flags:");
+  console.log("  --provider r2             Bucket provider (R2 only; defaults to r2)");
   console.log("  --assets-bucket <name>     Override default <project>-assets name");
   console.log("  --with-state-bucket        Also create the private <project>-state bucket");
   console.log(
     "  --state-bucket <name>      Create state bucket with this name (implies --with-state-bucket)",
   );
   console.log(
-    "  --public-hostname <host>   Custom domain for the assets bucket (default s3.<domain>)",
+    "  --public-hostname <host>   Custom domain for the assets bucket (default assets.<domain>)",
   );
   console.log(
     "  --no-custom-domain         Skip custom-domain attempt; use the managed r2.dev URL",
@@ -4340,7 +4403,8 @@ function printHelp(topic?: HelpTopic): void {
     --domain <host>                Public domain. Defaults to <name>.<your root domain>
     --description <text>           One-liner for package.json + Coolify. Pass empty to skip.
     --surfaces <${SURFACE_VALUES}>
-                                   ${chalk.dim("fullstack")}=one package w/ server runtime, ${chalk.dim("split")}=server+client,
+                                   ${chalk.dim("fullstack")}/${chalk.dim("split")}=server/client/shared workspace;
+                                   fullstack shares observability, split separates it;
                                    ${chalk.dim("backend")}=API/worker only, ${chalk.dim("static")}=no server runtime
     --topology <single-origin|split>  Coolify app layout (default: single-origin)
 
@@ -4637,15 +4701,16 @@ function printHelp(topic?: HelpTopic): void {
     ${chalk.cyan("--yes")}, ${chalk.cyan("-y")}          Don't prompt; accept the additions.
     ${chalk.cyan("--json")}             Print the result as JSON.
     ${chalk.cyan("--force")}            Replace package.json scripts / dependency pins the
-                       project has changed. Never replaces a file.
+                       project has changed. Owned-file refresh runs independently.
 
   ${chalk.bold("What it does:")}
     Reads the project's .hatchkit.json manifest, lets you pick a new
     feature set, and copies the additive pieces from the starter.
-    A file the project already has is never overwritten, and neither is a
-    package.json script or dependency pin it has changed — those are
-    reported as kept. ${chalk.cyan("--force")} replaces the package.json pieces
-    (never files) with the starter's current versions.
+    Preserves user feature files and changed package.json entries. It also
+    regenerates Hatchkit-owned operational files and applies recognized
+    security migrations; inspect the reported changes and git diff.
+    ${chalk.cyan("--force")} replaces package.json scripts and dependency pins; it
+    does not authorize blanket file replacement.
     Currently supported additions: ${chalk.cyan(SUPPORTED_ADDITIONS.join(", "))}.
 
     ${chalk.cyan("workspaces")} adds tenants, members, roles and invitations. It only
@@ -5264,7 +5329,7 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("Surfaces:")}
     hatchkit asks which surfaces your project has. Options:
-      · ${chalk.cyan("fullstack")}  — single package, server runtime, one obs project (recommended)
+      · ${chalk.cyan("fullstack")}  — server/client/shared workspace, server runtime, one obs project (recommended)
       · ${chalk.cyan("split")}      — separate server + client packages, one obs project per surface
       · ${chalk.cyan("backend")}    — API / CLI / worker, no UI bundle
       · ${chalk.cyan("static")}     — gh-pages / S3+CDN / SPA, no server runtime
@@ -5438,7 +5503,7 @@ function printHelp(topic?: HelpTopic): void {
   }
   if (topic === "remove") {
     console.log(`
-  ${chalk.bold("hatchkit remove")} — inverse of ${chalk.cyan("add")}: tear down per-project clients
+  ${chalk.bold("hatchkit remove")} — remove recorded owned service resources
 
   ${chalk.bold("Usage:")}
     hatchkit remove [<project-name>] [<services>] [--dry-run] [--yes]
@@ -5447,28 +5512,28 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.dim("(<services> is 'all', a single service, or a comma-separated list.)")}
 
   ${chalk.bold("What it does:")}
-    For every selected service, deletes both clients:
-      - ${chalk.cyan("<project-name>-dev")}
-      - ${chalk.cyan("<project-name>-prod")}
-    Also removes the local env cache at
-    ${chalk.dim("<config-dir>/provisioned/<project-name>.{dev,prod}.env")}.
+    Reads the project's run ledger and deletes only resources recorded as
+    created by Hatchkit, using their exact provider identities. Adopted and
+    untracked resources stay. Legacy entries missing an exact identity need
+    manual review; current names, manifests and caches do not prove ownership.
+    Successful deletions retire only their own ledger entries. Failed and
+    skipped entries remain for retry. Missing resources are already gone.
 
-    Re-runs are idempotent — missing upstream resources log
-    ${chalk.dim("already gone")} and keep going.
+    Keeps env files, cached env, local credentials, buckets, SES identities,
+    DNS and email destinations. Review local service settings before reuse.
+    Matching R2 token IDs are cleared from a matching local project manifest.
 
   ${chalk.bold("Services:")}
-    glitchtip   Deletes the GlitchTip project
-    plausible   Deletes the Plausible site cached for this project
+    glitchtip   Deletes recorded GlitchTip projects at the recorded provider/org
+    plausible   Deletes recorded Plausible domains at the recorded provider
     listmonk-ses
-                Deletes the per-project Listmonk lists, and (with the
-                hatchkit-admin credential) the project's own API user and its
-                two roles; keeps the SES identity so a future re-add can reuse
-                the verified sending subdomain
+                Deletes owned lists by ID and, with hatchkit-admin, owned API
+                users and roles. Roles still held by users stay. Keeps SES.
+    email       Deletes owned Email Routing rules by zone and rule ID
+    s3          Revokes recorded R2 tokens; keeps buckets and their contents
     search-console
-                Removes the Search Console property from your Google account
-                (keeps DNS verification token / ownership state)
-    s3          Deletes per-bucket scoped Cloudflare R2 API tokens
-                (clears the keychain entries and DELETEs upstream)
+                Preserves properties: creation ownership is not recorded.
+                Review property removal in the Search Console dashboard.
 
   ${chalk.bold("Options:")}
     --dry-run   Print what would be deleted; hit no APIs, remove no files.
@@ -5897,9 +5962,10 @@ function printHelp(topic?: HelpTopic): void {
 
   ${chalk.bold("What it does:")}
     Reads ${chalk.cyan(".hatchkit.json")} from the project root, finds the matching
-    Coolify application(s) by name, and PATCHes the domain + ports
-    payload onto each one. Idempotent — apps already in sync are
-    reported and skipped.
+    Coolify application(s) by name, creates missing apps, and reconciles
+    routing, ports, environment variables, DNS and deployment secrets.
+    These writes are enabled by default; use --dry-run to inspect them.
+    Apps already in sync are reported and skipped.
 
     Multi-hostname projects: the manifest's primary ${chalk.dim("domain")} plus any
     ${chalk.dim("aliases[]")} are comma-joined into one Domain value, so a single
@@ -5945,14 +6011,16 @@ function printHelp(topic?: HelpTopic): void {
     · You want a one-shot reconcile after editing the manifest by hand.
 
   ${chalk.bold("Out of scope (use other commands):")}
-    · DNS records  → ${chalk.cyan("hatchkit dns publish")} (or adopt / rename-domain)
-    · Env vars     → ${chalk.cyan("hatchkit keys push")}
-    · ML services  → ${chalk.cyan("hatchkit add gpu")}
+    · ML services  → ${chalk.cyan("hatchkit config add modal")}
     · S3 buckets   → ${chalk.cyan("hatchkit provision s3")}
 
   ${chalk.bold("Options:")}
     --dir <path>   Project root (defaults to cwd).
-    --dry-run      Show the diff without PATCHing Coolify. Read-only.
+    --dry-run      Inspect the plan without writing. Performs read-only checks.
+    --no-create    Leave missing apps uncreated.
+    --no-env       Skip environment synchronization.
+    --no-dns       Skip DNS synchronization.
+    --no-secrets   Skip deployment-secret synchronization.
     --deploy       After PATCHing, trigger a Coolify redeploy of each
                    changed app. Coolify only regenerates traefik labels
                    on deploy, so a routing fix isn't live until this
@@ -6044,13 +6112,20 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Subcommands:")}
     config              Show status of every configured provider (alias: \`status\`)
     config add <p>      Configure a provider
-                        (coolify, ghcr, hetzner, cloudflare, dns, s3, modal, runpod, hf, replicate,
+                        (coolify, coolify-github-app, ghcr, hetzner, cloudflare,
+                         cloudflare-workers, dns, s3, modal, runpod, hf, replicate,
                          glitchtip, plausible, listmonk, ses, search-console, stripe)
     config pause <p> --reason "<why>" [--since YYYY-MM-DD]
                         Mark a provider stopped on purpose; doctor skips it
                         and shows the reason. Credentials stay stored.
     config resume <p>   Check a paused provider again
     config reset        Clear ALL CLI config (providers, tokens, ML registry, ports)
+
+  ${chalk.bold("Provider options:")}
+    config add ghcr --manual    Enter registry credentials instead of deriving them.
+    config add listmonk --default-from <address>  Set the default sender.
+    config add listmonk --deploy  Deploy Listmonk on the configured server.
+    config add s3               Select Hetzner, AWS or Cloudflare R2 interactively.
 `);
     return;
   }
@@ -6161,8 +6236,14 @@ function printHelp(topic?: HelpTopic): void {
     server add      Retrofit a server into a client-only project
     add             Create GlitchTip / Plausible / Listmonk + SES / email / search clients for an existing project
     add i18n        Give a scaffolded project a second language (writes local files only)
+    dev-setup       Configure local Tailscale development URLs
+    signing         Configure installer signing and store uploads
+    regen-infra     Regenerate owned infrastructure and release files
+    provision s3    Provision project R2 buckets and scoped credentials
+    ses             Inspect and manage SES identities, sending and feedback
+    backup          Configure backups, inspect snapshots and test isolated recovery
     assets          Move bytes between local S3 and prod buckets (seed/push/pull/migrate)
-    remove          Delete the -dev/-prod clients created by 'add' (inverse of add)
+    remove          Delete only service resources recorded as created by Hatchkit
     destroy         Roll back everything ${chalk.cyan("hatchkit create")} did for a project
     rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)
     migrate-domain  Move a LIVE project to a new domain (files + SES/R2/DNS/Coolify/Stripe)
@@ -6170,16 +6251,16 @@ function printHelp(topic?: HelpTopic): void {
     migrate-client  Serve a LIVE project's client from Cloudflare Workers; the API stays on Coolify
     rename-project  Change a scaffolded project's slug (rewrites manifest/pkg.json/tfvars/env/ledger)
     set-description Update a project's description across manifest, package.json, Coolify, GitHub
-    sync            Push the manifest's domain/ports onto the matching Coolify app(s)
+    sync            Reconcile apps, routing, env, DNS and deploy secrets from the manifest
     release         Coordinate one version across every surface (plan/cut/status/check)
     mac-runner      Run a private repo's macOS/iOS CI jobs on this Mac, on demand (on/off/serve/run)
     gh-pages        Wire GitHub Pages for the current repo (static / Vite / Jekyll — with DNS)
     cloudflare      Wire Cloudflare Workers Static Assets for the current repo
     dns             DNS reconciliation helpers (publish, link-to-cloudflare)
     plausible       Plausible site helpers (rename — domain change with history kept; merge — fold a CE site into another)
-    listmonk user   Give a project its own Listmonk API user (roles + env rewrite)
-    host integrity  Scan the Coolify host for signs of a compromised container (read-only; install = daily mail)
-    host updates    Flag shared services (Coolify, Traefik, Plausible, …) that a high/critical advisory covers (read-only; install = weekly mail)
+    listmonk        Manage project API users, additional lists and diagnostics
+    host integrity  Scan host/container integrity (install = five-minute checks + daily CPU sample)
+    host updates    Flag shared services (Coolify, Traefik, Plausible, …) that a high/critical advisory covers (read-only; install = four-hour checks + daily image scan)
     audit cloudflare  Report tokens, audit-log entries and resources hatchkit did not create (read-only)
     infra plan|apply <stack>  Run one of hatchkit's own Terraform stacks (ota-updates) with a minted run token
     email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)

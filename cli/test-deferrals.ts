@@ -295,7 +295,7 @@ const stub = createServer((req, res) => {
     return;
   }
   res.writeHead(201, { "content-type": "application/json" });
-  res.end("{}");
+  res.end(JSON.stringify({ slug: "raptor" }));
 });
 await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
 const stubPort = (stub.address() as AddressInfo).port;

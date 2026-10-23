@@ -1,20 +1,11 @@
 ---
 title: Email — Listmonk + SES
-description: Self-hosted mailing-list manager backed by AWS SES delivery. The sovereign-cheap alternative to Resend Pro for transactional sends and broadcasts.
+description: Configure Listmonk and AWS SES for transactional email, mailing lists, and per-project credentials.
 ---
 
-Hatchkit can wire up two providers for outbound email:
+Hatchkit provisions Listmonk with AWS SES for outbound email. All non-`none` email choices in `create` use this integration.
 
-| Need | Resend | Listmonk + SES |
-|---|---|---|
-| Transactional sends | one API key per env | Listmonk `/api/tx` |
-| Mailing list broadcasts | Audiences | Listmonk lists |
-| Subscribe / confirm / unsub UI | bring your own | Listmonk admin UI |
-| Cost (low-volume hobbyist) | €20/month entry tier | ~€0.10 per 1,000 sends + €0 Listmonk |
-| Owns IP reputation | Resend | you (via SES) |
-| Setup friction | one paste of an API key | SES + Listmonk + admin wizard |
-
-If you only need transactional sends and don't want to think about infra, Resend is the right answer. If you run more than one project from your domain, or you want a sovereign + cheap stack, Listmonk + SES is the pick.
+Listmonk manages lists, subscriptions, and transactional templates. SES delivers the messages. Configure both providers before provisioning a project. Older Resend integrations are no longer offered by the CLI.
 
 ## How the stack composes
 
@@ -153,7 +144,7 @@ hatchkit add <project> listmonk-ses
 This runs these steps, all idempotent on re-run:
 
 1. **Verify the SES sending subdomain.** Hatchkit calls `CreateEmailIdentity` for `mail.<projectDomain>` and gets back 3 DKIM tokens.
-2. **Publish DKIM CNAMEs into Cloudflare.** Same upsert + SPF-merge plumbing as Resend's flow. Records are tracked in the run-ledger so `hatchkit destroy <project>` can DELETE only what this run created.
+2. **Publish DKIM CNAMEs into Cloudflare.** Records are tracked in the run-ledger so `hatchkit destroy <project>` can DELETE only what this run created.
 3. **Route bounces and complaints to Listmonk.** The identity's Bounce and Complaint notifications go to the shared SNS topic that Listmonk listens on. See [Bounces and complaints](#bounces-and-complaints).
 4. **Create the project's Listmonk lists.** `<project>` (live, its id lands in `.env.production`) and `<project>-test` (dev, its id lands in both env files). Both are private and double opt-in (see [Double opt-in](#double-opt-in)). A list that already exists by that name is reused as it is. If it is still single opt-in, the run reports it and leaves it unchanged.
 5. **Create the project's own Listmonk API user.** A user role, a list role and an API user, each named `<project>`. See [One API user per project](#one-api-user-per-project).
@@ -360,7 +351,7 @@ The cleanup reads every subscriber with `subscribers:get_all` and deletes with `
 hatchkit remove <project> listmonk-ses
 ```
 
-Removes the per-project Listmonk lists. With the `hatchkit-admin` credential, it also deletes the project's API user, then its user role, then its list role. A role another user still holds stays. The SES identity (`mail.<projectDomain>`) is intentionally left in place because un-verifying it requires re-publishing DKIM if you ever recreate the project. To fully destroy SES state, use `hatchkit destroy <project>` — the ledger-driven destroy honors the `sesDomain` step. It also clears the identity's Bounce and Complaint notification topics, but only the ones that run set. The shared SNS topic, its subscription, the account suppression list and Listmonk's bounce settings stay, because the other projects use them.
+Deletes Listmonk lists, API users, and roles only when their exact identities are recorded as created in the project's ledger. Missing or ambiguous ownership records leave resources in place. The admin credential is required for user/role deletion, and a role another user holds is retained. The SES identity (`mail.<projectDomain>`) is intentionally left in place because un-verifying it requires re-publishing DKIM if you ever recreate the project. To fully destroy SES state, use `hatchkit destroy <project>` — the ledger-driven destroy honors the `sesDomain` step. It also clears the identity's Bounce and Complaint notification topics, but only the ones that run set. The shared SNS topic, its subscription, the account suppression list and Listmonk's bounce settings stay, because the other projects use them.
 
 ## Bounces and complaints
 

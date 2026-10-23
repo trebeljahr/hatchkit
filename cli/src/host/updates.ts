@@ -24,8 +24,8 @@
  *    run would otherwise spend the host's 60 unauthenticated requests an
  *    hour). One doctor row covers every host.
  *  - `hatchkit host updates install --host <name>` puts it next to the
- *    backup runner with a daily timer that mails findings through the
- *    backup-alert SMTP, so an advisory is flagged within a day.
+ *    backup runner with a four-hour timer that mails findings through the
+ *    backup-alert SMTP; overdue findings receive daily reminders.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -33,7 +33,7 @@ import { type BackupHost, backupHost, backupHostExec, backupHosts } from "../bac
 import { getHetznerConfig, getProviderPause } from "../config.js";
 import { exec } from "../utils/exec.js";
 
-/** A daily check older than this has missed a run. */
+/** A four-hour check older than this has missed a run. */
 const STALE_DAYS = 1 / 3;
 const GITHUB = "https://api.github.com";
 
@@ -74,7 +74,15 @@ export interface WatchedService {
 }
 
 export interface UpdateFinding {
-  kind: "advisory" | "auto-update" | "cloudflare-ranges" | "cloudflare-chain" | "host-runtime" | "node-runtime" | "certificate-trust" | "image-package";
+  kind:
+    | "advisory"
+    | "auto-update"
+    | "cloudflare-ranges"
+    | "cloudflare-chain"
+    | "host-runtime"
+    | "node-runtime"
+    | "certificate-trust"
+    | "image-package";
   service: string;
   name: string;
   summary: string;
@@ -254,25 +262,34 @@ async function ghJson(url: string, paginate: boolean): Promise<unknown> {
 export async function prefetchFeeds(specs = watchedServices()): Promise<Record<string, unknown>> {
   const feeds: Record<string, unknown> = {};
   await Promise.all(
-    [...new Set([...specs.map((s) => s.github), "moby/moby", "containerd/containerd", "opencontainers/runc", "tailscale/tailscale"])]
-      .filter((repo): repo is string => !!repo).flatMap((repo) =>
-      repo
-        ? [
-            ghJson(advisoriesUrl(repo), true).then((data) => {
-              if (Array.isArray(data))
-                feeds[advisoriesUrl(repo)] = (data as Advisory[]).map(trimAdvisory);
-            }),
-            ghJson(latestUrl(repo), false).then((data) => {
-              const release = data as { tag_name?: string; published_at?: string } | null;
-              if (release?.tag_name)
-                feeds[latestUrl(repo)] = {
-                  tag_name: release.tag_name,
-                  published_at: release.published_at ?? null,
-                };
-            }),
-          ]
-        : [],
-    ),
+    [
+      ...new Set([
+        ...specs.map((s) => s.github),
+        "moby/moby",
+        "containerd/containerd",
+        "opencontainers/runc",
+        "tailscale/tailscale",
+      ]),
+    ]
+      .filter((repo): repo is string => !!repo)
+      .flatMap((repo) =>
+        repo
+          ? [
+              ghJson(advisoriesUrl(repo), true).then((data) => {
+                if (Array.isArray(data))
+                  feeds[advisoriesUrl(repo)] = (data as Advisory[]).map(trimAdvisory);
+              }),
+              ghJson(latestUrl(repo), false).then((data) => {
+                const release = data as { tag_name?: string; published_at?: string } | null;
+                if (release?.tag_name)
+                  feeds[latestUrl(repo)] = {
+                    tag_name: release.tag_name,
+                    published_at: release.published_at ?? null,
+                  };
+              }),
+            ]
+          : [],
+      ),
   );
   return feeds;
 }
@@ -395,7 +412,7 @@ function days(since: string, now: Date): number {
   return (now.getTime() - new Date(since).getTime()) / 86_400_000;
 }
 
-/** The daily timer on one host: null when healthy, else what is wrong. */
+/** The four-hour timer on one host: null when healthy, else what is wrong. */
 function timerProblem(
   scan: HostScan & { report: UpdateReport },
   now: Date,
@@ -408,7 +425,7 @@ function timerProblem(
   if (!timer.installed)
     return {
       status: "warn",
-      line: `daily check not installed on ${host.name}`,
+      line: `four-hour check not installed on ${host.name}`,
       hint: [
         preview,
         `Install (writes the script and a timer to the host): hatchkit host updates install --host ${host.name}`,
@@ -417,13 +434,13 @@ function timerProblem(
   if (!timer.active)
     return {
       status: "fail",
-      line: `daily check on ${host.name} is installed, but its timer is not active`,
+      line: `four-hour check on ${host.name} is installed, but its timer is not active`,
       hint: [`Start it: ${ssh} systemctl enable --now hatchkit-update-watch.timer`],
     };
   if (timer.serviceResult && timer.serviceResult !== "success")
     return {
       status: "fail",
-      line: `daily check on ${host.name}: last run ended with systemd result "${timer.serviceResult}"`,
+      line: `four-hour check on ${host.name}: last run ended with systemd result "${timer.serviceResult}"`,
       hint: [logs],
     };
   const last = timer.lastCheck;
@@ -432,13 +449,13 @@ function timerProblem(
   if (age > STALE_DAYS)
     return {
       status: "fail",
-      line: `daily check on ${host.name}: last run ${last.checkedAt}, ${Math.round(age)} days ago`,
+      line: `four-hour check on ${host.name}: last run ${last.checkedAt}, ${Math.round(age * 24)} hours ago`,
       hint: [logs, `Run one now: ${ssh} systemctl start --no-block hatchkit-update-watch.service`],
     };
   if (last.mailError)
     return {
       status: "fail",
-      line: `daily check on ${host.name} could not mail its result: ${last.mailError}`,
+      line: `four-hour check on ${host.name} could not mail its result: ${last.mailError}`,
       hint: [
         `Test the mail path: hatchkit host updates test --host ${host.name}`,
         "Re-send the SMTP settings: hatchkit backup alerts --to <email> --from <verified-ses-email>",
@@ -575,7 +592,9 @@ export function updateRow(
     ...(behind.length && !failures.length
       ? [`behind the latest release: ${behind.join(", ")}`]
       : []),
-    ...(lastRuns.length && status === "ok" ? [`daily check last ran ${lastRuns.join(", ")}`] : []),
+    ...(lastRuns.length && status === "ok"
+      ? [`four-hour check last ran ${lastRuns.join(", ")}`]
+      : []),
   ];
   const cloudflare = scans.find((s) => s.report?.cloudflare?.etag)?.report?.cloudflare;
   if (cloudflare && !failures.length) {
@@ -731,7 +750,7 @@ export async function installUpdateWatch(host: BackupHost, dryRun: boolean) {
     backupHost: host.name,
     ...result,
     schedule: "every 4 hours UTC (+ up to 15 min)",
-    mail: "through the backup-alert SMTP; new or changed abnormalities only; healthy and unchanged runs stay silent",
+    mail: "through the backup-alert SMTP; new or changed abnormalities plus daily overdue reminders; healthy runs stay silent",
     nextSteps: dryRun
       ? [`Install: hatchkit host updates install --host ${host.name}`]
       : [
@@ -763,6 +782,10 @@ traefik:v3.6 is resolved from the image label or the binary. It reports:
   - every high or critical GitHub security advisory whose vulnerable range
     covers the running version, with its fixed version and the latest release
     (GlitchTip publishes no advisories; it is compared with its latest tag)
+  - host Docker Engine, containerd, runc and Tailscale security versions
+  - container Node.js security floors and compromised CA trust chains
+  - final-image package vulnerabilities and CISA known-exploited findings
+    (installed monitoring tracks remediation deadlines and overdue findings)
   - Coolify's auto-update failing (the newest /data/coolify/source/upgrade-*.log
     ends in an error)
   - Cloudflare's IP ranges (api.cloudflare.com/client/v4/ips) differing from
@@ -774,11 +797,13 @@ GitHub is read here through gh; what fails here the host reads itself. Exits 1
 on a finding. hatchkit doctor shows the same as one row.
 
 install puts the script next to the backup runner (/opt/hatchkit-backups) with
-a daily timer (06:00 UTC) that mails findings through the backup-alert
-SMTP (hatchkit backup alerts), so a new advisory is flagged within a day. It
+a four-hour advisory timer plus a daily Grype final-image scan. Installation requires
+a verified Grype binary. Findings are mailed through the backup-alert
+SMTP (hatchkit backup alerts). New or changed findings trigger mail; overdue
+findings receive daily reminders. Healthy runs stay silent. Installation
 refuses a host without the backup runner or its alert mail, and runs one
 read-only scan before it writes. --dry-run runs only that scan and prints what
-the first mail would list. uninstall removes the script and the timer.
+the first mail would list. uninstall removes both scripts and their timers.
 test sends a test mail through the installed script.
 `;
 

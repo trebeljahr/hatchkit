@@ -62,7 +62,7 @@ hatchkit setup
 Self-hosted PaaS that runs the final app container. Hatchkit uses the Coolify API to:
 
 - Create the app from your GitHub repo,
-- Push encrypted env vars + the dotenvx private key,
+- Synchronize resolved environment variables and scoped deployment hooks,
 - Trigger deploys.
 
 **You need:** a Coolify URL (e.g. `https://coolify.example.com`) and an API token with write access to projects / applications / env vars.
@@ -77,7 +77,7 @@ Optional. Used when you pick **"new VPS"** as a deploy target.
 
 **You need:** a Hetzner Cloud API token.
 
-Hatchkit will pick a server size interactively (CX22 / CX32 / CX42 / CX52 or the CAX ARM line) and Terraform will provision the VM, attach SSH keys, and bootstrap Coolify.
+The CLI offers `cpx21`, `cpx31`, and `cpx41`. Terraform provisions the selected VM, attaches SSH keys, and bootstraps Coolify. Provider availability still depends on the selected location.
 
 Configure: `hatchkit config add hetzner`.
 
@@ -87,10 +87,7 @@ Configure: `hatchkit config add hetzner`.
 
 Hatchkit creates the apex + `api.` records pointing at the deploy target.
 
-**Supported:**
-
-- **INWX** — username + password + optional 2FA shared secret
-- **Cloudflare** — the Cloudflare operator token (see [Cloudflare](#cloudflare))
+The CLI uses **Cloudflare DNS**, through the local operator token described [below](#cloudflare). INWX credentials support registrar nameserver changes. They do not select a second CLI DNS provider. Some standalone Terraform stacks retain INWX DNS support.
 
 Configure: `hatchkit config add dns` (asks for the INWX registrar details; the token comes from `hatchkit config add cloudflare`).
 
@@ -135,10 +132,14 @@ Opt-in via the `s3` feature during `create`.
 |---|---|
 | Hetzner Object Storage | access key + secret + region |
 | AWS S3 | access key + secret + region |
-| Cloudflare R2 | account ID + access key + secret |
+| Cloudflare R2 | account ID + local operator token; Hatchkit mints scoped project credentials |
 | Existing | paste your own bucket credentials into the app env |
 
 Configure: `hatchkit config add s3`.
+
+`hatchkit provision s3` currently creates buckets only on R2. It defaults to
+`--provider r2` and rejects other providers. Hetzner and AWS configurations
+support storage integration; they do not enable this bucket provisioner.
 
 ---
 
@@ -230,8 +231,8 @@ For deploying ML services. See [ML services](./ml-services) for the end-to-end f
 | Platform | Notes |
 |---|---|
 | **Modal** | Serverless GPUs. Hatchkit shells out to the `modal` CLI. |
-| **RunPod** | Serverless endpoints via the RunPod API. |
-| **Hugging Face** | Inference Endpoints API. |
-| **Replicate** | Hosted model API. |
+| **RunPod** | Prints manual container/deployment directions; does not create an endpoint through the API. |
+| **Hugging Face** | Prints manual setup directions; does not provision an Inference Endpoint. |
+| **Replicate** | Prints manual publishing directions; does not publish a model. |
 
 Configure: `hatchkit config add modal` (or `runpod`, `hf`, `replicate`).

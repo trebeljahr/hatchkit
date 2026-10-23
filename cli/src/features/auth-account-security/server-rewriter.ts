@@ -113,8 +113,9 @@ export function rewriteServerAuth(
  * a self-host that has another configured perfectly well, leaving the user
  * waiting for mail nobody ever tried to send.
  *
- * A configured transport that throws still logs the URL on the way out, and
- * still rethrows — a silent delivery failure is the worse outcome.
+ * Recovery logging follows logAuthUrl's policy: development/test, or explicit
+ * AUTH_LOG_LINKS=true owner recovery. Production otherwise refuses the fallback.
+ * A configured transport failure still rejects the request.
  */
 async function deliverAuthMail(
   label: string,
@@ -141,9 +142,8 @@ async function deliverAuthMail(
     out = `${out.slice(0, anchor)}${senderBlock.trimStart()}\n${out.slice(anchor)}`;
   }
 
-  // requireEmailVerification becomes dynamic. Only when mail can actually
-  // be delivered — a self-host with no transport would otherwise lock
-  // every new account out behind a link that reaches only the server log.
+  // Normalize a legacy literal before installing verificationPolicy below.
+  // The final policy requires verification by default in production.
   if (options.wantsEmailVerification) {
     out = out.replace(
       /requireEmailVerification:\s*false,[^\n]*/,

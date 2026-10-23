@@ -19,11 +19,8 @@
 import { readFileSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { parseJsonOutput, runHatchkit } from "./cli-bridge.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { parseHatchkitResult, runHatchkit, scrubCliDiagnostic } from "./cli-bridge.js";
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -43,7 +40,7 @@ const TOOLS = [
   {
     name: "hatchkit_doctor",
     description:
-      "Live-verifies every configured provider with a read-only API call. Returns per-provider health plus `hint` arrays with contextual fix steps (credential rotation URL, required scopes, exact `hatchkit config add <x>` to re-run) for any failing check.",
+      "Runs read-only provider, project and host health checks. Returns per-check health and contextual `hint` arrays. Native keychain access is denied by default under MCP, so credential-dependent checks can be skipped and unverified. Do not treat an unverified check as healthy or enable credential access without the user's authorization.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -63,7 +60,7 @@ const TOOLS = [
   {
     name: "hatchkit_keys_show",
     description:
-      "Returns the dotenvx private key for a project from the OS keychain. Returns `{ project, found: false, error }` if no key is stored. CAUTION: the key is a live secret — treat output accordingly.",
+      "Returns the dotenvx private key for a project from the OS keychain. Call only when the user explicitly requests that secret. Native keychain access needs intentional host configuration; the default denies unattended access. Returns `{ project, found: false, error }` if no key is stored, or an error if access is blocked. The key is a live secret.",
     inputSchema: {
       type: "object",
       properties: {
@@ -83,28 +80,31 @@ const TOOLS = [
 // ---------------------------------------------------------------------------
 
 const server = new Server(
-  { name: "hatchkit-mcp", version: JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version },
+  {
+    name: "hatchkit-mcp",
+    version: JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version,
+  },
   { capabilities: { tools: {} } },
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: TOOLS,
+}));
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
 
   try {
     if (name === "hatchkit_status") {
-      const { stdout } = await runHatchkit(["status", "--json"]);
-      return jsonToolResponse(parseJsonOutput(stdout));
+      return jsonToolResponse(parseHatchkitResult(await runHatchkit(["status", "--json"])));
     }
     if (name === "hatchkit_doctor") {
       const res = await runHatchkit(["doctor", "--json"]);
       // doctor exits non-zero when checks fail — still return the parsed payload.
-      return jsonToolResponse(parseJsonOutput(res.stdout));
+      return jsonToolResponse(parseHatchkitResult(res));
     }
     if (name === "hatchkit_explain") {
-      const { stdout } = await runHatchkit(["explain", "--json"]);
-      return jsonToolResponse(parseJsonOutput(stdout));
+      return jsonToolResponse(parseHatchkitResult(await runHatchkit(["explain", "--json"])));
     }
     if (name === "hatchkit_keys_show") {
       const project = (args as { project?: unknown })?.project;
@@ -112,11 +112,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         throw new Error("`project` (string) is required");
       }
       const res = await runHatchkit(["keys", "show", project, "--json"]);
-      return jsonToolResponse(parseJsonOutput(res.stdout));
+      return jsonToolResponse(parseHatchkitResult(res));
     }
     throw new Error(`Unknown tool: ${name}`);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = scrubCliDiagnostic(err instanceof Error ? err.message : String(err));
     return {
       isError: true,
       content: [{ type: "text", text: message }],

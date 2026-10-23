@@ -1,0 +1,73 @@
+---
+title: Migrations
+description: Move a client to Cloudflare or change a Coolify runtime, with explicit planning, verification, rollback, and cleanup.
+---
+
+Migration changes an existing deployment. Start in the project directory with a current manifest and a recoverable revision. Read the plan before applying it. A dry-run can perform provider reads and live probes.
+
+## Move the client to Cloudflare
+
+`migrate-client` moves a static client to Workers Static Assets and preserves its Coolify API. It requires `coolifyRuntime: "image"` and a client that builds as a static export. This sets `clientHost: "cloudflare"`; it does not convert the project to a static-only deployment.
+
+```bash
+hatchkit migrate-client --dry-run
+hatchkit migrate-client --repo-only
+```
+
+The dry-run scans the client and probes the live site. `--repo-only` writes local migration files without provider changes. Review Wrangler configuration, caching/redirect files, the static carry script, deployment action, and workflow changes. These changes are not automatically committed.
+
+Then apply the reviewed migration:
+
+```bash
+hatchkit migrate-client
+```
+
+Hatchkit creates the Worker, mints its scoped deploy token, and sets repository CI secrets. It builds the current HEAD as a static export and uploads the first version. It configures host-specific HTTPS redirects, then adds origin exceptions before routing the remaining client paths to the Worker.
+
+The cutover checks the page, deployed version, API health, sign-in origin, WebSocket path, 404 behavior, and HTTPS redirect against a pre-migration baseline. A failed gate removes the Worker route. The Coolify client remains running for rollback.
+
+| Option | Purpose |
+|---|---|
+| `--dir PATH` | Project directory; defaults to cwd |
+| `--worker NAME` | Worker name; defaults to Wrangler name or `<project>-client` |
+| `--origin-path PATH` | Repeat for paths that remain on Coolify; single-origin defaults to `/api` |
+| `--yes` | Skip the migration confirmation |
+| `--rollback` | Remove client Worker routing so Coolify serves the client again |
+| `--cleanup` | Remove the retained Coolify client after the soak and verification gates |
+| `--skip-soak` | Explicitly bypass the seven-day cleanup wait |
+| `--keep-package` | Preserve the GHCR client image package during cleanup |
+
+An origin path `/trpc` preserves `/trpc/*`; `/trpc*` also preserves the bare `/trpc`, which can matter for a WebSocket endpoint. Confirm every server path before cutover.
+
+### Roll back or clean up
+
+Use `hatchkit migrate-client --rollback` while the retained Coolify client is available. This changes live routing. Confirm the original client still works before retiring anything.
+
+After the seven-day soak, `--cleanup` verifies Worker routing, matching release/version metadata, and the retained app's domain. It deletes the Coolify client while keeping volumes, removes client deploy secrets, and normally deletes its GHCR package. It verifies deletion and the live site afterward.
+
+Cleanup retains DNS, server apps, databases, and API/ACME routes. It removes the ready Coolify-client rollback path. Preserve recovery images or use `--keep-package` if they are still required. See [Cloudflare credentials and routing](./cloudflare) for the separate operator and CI responsibilities.
+
+## Move Compose apps to image runtime
+
+```bash
+hatchkit migrate-runtime --dry-run
+hatchkit migrate-runtime
+hatchkit migrate-runtime --rollback
+hatchkit migrate-runtime --cleanup
+```
+
+The migration creates image apps beside the existing Compose app, copies its configuration, verifies readiness through Traefik, and then stops the old app. It records the move and updates deployment references. Rollback restores the retained Compose app. Cleanup deletes the stopped legacy app while preserving volumes.
+
+Apps with database services or volumes are refused by default. Move databases to an appropriate managed resource first. A named volume can follow through explicit `--carry-volume SERVICE=VOLUME`; bind mounts and unsupported mount options remain refused.
+
+Two app revisions can write a carried volume during verification and later rolling deploys. Use this only when the application's database and jobs tolerate that overlap. `--same-json SERVICE=/path:field` compares a JSON field between the old and candidate apps before cutover. See [runtime migration details](./commands#hatchkit-migrate-runtime) for image, health, identity, and routing checks.
+
+Dry-run probes the selected Traefik address. Use the registered backup host's tailnet or an explicit `HATCHKIT_TRAEFIK_ADDRESS` for an origin restricted to Cloudflare. Do not open public management access to make a probe pass.
+
+## Rename files or migrate a live domain
+
+`rename-domain --to HOST --dry-run` previews local hostname rewrites. It does not complete a live domain migration.
+
+`migrate-domain --to HOST --dry-run` plans the coordinated provider migration. Read `hatchkit help migrate-domain` for its prepare, cutover, and cleanup phases. Review DNS, routing, auth origins, and mail identity changes together. Keep the old route until the new deployment and clients are verified.
+
+`regen-infra --dry-run` previews regeneration of tfvars and Coolify stack env files. It does not replace the runtime/client/domain migration checks above.

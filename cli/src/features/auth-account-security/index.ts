@@ -312,7 +312,7 @@ export async function applyAuthAccountSecurity(
   }
   if (has("email-verification")) {
     audit.manualResidue.push(
-      "Email verification: run `pnpm --filter @starter/server run backfill:email-verified` ONCE, straight after the first deploy that configures mail. Without it, every account created while verification was off is refused at sign-in.",
+      "Email verification: configure and test mail before rollout. Production requires verification by default; existing unverified accounts must verify on their next password sign-in. Do not run the legacy backfill or blanket-mark addresses verified. A mail-free deployment must explicitly accept unverified addresses with AUTH_REQUIRE_EMAIL_VERIFICATION=false.",
     );
   }
   if (has("passkeys")) {

@@ -33,9 +33,9 @@ export const AUTH_SECURITY_SPECS: Record<AuthSecurityOption, AuthSecurityOptionS
   },
   "email-verification": {
     id: "email-verification",
-    label: "Email verification (only when mail is configured)",
+    label: "Email verification (required by default in production)",
     summary:
-      "Require a verified address before sign-in, but only where a transport exists. Ships the idempotent backfill script for accounts created before mail did.",
+      "Require verified email in production unless the operator explicitly opts out. Configure and test mail before rollout; existing unverified accounts must verify their addresses.",
     needsEmail: true,
     tokenShell: "n/a",
     tokenShellNote: "Not a sign-in method.",

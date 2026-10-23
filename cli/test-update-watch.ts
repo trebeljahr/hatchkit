@@ -30,11 +30,17 @@ import {
 } from "./src/host/updates.js";
 import { SECRET_KEYS, setSecret } from "./src/utils/secrets.js";
 
-for (const file of ["test-update-watch.py", "test-image-vulnerabilities.py", "test-health-publisher.py"]) {
+for (const file of [
+  "test-update-watch.py",
+  "test-image-vulnerabilities.py",
+  "test-health-publisher.py",
+]) {
   const python = spawnSync("python3", [file], { stdio: "inherit" });
   assert.equal(python.status, 0, `${file} failed`);
 }
-const controller = spawnSync(process.execPath, ["test-security-controller.mjs"], { stdio: "inherit" });
+const controller = spawnSync(process.execPath, ["test-security-controller.mjs"], {
+  stdio: "inherit",
+});
 assert.equal(controller.status, 0, "Independent security controller tests failed");
 
 // The host script's own reports for the fixture hosts (test-update-watch.py).
@@ -165,7 +171,7 @@ const scan = (
   );
   assert.match(
     row.detail!,
-    /daily check last ran app-vps 2026-10-19, ops-vps 2026-10-19/,
+    /four-hour check last ran app-vps 2026-10-19, ops-vps 2026-10-19/,
   );
   assert.match(
     row.detail!,
@@ -291,7 +297,7 @@ const scan = (
   }
 }
 
-// --- the daily timer, per host -----------------------------------------------
+// --- the four-hour timer, per host -----------------------------------------------
 {
   const missing = updateRow(
     [
@@ -302,8 +308,8 @@ const scan = (
   );
   assert.equal(missing.status, "warn");
   assert.match(missing.detail!, /^no high\/critical advisory covers app-vps: /);
-  assert.match(missing.detail!, /daily check not installed on app-vps/);
-  assert.match(missing.detail!, /daily check not installed on ops-vps/);
+  assert.match(missing.detail!, /four-hour check not installed on app-vps/);
+  assert.match(missing.detail!, /four-hour check not installed on ops-vps/);
   assert.ok(
     missing.hint!.includes(
       "Preview (reads only): hatchkit host updates install --host ops-vps --dry-run",
@@ -315,7 +321,14 @@ const scan = (
     now,
   );
   assert.equal(stale.status, "fail");
-  assert.match(stale.detail!, /last run 2026-10-05T06:00:00Z, 14 days ago/);
+  assert.match(stale.detail!, /last run 2026-10-05T06:00:00Z, 338 hours ago/);
+
+  const nineHours = updateRow(
+    [scan(DEDICATED, fixtures.new, installed(ran("2026-10-18T23:00:00Z")))],
+    now,
+  );
+  assert.equal(nineHours.status, "fail");
+  assert.match(nineHours.detail!, /9 hours ago/);
 
   const unmailed = updateRow(
     [
@@ -419,7 +432,7 @@ try {
   const [row] = await checkUpdateWatch();
   assert.equal(row.status, "fail");
   assert.match(row.detail!, /Plausible CE 3\.0\.1 on app-vps: 1 advisory \(critical\)/);
-  assert.match(row.detail!, /daily check not installed on ops-vps/);
+  assert.match(row.detail!, /four-hour check not installed on ops-vps/);
   const sent = stdin("app-vps");
   assert.equal(sent.script, readFileSync("src/templates/update-watch/update-watch.py", "utf8"));
   assert.deepEqual(sent.services, watchedServices());
@@ -454,7 +467,15 @@ esac`,
   const feeds = stdin("ops-vps").feeds;
   assert.deepEqual(
     Object.keys(feeds).sort(),
-    [...new Set([...watchedServices().map((s) => s.github), "moby/moby", "containerd/containerd", "opencontainers/runc", "tailscale/tailscale"])]
+    [
+      ...new Set([
+        ...watchedServices().map((s) => s.github),
+        "moby/moby",
+        "containerd/containerd",
+        "opencontainers/runc",
+        "tailscale/tailscale",
+      ]),
+    ]
       .filter((repo): repo is string => !!repo)
       .flatMap((repo) => [advisoriesUrl(repo), latestUrl(repo)])
       .sort(),
@@ -506,10 +527,7 @@ esac`,
     "update-watch-services.json",
     "update-watch.py",
   ]);
-  assert.match(
-    payload.files["hatchkit-update-watch.timer"],
-    /OnCalendar=\*-\*-\* 00\/4:00:00 UTC/,
-  );
+  assert.match(payload.files["hatchkit-update-watch.timer"], /OnCalendar=\*-\*-\* 00\/4:00:00 UTC/);
   assert.match(
     payload.files["hatchkit-update-watch.service"],
     /OnFailure=hatchkit-update-watch-failed\.service/,

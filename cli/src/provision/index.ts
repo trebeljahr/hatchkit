@@ -29,7 +29,7 @@
  * touch stdout.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -50,6 +50,7 @@ import {
   writeManifest,
 } from "../scaffold/manifest.js";
 import { exec } from "../utils/exec.js";
+import { type LedgerStep, RunLedger } from "../utils/run-ledger.js";
 import { SECRET_KEYS, setSecret } from "../utils/secrets.js";
 import { validateDomain, validateProjectName } from "../utils/validate.js";
 import { getCliVersion } from "../utils/version.js";
@@ -71,29 +72,21 @@ import {
   type GlitchtipClient,
   type GlitchtipProjectRole,
   adoptGlitchtipClient,
-  deleteGlitchtipClient,
   glitchtipPlatformFor,
   packageUsesNext,
   provisionGlitchtipClient,
   renderGlitchtipEnv,
 } from "./glitchtip.js";
-import {
-  type PlausibleSite,
-  deletePlausibleSite,
-  plausibleSiteExists,
-  provisionPlausibleSite,
-} from "./plausible.js";
+import { type PlausibleSite, plausibleSiteExists, provisionPlausibleSite } from "./plausible.js";
 import { type ProjectMatch, resolveGlitchtipProjects } from "./project-lookup.js";
 import {
   type ProvisionR2TokensResult,
   provisionR2BucketTokens,
   renderR2BucketTokensEnv,
-  unprovisionR2BucketTokens,
 } from "./s3.js";
 import {
   type SearchConsoleProvisionResult,
   provisionSearchConsoleForDomain,
-  unprovisionSearchConsoleForDomain,
 } from "./search-console.js";
 import { devLocalEnvPath, parseEnvLines, writeDevEnv, writeProdEnv } from "./write-env.js";
 
@@ -107,9 +100,8 @@ export type ProvisionService =
 
 /** Re-export of the canonical `Surface` from prompts so provisioner
  *  call-sites can keep referring to a local name. The four values
- *  encode both code topology (one package vs. split packages vs.
- *  single surface) and runtime shape (has a server runtime vs. pure
- *  static). See `Surface` in prompts.ts for the per-value semantics. */
+ *  describe shared or separate observability, a single server/client
+ *  surface, and whether the app has a server runtime. See `Surface` in prompts.ts for the per-value semantics. */
 export type SurfaceMode = Surface;
 
 export interface Surfaces {
@@ -137,8 +129,8 @@ export interface Surfaces {
  *  runProvision (e.g. Listmonk + SES after GlitchTip already succeeded)
  *  still leaves a complete trail of what to undo. */
 export type ProvisionedEvent =
-  | { service: "glitchtip"; project: string }
-  | { service: "plausible"; project: string; domain: string; created: boolean }
+  | { service: "glitchtip"; project: string; baseUrl: string; organizationSlug: string }
+  | { service: "plausible"; project: string; domain: string; baseUrl: string; created: boolean }
   /** SES verified-identity event. Emitted once per project provision
    *  when the `mail.<projectDomain>` identity is freshly created (or
    *  fetched intact on a re-run). Records on the ledger so destroy can
@@ -717,9 +709,15 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
     }
     const clientIsNext = packageUsesNext([surfaces?.clientEnvDir, surfaces?.projectDir]);
     const res = await withSpinner(`GlitchTip: creating project ${projectName}`, () =>
-      provisionGlitchtipClient(projectName, glitchtipPlatformFor(role, clientIsNext)),
+      provisionGlitchtipClient(projectName, glitchtipPlatformFor(role, clientIsNext), (created) =>
+        opts.onProvisioned?.({
+          service: "glitchtip",
+          project: created.projectSlug,
+          baseUrl: created.baseUrl,
+          organizationSlug: created.organizationSlug,
+        }),
+      ),
     );
-    opts.onProvisioned?.({ service: "glitchtip", project: projectName });
     return res;
   };
 
@@ -780,6 +778,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
         service: "plausible",
         project: opts.baseName,
         domain: res.domain,
+        baseUrl: res.baseUrl,
         created: res.created,
       });
       pushObsLines(buckets, "client", renderPlausibleEnv(res), enableDevObs);
@@ -1529,7 +1528,7 @@ async function resolveSurfaces(opts: ProvisionOptions): Promise<Surfaces | null>
     message: "What kind of project is this?",
     choices: [
       {
-        name: "Full-stack — single package, server runtime (recommended)",
+        name: "Full-stack — server runtime, shared observability (recommended)",
         value: "fullstack",
       },
       {
@@ -1827,9 +1826,9 @@ function detectMinimalManifestSurfaces(projectDir: string): ProjectManifest["sur
     "web",
   ].some((dir) => existsSync(join(projectDir, dir)));
   // Heuristic only — used when minting a brand-new manifest from a
-  // Search Console verification flow. Distinguishes split (separate
-  // server + client dirs) from fullstack (single package) by disk
-  // layout; can't tell fullstack from static without more signals, so
+  // Search Console verification flow. Separate server + client dirs
+  // default to split observability; other layouts need more signals
+  // to distinguish fullstack from static, so this heuristic
   // defaults to fullstack (the safer choice — leaves the door open
   // for server-side env if the user later wires it up).
   if (hasServer && hasClient) return "split";
@@ -1968,300 +1967,151 @@ function pushObsLines(
 }
 
 // ---------------------------------------------------------------------------
-// Unprovision — inverse of runProvision. Deletes the -dev and -prod
-// clients from each selected service, plus the local .env cache.
+// Unprovision — remove only exact resources recorded as created by Hatchkit.
 // ---------------------------------------------------------------------------
 
 export interface UnprovisionOptions {
   baseName: string;
   services: ProvisionService[];
-  /** Don't hit any API or remove any file — just print what would happen. */
+  /** Print the ownership plan without provider/keychain access or local writes. */
   dryRun?: boolean;
-  /** Project root for `s3` removal — needed to read the manifest's
-   *  s3Buckets list so we can target each per-bucket token. Optional;
-   *  when omitted, the keychain is swept by name pattern instead. */
+  /** Optional matching project root, used only to clear revoked R2 token IDs. */
   projectDir?: string;
+}
+
+function removalService(step: LedgerStep): ProvisionService | undefined {
+  switch (step.kind) {
+    case "glitchtip":
+      return "glitchtip";
+    case "plausible":
+      return "plausible";
+    case "listmonkList":
+    case "listmonkRole":
+    case "listmonkApiUser":
+      return "listmonk-ses";
+    case "r2Token":
+      return "s3";
+    case "cloudflareEmailRoutingRule":
+      return "email";
+    default:
+      return undefined;
+  }
+}
+
+/** A revoked token may still be referenced locally. Clear only its exact ID
+ *  in the named project's manifest; preserve bucket metadata and other tokens. */
+function clearRemovedR2Token(
+  opts: UnprovisionOptions,
+  step: Extract<LedgerStep, { kind: "r2Token" }>,
+): void {
+  if (!opts.projectDir) return;
+  const manifest = readManifest(opts.projectDir);
+  if (manifest?.name !== opts.baseName || !manifest.s3Buckets) return;
+  const buckets = { ...manifest.s3Buckets };
+  if (buckets.accountId && buckets.accountId !== step.accountId) return;
+  let changed = false;
+  if (buckets.tokenId === step.tokenId) {
+    delete buckets.tokenId;
+    changed = true;
+  }
+  for (const [key, entry] of Object.entries(buckets)) {
+    if (entry && typeof entry === "object" && entry.tokenId === step.tokenId) {
+      const updated = { ...entry };
+      delete updated.tokenId;
+      buckets[key] = updated;
+      changed = true;
+    }
+  }
+  if (changed) writeManifest(opts.projectDir, { ...manifest, s3Buckets: buckets });
 }
 
 export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {
   const nameCheck = validateProjectName(opts.baseName);
   if (nameCheck !== true) throw new Error(`Invalid base name: ${nameCheck}`);
-
-  // Configure providers before any spinner — same reasoning as runProvision.
-  if (opts.services.includes("glitchtip")) await ensureGlitchtip();
-  if (opts.services.includes("plausible")) await ensurePlausible();
-  if (opts.services.includes("listmonk-ses")) {
-    const { ensureListmonk } = await import("../config.js");
-    await ensureListmonk();
-  }
-
-  if (opts.dryRun) {
-    console.log(chalk.yellow("\n  [dry-run] No clients will be deleted.\n"));
-  }
-  console.log(chalk.bold(`\n  ── Deleting ${opts.baseName} ─────────────────────────────\n`));
-
-  // Observability: try the shared name first, then the -server/-client
-  // split variants. Each `runDelete` quietly reports "already gone" on
-  // a 404, so best-effort teardown covers both layouts.
-  if (opts.services.includes("glitchtip")) {
-    for (const name of observabilityNames(opts.baseName)) {
-      await runDelete(`GlitchTip: deleting project ${name}`, opts.dryRun, () =>
-        deleteGlitchtipClient(name),
-      );
-    }
-  }
-  if (opts.services.includes("plausible")) {
-    await runDelete(`Plausible: deleting site for ${opts.baseName}`, opts.dryRun, () =>
-      deletePlausibleSite(opts.baseName),
+  const ledger = RunLedger.load(opts.baseName);
+  console.log(chalk.bold(`\n  ── Removing owned service resources for ${opts.baseName} ──\n`));
+  if (!ledger) {
+    console.log(
+      chalk.yellow(
+        "  No readable ownership ledger. All resources and local files were preserved. Review them in their provider dashboards before deleting anything.",
+      ),
     );
+    return;
   }
-  // Listmonk + SES — delete the per-project Listmonk lists. The SES
-  // verified identity is intentionally LEFT IN PLACE because the
-  // sending subdomain (`mail.<projectDomain>`) is project-scoped but
-  // unverifying it requires re-publishing DKIM, which is a slow round-
-  // trip the user should opt into via `hatchkit destroy <project>`
-  // (the ledger-driven destroy honors a sesDomain step). The SMTP
-  // relay credentials are stateless — there's nothing to revoke
-  // beyond the IAM access key in global config.
-  if (opts.services.includes("listmonk-ses")) {
-    // The project's own API user and its two roles, user first: Listmonk
-    // refuses to delete a role a user still holds. Needs the admin
-    // credential; hatchkit's own API user cannot manage users.
-    const { LISTMONK_ADMIN_API_USER, getListmonkAdminAuth, getListmonkConfig } = await import(
-      "../config.js"
-    );
-    const admin = await getListmonkAdminAuth();
-    if (!admin) {
+
+  const { RollbackSkip, describeStep, provisionedStepIdentityIssue, undoProvisionedStep } =
+    await import("../deploy/rollback.js");
+  type RemovalStep = import("../deploy/rollback.js").ProvisionedRemovalStep;
+  const selected = [...ledger.steps].reverse().filter((step): step is RemovalStep => {
+    const service = removalService(step);
+    return service !== undefined && opts.services.includes(service);
+  });
+  // Later add runs may append a role after its existing API user. Preserve
+  // reverse order elsewhere, but release user-held roles before deleting them.
+  const listmonkOrder = (step: RemovalStep) =>
+    step.kind === "listmonkApiUser" ? 0 : step.kind === "listmonkRole" ? 1 : 2;
+  const listmonk = selected
+    .filter((step) => removalService(step) === "listmonk-ses")
+    .sort((a, b) => listmonkOrder(a) - listmonkOrder(b));
+  let listmonkIndex = 0;
+  const ordered = selected.map((step) =>
+    removalService(step) === "listmonk-ses" ? (listmonk[listmonkIndex++] ?? step) : step,
+  );
+  if (opts.dryRun)
+    console.log(chalk.yellow("  [dry-run] No provider/keychain access or local writes.\n"));
+  for (const service of opts.services) {
+    if (service === "search-console") {
       console.log(
         chalk.yellow(
-          `  Listmonk: no hatchkit-admin credential, so API user ${opts.baseName} and its roles (if any) stay. Delete them in Listmonk → Admin → Users / User roles / List roles.`,
+          "  Search Console: property creation ownership is not recorded. Property and verification were preserved; review removal in Search Console.",
         ),
       );
-    } else {
-      const { removeListmonkProjectUser } = await import("./listmonk-project-user.js");
-      const sharedUser = (await getListmonkConfig())?.apiUser;
-      try {
-        const res = await removeListmonkProjectUser(admin, opts.baseName, {
-          dryRun: opts.dryRun,
-          reservedNames: [LISTMONK_ADMIN_API_USER, ...(sharedUser ? [sharedUser] : [])],
-        });
-        const verb = opts.dryRun ? "would delete" : "deleted";
-        const line = (what: string, r: "deleted" | "not-found" | "skipped") =>
-          r === "deleted"
-            ? chalk.green(`  ✓ Listmonk: ${verb} ${what} ${opts.baseName}`)
-            : r === "not-found"
-              ? chalk.dim(`  · Listmonk: ${what} ${opts.baseName} — already gone`)
-              : null;
-        for (const l of [
-          line("API user", res.user),
-          line("user role", res.userRole),
-          line("list role", res.listRole),
-        ]) {
-          if (l) console.log(l);
-        }
-        for (const note of res.notes) console.log(chalk.yellow(`  · Listmonk: ${note}`));
-        if (!opts.dryRun && res.user === "deleted") {
-          const { deleteSecret } = await import("../utils/secrets.js");
-          await deleteSecret(SECRET_KEYS.listmonkProjectApiToken(opts.baseName)).catch(() => {});
-        }
-      } catch (err) {
-        console.log(chalk.red(`  ✗ Listmonk user teardown: ${(err as Error).message}`));
-      }
-    }
-
-    const { deleteListmonkList } = await import("./listmonk.js");
-    for (const name of [opts.baseName, `${opts.baseName}-test`]) {
-      await runDelete(`Listmonk: deleting list ${name} (if present)`, opts.dryRun, () =>
-        deleteListmonkList(name),
-      );
-    }
-  }
-
-  // Search Console: remove the property from the configured Google
-  // account. Ownership verification is left alone; Google may share it
-  // with other services/properties for the same domain.
-  if (opts.services.includes("search-console")) {
-    let domain: string | undefined;
-    if (opts.projectDir) {
-      const { readManifest } = await import("../scaffold/manifest.js");
-      domain = readManifest(opts.projectDir)?.domain;
-    }
-    if (!domain) {
+    } else if (!selected.some((step) => removalService(step) === service)) {
       console.log(
-        chalk.yellow(
-          "  Skipping Search Console — need --project-dir with .hatchkit.json to read the domain.",
+        chalk.dim(
+          `  ${service}: no recorded owned resources. Adopted and untracked resources were preserved.`,
         ),
       );
-    } else {
-      await runDelete(`Search Console: removing property for ${domain}`, opts.dryRun, () =>
-        unprovisionSearchConsoleForDomain(domain),
-      );
     }
   }
 
-  // Email — delete every Email Routing rule on the project's zone that
-  // matches an address on `<project-domain>`. MX/SPF/DMARC records and
-  // the destination address are intentionally left in place: multiple
-  // projects can share one zone, and the destination is a per-user
-  // resource (CF revokes it via the dashboard, not per-project).
-  if (opts.services.includes("email")) {
-    if (opts.dryRun) {
-      console.log(chalk.dim(`  would delete Email Routing rules for ${opts.baseName}'s domain`));
-    } else {
-      try {
-        await unprovisionEmailForProject({ projectDir: opts.projectDir });
-      } catch (err) {
-        console.log(chalk.red(`  ✗ Email teardown: ${(err as Error).message}`));
-      }
-    }
-  }
-
-  // S3 / R2 — delete the per-bucket scoped tokens (CF API + keychain).
-  if (opts.services.includes("s3")) {
-    if (opts.dryRun) {
-      console.log(chalk.dim(`  would delete per-bucket R2 tokens for ${opts.baseName}`));
-    } else {
-      try {
-        const result = await unprovisionR2BucketTokens({
-          projectName: opts.baseName,
-          projectDir: opts.projectDir,
-        });
-        if (result.buckets.length === 0) {
-          console.log(
-            chalk.dim(`  · No R2 bucket tokens found for ${opts.baseName} — already gone`),
-          );
-        } else {
-          for (const b of result.buckets) {
-            const status = b.outcome === "deleted" ? chalk.green("✓") : chalk.dim("·");
-            console.log(
-              `  ${status} R2: deleted token for bucket ${b.bucketKey} (${b.outcome === "deleted" ? "deleted" : "already gone"})`,
-            );
-          }
-        }
-      } catch (err) {
-        console.log(chalk.red(`  ✗ R2 token teardown: ${(err as Error).message}`));
-      }
-    }
-  }
-
-  // Clean up the local .env cache. Mirror runProvision's write locations.
-  const outDir = join(dirname(getConfigPath()), "provisioned");
-  const cachedPaths = [
-    `${opts.baseName}.server.dev.env`,
-    `${opts.baseName}.server.prod.env`,
-    `${opts.baseName}.client.dev.env`,
-    `${opts.baseName}.client.prod.env`,
-    // Legacy pre-surfaces layout — clean up so re-runs don't leave junk.
-    `${opts.baseName}.dev.env`,
-    `${opts.baseName}.prod.env`,
-  ];
-  for (const name of cachedPaths) {
-    const path = join(outDir, name);
-    if (!existsSync(path)) continue;
-    if (opts.dryRun) {
-      console.log(chalk.dim(`  would remove ${path}`));
+  for (const step of ordered) {
+    const label = describeStep(step);
+    const issue = provisionedStepIdentityIssue(step);
+    if (issue) {
+      console.log(chalk.yellow(`  Preserved: ${label}. ${issue}`));
       continue;
     }
-    rmSync(path);
-    console.log(chalk.dim(`  ✓ removed ${path}`));
-  }
-  console.log();
-}
-
-/** Candidate project names for observability teardown. Covers the
- *  shared (single-project) and split (server/client) layouts so a
- *  single `hatchkit remove` cleans up either. */
-function observabilityNames(baseName: string): string[] {
-  return [baseName, `${baseName}-server`, `${baseName}-client`];
-}
-
-/** Tear down Email Routing rules for the project's zone. Reads the
- *  domain from `.hatchkit.json`. Best-effort: walks every rule on the
- *  zone and deletes those whose literal `to` matcher ends with
- *  `@<projectDomain>`. The catch-all, MX/SPF/DMARC, and the destination
- *  address are left intact — they're zone-level / account-level state
- *  that may belong to other projects on the same zone. */
-async function unprovisionEmailForProject(args: { projectDir?: string }): Promise<void> {
-  const { getDnsConfig } = await import("../config.js");
-  const { readManifest } = await import("../scaffold/manifest.js");
-  const { CloudflareApi } = await import("../utils/cloudflare-api.js");
-  if (!args.projectDir) {
-    console.log(chalk.dim("  · Skipping Email teardown — need a project dir to read the domain."));
-    return;
-  }
-  const manifest = readManifest(args.projectDir);
-  if (!manifest?.domain) {
-    console.log(chalk.dim("  · Skipping Email teardown — manifest has no domain."));
-    return;
-  }
-  const dns = await getDnsConfig();
-  if (!dns?.apiToken) {
-    console.log(
-      chalk.yellow("  · Skipping Email teardown — DNS config / Cloudflare token missing."),
-    );
-    return;
-  }
-  const cf = new CloudflareApi({ token: dns.apiToken, accountId: dns.accountId });
-  const zone = await cf.resolveZoneForName(manifest.domain);
-  if (!zone) {
-    console.log(chalk.dim(`  · No zone for ${manifest.domain} — nothing to tear down.`));
-    return;
-  }
-  const rules = await cf.listEmailRoutingRules(zone.id);
-  const suffix = `@${manifest.domain}`;
-  const matching = rules.filter((r) =>
-    r.matchers?.some(
-      (m) =>
-        m.type === "literal" &&
-        m.field === "to" &&
-        m.value?.toLowerCase().endsWith(suffix.toLowerCase()),
-    ),
-  );
-  if (matching.length === 0) {
-    console.log(chalk.dim(`  · No Email Routing rules to remove on ${manifest.domain}.`));
-    return;
-  }
-  for (const rule of matching) {
-    const id = rule.id ?? rule.tag;
-    if (!id) continue;
-    const address = rule.matchers?.find((m) => m.field === "to")?.value ?? "?";
-    const result = await cf.deleteEmailRoutingRule(zone.id, id);
-    const tag = result === "deleted" ? chalk.green("✓") : chalk.dim("·");
-    console.log(`  ${tag} Email: deleted rule ${address}`);
+    if (opts.dryRun) {
+      console.log(chalk.dim(`  Would ${label}; verify provider identity when applying.`));
+      continue;
+    }
+    try {
+      const result = await undoProvisionedStep(step, opts.baseName);
+      if (result === "skipped") {
+        console.log(chalk.yellow(`  Preserved: ${label}. Cleanup needs manual review.`));
+        continue;
+      }
+      if (step.kind === "r2Token") clearRemovedR2Token(opts, step);
+      ledger.forget(step);
+      console.log(chalk.green(`  ✓ ${label}${result === "not-found" ? " — already gone" : ""}`));
+    } catch (err) {
+      if (err instanceof RollbackSkip) {
+        console.log(chalk.yellow(`  Preserved: ${label}. ${err.message}`));
+        for (const hint of err.hints) console.log(chalk.dim(`    ${hint}`));
+      } else {
+        console.log(
+          chalk.red(`  ✗ ${label}: ${(err as Error).message}. Ownership retained for retry.`),
+        );
+        process.exitCode = 1;
+      }
+    }
   }
   console.log(
     chalk.dim(
-      "  · MX / SPF / DMARC records and the destination address were left intact — they're zone-level / account-level state.",
+      "\n  Kept env files, cached env, local credentials, buckets, SES identities, DNS and email destinations. Review local service settings before reuse.\n",
     ),
   );
-}
-
-/** Run a delete via spinner, mapping "not-found" to a dim "already gone"
- *  so re-runs stay quiet. */
-async function runDelete(
-  label: string,
-  dryRun: boolean | undefined,
-  fn: () => Promise<"deleted" | "not-found">,
-): Promise<void> {
-  if (dryRun) {
-    console.log(chalk.dim(`  would ${label.toLowerCase()}`));
-    return;
-  }
-  const ora = (await import("ora")).default;
-  const spinner = ora(label).start();
-  try {
-    const result = await fn();
-    if (result === "deleted") {
-      spinner.succeed(label);
-    } else {
-      spinner.info(`${label} — already gone`);
-    }
-  } catch (err) {
-    spinner.fail(label);
-    // Don't throw on one failure — a single service being flaky shouldn't
-    // block the rest of the teardown.
-    console.log(chalk.red(`    ${(err as Error).message}`));
-  }
 }
 
 // ---------------------------------------------------------------------------

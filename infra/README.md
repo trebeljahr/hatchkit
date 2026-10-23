@@ -82,7 +82,7 @@ make bootstrap INVENTORY=ansible/inventories/production/hosts.ini
 
 ### Phase 3: App stack (Coolify API)
 
-The `hatchkit` CLI (in `../cli`) creates the Coolify project, the application resource linked to your GitHub repo, optional per-project MongoDB, encrypted `.env.production` via dotenvx, and pushes the GitHub Actions deploy secrets:
+The `hatchkit` CLI (in `../cli`) creates the Coolify project, application resources, selected databases, and encrypted `.env.production`. New projects use Docker Image apps by default. The CLI also configures per-app deployment credentials in GitHub Actions:
 
 ```bash
 hatchkit create     # interactive — runs Terraform + Coolify in one flow
@@ -91,8 +91,12 @@ hatchkit create     # interactive — runs Terraform + Coolify in one flow
 `hatchkit create` auto-wires:
 - `MONGODB_URI` pointing to the MongoDB container on the internal Docker network (encrypted in `.env.production` via dotenvx)
 - S3 bucket name, endpoint, and region from your configured S3 provider
-- `COOLIFY_BASE_URL`, `COOLIFY_API_TOKEN`, and per-app deploy webhooks as GitHub Actions secrets
-- The dotenvx private key on the Coolify app so the runtime can decrypt `.env.production`
+- `COOLIFY_BASE_URL` and each app's resource UUID, repository, branch, and HMAC deploy secret in GitHub Actions. CI promotes the built image to `:live` and signs that app's deploy hook.
+- Resolved production values in the Coolify app environment. The encrypted `.env.production` remains the repository's at-rest store; the runtime image does not contain it.
+
+The operator's Coolify API token stays in the local keychain. It must not be copied into project CI. `hatchkit secrets isolate` migrates older deploy workflows and removes broad token secrets after their references are gone. Review its dry-run plan before applying it.
+
+The Terraform example above is a standalone stack with INWX DNS support. The CLI uses Cloudflare DNS and can use INWX for registrar nameserver setup.
 
 ## Stamping a new project
 

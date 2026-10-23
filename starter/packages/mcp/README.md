@@ -42,9 +42,9 @@ await trpc.apiTokens.create.mutate({
 });
 ```
 
-Give it the smallest set of capabilities you need. Each one unlocks exactly
-these tools, and a tool your token cannot call is not offered to the model at
-all rather than failing when it is used:
+Give it the smallest set of scopes you need. When the startup probe succeeds,
+these scopes determine which tools are offered. The API still checks effective
+member permissions and record visibility on every call:
 
 <!-- capability-table:begin -->
 | Capability | Tools |
@@ -56,24 +56,41 @@ all rather than failing when it is used:
 | `webhooks:write` | `create_webhook`, `delete_webhook` |
 <!-- capability-table:end -->
 
+Creating or deleting webhook subscriptions also needs `webhooks:manage` in the
+token's effective permissions. A scope alone does not grant that permission.
+Permissions intersect the member's current grants with the token's frozen
+ceiling. A later grant can require a new token. Use `get_token_info` to inspect
+the effective permissions.
+
 `delete_item` also reads the item's title before deleting it, when the token
 carries `items:read`, so the result can say what was removed. Without that
 capability it just deletes.
 
 **The token is stored in plain text** in your host's configuration file, which
 is an ordinary file on your disk with no encryption. Treat it like a password:
-give it the fewest capabilities that work, and revoke it from the web app's
-API-token settings when the integration is finished or the machine changes
-hands. Revoking takes effect on the token's next request.
+give it the fewest capabilities that work, and revoke it when the integration
+is finished or the machine changes hands. No API-token settings UI is generated.
+While signed into the web app, use its typed API client to list tokens and revoke
+the selected token by id:
+
+```ts
+const tokens = await trpc.apiTokens.list.query();
+// Inspect tokens, then pass the id of the credential you intend to revoke.
+await trpc.apiTokens.revoke.mutate({ id: tokenId });
+```
+
+These are session-authenticated operations. The MCP bearer token cannot mint or
+revoke credentials. Revocation takes effect on its next request.
 
 ## 2. Build
 
 ```bash
 pnpm install
-pnpm --filter @starter/mcp run build
+pnpm run build:mcp
 ```
 
-This writes `packages/mcp/dist/index.js`, which is the file your host runs.
+This builds shared/core dependencies first, then writes
+`packages/mcp/dist/index.js`, which is the file your host runs.
 
 ## 3. Verify, before you configure anything
 
@@ -86,13 +103,14 @@ STARTER_API_TOKEN=<your token> \
   node packages/mcp/dist/index.js < /dev/null
 ```
 
-A working configuration prints one line to stderr and exits:
+A configuration with all four scopes prints one line to stderr and exits:
 
 ```
 starter-mcp 0.1.0 → http://localhost:5000 · 10 tool(s) · capabilities: items:read, items:write, webhooks:read, webhooks:write
 ```
 
 The origin, the tool count and the capability list are what your host will get.
+The example token above has the two item scopes, so it offers six tools.
 If the line says `capabilities: unknown (…)`, the server could not reach the
 API or the API refused the token: it still starts and still offers every tool,
 and the first tool call will report the real reason. If nothing prints except a
@@ -100,8 +118,8 @@ single sentence naming an environment variable, that sentence is the fix.
 
 ## 4. Configure your host
 
-Add an entry to your MCP host's configuration file. The shape below is the one
-every host that launches stdio servers uses:
+Add an entry to your MCP host's configuration file. For hosts using an
+`mcpServers` JSON object, use this shape:
 
 ```json
 {
@@ -154,9 +172,9 @@ token in clear text.
 ## Development
 
 ```bash
-pnpm --filter @starter/mcp run typecheck   # sources and tests
-pnpm --filter @starter/mcp run test        # unit tier: fake API, in-memory client
-pnpm --filter @starter/mcp run build
+pnpm run build:mcp                       # builds shared/core, then MCP
+pnpm --filter @starter/mcp run typecheck  # sources and tests
+pnpm run test:mcp                        # dependencies + unit tier
 pnpm --filter @starter/mcp run test:integration   # the built binary over stdio
 ```
 

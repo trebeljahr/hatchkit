@@ -204,9 +204,8 @@ export interface ProjectManifest {
    *  static. Captured by `hatchkit adopt` so subsequent re-runs (and
    *  any future tooling that needs to know whether to look for a
    *  server runtime) don't have to re-infer from disk layout. The
-   *  four values disambiguate code topology (one package vs. split
-   *  packages vs. single surface) from runtime shape (has a server
-   *  runtime vs. pure static).
+   *  four values describe shared or separate observability, a single
+   *  server/client surface, and whether the app has a server runtime.
    *
    *  Optional for back-compat with manifests written before this
    *  field existed; readers should fall back to detection. */

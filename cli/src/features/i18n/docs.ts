@@ -271,7 +271,7 @@ export function renderI18nDocs(input: WriteI18nDocsInput): string {
     ``,
     `- **Store listings and the installed app's display name.** The native bundle`,
     `  identifier and product name are one string each in`,
-    `  \`src-tauri/tauri.conf.json\` / \`android/…/strings.xml\` / the Xcode project.`,
+    `  \`electron-builder.config.mjs\`, \`capacitor.config.ts\`, native Android resources and the Xcode project.`,
     `  A second language there means per-language store assets and a review round`,
     `  per locale, which is a release decision, not a code change.`,
     `- **Any surface whose host has no locale API.** A platform that picks the`,

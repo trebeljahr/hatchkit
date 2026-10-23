@@ -7,7 +7,7 @@ description: Install dependencies, configure local services, run development ser
 
 ## Prerequisites
 
-- **Node.js 22** (see `.nvmrc`)
+- **Node.js 24** (see `.nvmrc`)
 - **pnpm** (corepack enabled: `corepack enable`)
 - **Docker** (for local MongoDB, Redis, S3-compatible storage)
 

@@ -12,13 +12,12 @@ import { resolveAssetRoot } from "../utils/asset-root.js";
  *     into the project and merge package.json edits.
  *   • Refresh the manifest.
  *
- * Every write here is ADDITIVE. A file the project already has is never
- * overwritten, and neither is a root-package.json script or a dependency pin
- * it has changed away from the starter's shape. What was declined is
- * reported; `--force` replaces the package.json pieces (never files) with the
- * starter's current versions.
+ * Feature source is added without replacing existing user files. Changed
+ * root-package.json scripts and dependency pins are kept unless `--force`
+ * selects the starter's entries. Owned operational files and recognized
+ * legacy templates can be refreshed independently of that flag.
  *
- * Currently supported additions: `desktop`, `mobile`, `i18n`.
+ * Supported additions are shared with status in features/additions.ts.
  * `websocket` / `stripe` / `analytics` / `s3` additions are flagged
  * as "manual" — the scaffold-time strip for those is coarse-grained
  * and re-adding them cleanly would need per-feature merge logic that
@@ -55,7 +54,6 @@ import {
   renderOperationalLayer,
 } from "../features/operational.js";
 import {
-  SERVER_FEATURE_IDS,
   applyServerFeatures,
   isServerFeature,
   printServerFeatureResults,
@@ -138,29 +136,8 @@ function identifiersFor(manifest: ProjectManifest): ProjectIdentifiers {
   return manifest.identifiers ?? legacyIdentifiers(manifest.name);
 }
 
-/** Features that `update` knows how to layer onto an existing project. */
-export const SUPPORTED_ADDITIONS: readonly Feature[] = [
-  "workspaces",
-  // Purely additive: new files plus anchored merges into the auth wiring,
-  // each of which recognises its own output.
-  "token-client-auth",
-  "desktop",
-  "mobile",
-  "release",
-  // Purely additive: it writes new files, patches the auth wiring
-  // idempotently, and never removes anything. That is what makes it safe
-  // to layer onto a project that has been running for months.
-  "auth-account-security",
-  "client-core",
-  "extension",
-  // Additive by construction — they ship as templates rather than as
-  // starter files a scaffold strips, so `update` applies the exact same
-  // writer `create` does.
-  ...SERVER_FEATURE_IDS,
-  "i18n",
-  "raycast",
-  "mcp",
-];
+export { SUPPORTED_ADDITIONS } from "../features/additions.js";
+import { SUPPORTED_ADDITIONS } from "../features/additions.js";
 
 /**
  * The starter paths each retrofit copies, declared once so `--dry-run`
@@ -239,8 +216,8 @@ export interface UpdateOptions {
   dryRun?: boolean;
   /** Overwrite root-package.json scripts and dependency pins that the
    *  project has changed away from the starter's, instead of keeping them.
-   *  Off by default: those are the commands a shipping app owns. Files are
-   *  never overwritten, with or without this. */
+   *  Off by default: those are the commands a shipping app owns. Owned-file
+   *  refreshes and recognized security migrations run independently. */
   force?: boolean;
   /** Skip every prompt and use the supplied answers. Used by the test
    *  suite to exercise the headless path without monkey-patching ESM
@@ -1336,6 +1313,8 @@ async function addDesktop(
 const FEATURE_MODULES: Partial<Record<Feature, () => Promise<unknown>>> = {
   "client-core": () => import("../features/client-core/index.js"),
   mobile: () => import("../features/mobile/index.js"),
+  mcp: () => import("../features/mcp/index.js"),
+  raycast: () => import("../features/raycast/index.js"),
   "token-client-auth": () => import("../features/token-client-auth/index.js"),
 };
 
