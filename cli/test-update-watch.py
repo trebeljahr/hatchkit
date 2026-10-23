@@ -563,5 +563,46 @@ class Check(unittest.TestCase):
         self.assertIsNotNone(error)
 
 
+class RuntimeSecurityTests(unittest.TestCase):
+    def test_node_release_floor_covers_eol_and_prereleases(self):
+        for value in ['18.20.8','20.20.2','22.23.3','24.22.0','26.12.0','24.22.1-rc.1','invalid']:
+            self.assertTrue(uw.vulnerable_node(value),value)
+        for value in ['22.23.4','24.22.1','26.12.1','24.23.0']:
+            self.assertFalse(uw.vulnerable_node(value),value)
+
+    def test_custom_image_keeps_original_advisory_identity(self):
+        fake=FakeDocker([container('kuma','hatchkit-security/kuma:20261023')])
+        def docker(args,**kwargs):
+            result=fake(args,**kwargs)
+            return result.rstrip()+'\t'+json.dumps('louislam/uptime-kuma:2.5.6')+'\n' if args[0]=='inspect' else result
+        found,_=uw.list_services(docker,SERVICES)
+        self.assertEqual(found[0]['tag'],'2.5.6')
+        self.assertEqual(found[0]['service']['key'],'uptime-kuma')
+
+    def test_bundled_store_is_checked_even_when_system_store_passes(self):
+        def docker(args,**kwargs):
+            if args[0]=='ps':return 'id'
+            if args[0]=='inspect':return '/app'
+            if args[0]=='exec' and args[2]=='node':return '24.22.1'
+            if args[0]=='exec' and args[2]=='sh':return '/app/lib/castore-1.0.16/priv/cacerts.pem'
+            if args[0]=='exec' and args[2]=='cat':return 'old' if '/app/lib/'in args[3] else 'new'
+            raise uw.WatchError('absent')
+        with patch.object(uw,'distrusted_roots',side_effect=lambda pem:['emSign ECC Root CA - G3'] if pem=='old' else []):
+            findings,skipped=uw.runtime_trust(docker)
+        self.assertEqual(skipped,[])
+        self.assertEqual(len(findings),1)
+        self.assertIn('castore',findings[0]['summary'])
+
+    def test_malformed_trust_data_is_incomplete_not_clean(self):
+        def docker(args,**kwargs):
+            if args[0]=='ps':return 'id'
+            if args[0]=='inspect':return '/app'
+            if args[0]=='exec' and args[2]=='cat':return 'not a certificate'
+            raise uw.WatchError('absent')
+        findings,skipped=uw.runtime_trust(docker)
+        self.assertFalse(findings)
+        self.assertEqual(len(skipped),1)
+
+
 if __name__ == '__main__':
     unittest.main()

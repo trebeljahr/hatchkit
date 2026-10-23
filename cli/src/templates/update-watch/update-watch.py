@@ -37,6 +37,7 @@ image's env it reads only the version keys the services file names.
 """
 import argparse
 import datetime as dt
+import hashlib
 from email.utils import formataddr, parseaddr
 import ipaddress
 import json
@@ -44,6 +45,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import ssl
 import subprocess
 import sys
 import urllib.error
@@ -354,7 +356,7 @@ def split_image(ref):
     return '/'.join(parts).lower(), tag
 
 
-INSPECT = '{{json .Name}}\t{{json .Config.Image}}\t{{json .Image}}'
+INSPECT = '{{json .Name}}\t{{json .Config.Image}}\t{{json .Image}}\t{{json (index .Config.Labels "io.hatchkit.security.original-image")}}'
 # `.Config.Labels` is a template error on an image without labels (glitchtip),
 # so take `.Config` whole and keep its Labels and Env here.
 IMAGE_INSPECT = '{{json .Id}}\t{{json .Config}}\t{{json .RepoDigests}}'
@@ -369,10 +371,12 @@ def list_services(docker, services):
     containers = []
     for line in docker(['inspect', '--format', INSPECT, *ids]).splitlines():
         try:
-            name, ref, image_id = (json.loads(f) for f in line.split('\t'))
+            fields = [json.loads(f) for f in line.split('\t')]
+            name, ref, image_id = fields[:3]
+            original = fields[3] if len(fields) > 3 else None
         except ValueError:
             continue
-        repo, tag = split_image(ref or '')
+        repo, tag = split_image(original or ref or '')
         if repo in by_repo:
             containers.append({'name': name.lstrip('/'), 'ref': ref, 'repo': repo, 'tag': tag,
                                'imageId': image_id, 'service': by_repo[repo]})
@@ -543,7 +547,81 @@ def cloudflare_check(feeds, pinned, chain=read_chain):
     return state, findings
 
 
-def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=None, chain=read_chain):
+NODE_SECURITY_FLOORS = {22: (22, 23, 4), 24: (24, 22, 1), 26: (26, 12, 1)}
+DISTRUSTED_ROOTS = ('AAA Certificate Services', 'emSign ECC Root CA - G3')
+
+
+def vulnerable_node(text):
+    version = parse_version(text)
+    if not version:
+        return True
+    floor = NODE_SECURITY_FLOORS.get(version.release[0])
+    return floor is None or version < Version('.'.join(str(part) for part in floor))
+
+
+def distrusted_roots(pem):
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.load_verify_locations(cadata=pem)
+    subjects = [str(cert.get('subject')) for cert in context.get_ca_certs()]
+    return [root for root in DISTRUSTED_ROOTS if any(root in subject for subject in subjects)]
+
+
+def runtime_trust(docker):
+    """Offline runtime floors and CA contents, independent of application tags.
+
+    Missing optional executables/files are normal for minimal container images.
+    Unexpected output from an executable or malformed PEM is an incomplete check.
+    """
+    ids = docker(['ps', '-q', '--no-trunc']).split()
+    findings, skipped = [], []
+    for cid in ids:
+        name = docker(['inspect', '--format', '{{.Name}}', cid]).strip().lstrip('/')
+        def finding(kind, detail):
+            findings.append({'kind': kind, 'service': name, 'name': name, 'severity': 'high',
+                             'summary': name + ': ' + detail})
+        try:
+            version = docker(['exec', cid, 'node', '--version'], timeout=15).strip()
+        except WatchError:
+            version = None
+        if version and vulnerable_node(version):
+            finding('node-runtime', 'Node ' + safe(version) + ' is below the 2026-10-21 security release; '
+                    'require 22.23.4, 24.22.1 or 26.12.1 within that major')
+        paths = ['/etc/ssl/certs/ca-certificates.crt', '/etc/ssl/cert.pem']
+        try:
+            extra = docker(['exec', cid, 'sh', '-c',
+                            'for p in /app/lib/castore-*/priv/cacerts.pem /app/lib/certifi-*/priv/cacerts.pem; '
+                            'do test ! -f "$p" || echo "$p"; done'], timeout=15)
+            paths += [p for p in extra.splitlines() if p.startswith('/app/lib/')]
+        except WatchError:
+            pass
+        try:
+            certifi = docker(['exec', cid, 'python3', '-c',
+                              'import certifi; print(certifi.where())'], timeout=15).strip()
+            if certifi.startswith('/'):
+                paths.append(certifi)
+        except WatchError:
+            pass
+        checked = set()
+        for path in paths:
+            try:
+                pem = docker(['exec', cid, 'cat', path], timeout=15)
+            except WatchError:
+                continue
+            digest = hashlib.sha256(pem.encode()).hexdigest()
+            if digest in checked:
+                continue
+            checked.add(digest)
+            try:
+                roots = distrusted_roots(pem)
+            except (ssl.SSLError, ValueError):
+                skipped.append(name + ': malformed CA bundle at ' + path)
+                continue
+            if roots:
+                finding('certificate-trust', path + ' still trusts compromised eMudhra chains via ' + ', '.join(roots))
+    return findings, skipped
+
+
+def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=None, chain=read_chain, runtime=False):
     now = now or dt.datetime.now(dt.timezone.utc)
     containers, images = list_services(docker, services)
     groups = {}
@@ -632,6 +710,10 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
         findings += cloudflare_findings
         if cloudflare_state['error']:
             skipped.append('Cloudflare IP ranges: ' + cloudflare_state['error'])
+    if runtime:
+        runtime_findings, runtime_skipped = runtime_trust(docker)
+        findings += runtime_findings
+        skipped += runtime_skipped
     severity_rank = {'critical': 0, 'high': 1}
     findings.sort(key=lambda f: (f['kind'] != 'auto-update', severity_rank.get(f.get('severity'), 2), f['service']))
     notes = [g['name'] + ' publishes no advisory feed; it is compared with its latest release only.'
@@ -707,7 +789,7 @@ def write_status(work, state):
 
 
 def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_SOURCE, cloudflare=None,
-          chain=read_chain):
+          chain=read_chain, runtime=False):
     """One timer run. Mails findings and checks it could not make every week,
     a failed run, and the first clean run after either."""
     now = now or dt.datetime.now(dt.timezone.utc)
@@ -717,7 +799,7 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
         previous = {}
     report, error = None, None
     try:
-        report = scan(docker, services, feeds, source, now, cloudflare, chain)
+        report = scan(docker, services, feeds, source, now, cloudflare, chain, runtime=runtime)
     except WatchError as failure:
         error = str(failure)
     except Exception as failure:  # never echo a message that might carry host data
@@ -774,7 +856,7 @@ def main(payload=None):
     cloudflare = load(payload, 'cloudflare', CLOUDFLARE_NAME)
     feeds = Feeds((payload or {}).get('feeds'))
     if args.action == 'scan':
-        report = scan(run_docker, services, feeds, cloudflare=cloudflare)
+        report = scan(run_docker, services, feeds, cloudflare=cloudflare, runtime=True)
         report['timer'] = timer_state(work)
         print(json.dumps(report))
         return
@@ -799,7 +881,7 @@ def main(payload=None):
                                 'limit, or a crash). Nothing was checked this run.\n' + MAIL_FOOTER)
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
-    state, mail_error = check(run_docker, services, feeds, work, config, send_email, cloudflare=cloudflare)
+    state, mail_error = check(run_docker, services, feeds, work, config, send_email, cloudflare=cloudflare, runtime=True)
     print(json.dumps({'ok': state['ok'], 'findings': len(state['findings']), 'error': state['error'],
                       'mailed': state['mailed'], 'mailError': state.get('mailError')}))
     if mail_error:
