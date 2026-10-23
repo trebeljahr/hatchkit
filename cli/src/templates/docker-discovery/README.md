@@ -1,0 +1,84 @@
+# Restricted Traefik discovery
+
+`discovery.py` supplies the requests used by Traefik's **non-Swarm Docker
+provider**. It is a small, private discovery service, not a general Docker API.
+The broker still holds daemon trust; a read-only socket mount does not remove
+that trust. Keep management components and the broker in the incident scope.
+
+Allow only ping, version, container IDs, redacted container inspection and
+start/die/health events. Deny creation, exec, archive, logs, images, volumes and
+other paths. Inspection omits environment, commands, mounts, health output and
+unrelated labels. Routing labels, ports and network addresses remain visible
+because Traefik needs them; routing labels can contain credentials themselves.
+
+Require a unique 43-character base64url `DISCOVERY_TOKEN` and Traefik's Docker
+provider Basic authentication (`discovery` as username). Generate it inside the
+existing private deployment/configuration system. Never print it, commit it,
+put it in a test receipt or export rendered configuration between hosts. Only
+loopback ping bypasses authentication for the container health check.
+
+Deploy with these controls:
+
+- Dedicated internal Docker network containing only Traefik and this broker;
+  no published port, host networking, app networks or extra mounts.
+- UID/GID `65532:65532`, supplemental host socket GID, all capabilities dropped,
+  no-new-privileges and read-only root. The sole bind is the Docker socket.
+- 128 MiB memory, 256 MiB combined memory/swap, 0.5 CPU and 64 PIDs. Confirm
+  headroom before adopting this profile on a larger fleet.
+- Loopback `/_ping` health check and a healthy dependency before Traefik starts.
+- Exact tested image, `pull_policy: never` for a local image, and rooted image
+  provenance. Keep package scans and a tested rebuild path for the broker too.
+
+The Dockerfile expects an inspected official Python Alpine base digest. Build
+and scan on the application host. Use the real installed Traefik image in the
+canary; provider behavior can change between releases. Fixture guards:
+
+```sh
+python3 cli/test-docker-discovery.py
+python3 cli/test-container-policy.py
+python3 cli/test-health-publisher.py
+```
+
+Before production, run a canary on the real host. It should verify real routing,
+start/die events, idle event renewal, broker restart/cold-start recovery,
+authentication, redaction and denial from an existing application network, then
+remove its containers/network and verify the original running container IDs are
+unchanged. Hatchkit does not ship that canary: it names one host's containers,
+so it belongs in the operator's own runbook. Choose an existing application for
+the negative network probe, and probe with Node when that application has Node
+rather than Python. Keep production credentials out of the fixtures.
+Cold-start coverage explicitly starts Traefik while its broker is unavailable:
+Docker daemon restart does not enforce Compose's dependency startup ordering.
+
+`native-proxy-discovery.py` prepares the change inside the controller and uses
+the existing `SaveProxyConfiguration`/`StartProxy` actions. Preserve the current
+Traefik image bytes, ports, TLS/data mounts and unrelated settings. Keep private
+original configuration and an original-host image anchor. Check activity status
+and use `proxy-discovery-host.py` to verify real application routes/TLS and all
+other running containers. Never repeat an ambiguous deployment request blindly.
+Rollback restores the exact private canonical configuration through the same
+native actions; inspect concurrent changes before invoking it.
+
+Normal saved-configuration restarts retain this setup. **Force-regenerating the
+proxy defaults can drop the broker/network and restore direct socket access.**
+Review regeneration and controller/provider upgrades against the canary before
+applying them. Sentinel and other management agents need their own trust review.
+
+# Reviewed control drift
+
+`container-policy.py` checks explicit reviewed settings; it never learns a
+baseline or changes containers. Policies contain selectors and expected controls,
+not environment values. Prefix selectors cover every running rolling replica.
+The timer runs every five minutes. Install the policy, produce a successful
+status, then enable `HATCHKIT_CONTAINER_POLICY_REQUIRED=1` in a separate publisher
+service drop-in. Keep publisher credential files unchanged.
+
+The publisher combines process/control status using the **older** timestamp.
+Missing or failed control reports stay incomplete, so an independent monitor can
+detect disappearance. Only booleans/counts/timestamps leave the host. Policy
+findings stay visible locally without exporting resource names or secrets.
+New controls must be tested and explicitly added to the policy. This check does
+not prove isolation for containers that have no reviewed policy yet.
+
+Provider request sources: [Docker provider](https://github.com/traefik/traefik/blob/v3.7.16/pkg/provider/docker/pdocker.go)
+and [shared discovery](https://github.com/traefik/traefik/blob/v3.7.16/pkg/provider/docker/shared.go).

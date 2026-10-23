@@ -44,4 +44,16 @@ class PublisherBoundary(unittest.TestCase):
   self.assertFalse(failed['ok']);self.assertEqual(failed['phase'],'failed')
   stalled=pub.image_metadata(last,progress,now+pub.dt.timedelta(minutes=21))
   self.assertFalse(stalled['complete']);self.assertEqual(stalled['phase'],'failed')
+ def test_required_control_scan_cannot_disappear_or_reset_coverage_age(self):
+  process={'checkedAt':'2026-10-23T01:00:00Z','ok':True,'complete':True,'findings':0}
+  missing=pub.with_container_controls(process,{})
+  self.assertFalse(missing['complete']);self.assertIsNone(missing['checkedAt'])
+  control={'checkedAt':'2026-10-23T00:00:00Z','ok':True,'complete':True,'findings':[]}
+  healthy=pub.with_container_controls(process,control)
+  self.assertTrue(healthy['ok']);self.assertEqual(healthy['checkedAt'],'2026-10-23T00:00:00+00:00')
+  control.update(ok=False,findings=[{'resource':'PRIVATE_SECRET','field':'unhealthy'}])
+  failed=pub.with_container_controls(process,control)
+  self.assertFalse(failed['ok']);self.assertEqual(failed['findings'],1);self.assertNotIn('PRIVATE_SECRET',json.dumps(failed))
+  self.assertFalse(pub.with_container_controls(process,control|{'complete':False})['complete'])
+
 if __name__=='__main__':unittest.main()

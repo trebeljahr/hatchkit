@@ -44,6 +44,18 @@ def image_metadata(images,progress,now=None):
    if not row['checkedAt']:row['checkedAt']=progress.get('checkedAt')
  return row
 
+def with_container_controls(process,controls):
+ try:
+  times=[dt.datetime.fromisoformat(row['checkedAt'].replace('Z','+00:00'))for row in(process,controls)]
+  valid=all(time.tzinfo is not None for time in times)
+  complete=valid and process['complete'] and controls.get('complete')is True and not controls.get('error')
+  return {'checkedAt':min(times).isoformat()if valid else None,'complete':bool(complete),
+          'ok':bool(complete)and process['ok']is True and controls.get('ok')is True,
+          'findings':process['findings']+len(controls.get('findings')or[])}
+ except(KeyError,ValueError,TypeError):
+  return {'checkedAt':None,'complete':False,'ok':False,'findings':0}
+
+
 def metadata():
  cfg=json.loads(pathlib.Path('/etc/hatchkit-backups/config.json').read_text())
  projects=[p['name']for p in cfg['projects']]
@@ -51,6 +63,8 @@ def metadata():
   ('process','host-integrity-quick-status.json',QUICK_EXCLUSIONS),
   ('full','host-integrity-status.json',()),('advisory','update-watch-status.json',()),
   ('files','file-integrity-status.json',())]}
+ if os.environ.get('HATCHKIT_CONTAINER_POLICY_REQUIRED')=='1':
+  checks['process']=with_container_controls(checks['process'],read('container-policy-status.json'))
  advisory=read('update-watch-status.json')
  # The host watcher/triage owns vulnerability notifications. This independent
  # monitor owns coverage and failed delivery, not a second copy of its ledger.

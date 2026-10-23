@@ -1987,6 +1987,37 @@ verify the generated deployment before calling the policy durable.
 
 Keep database-only networks internal and separate from public proxy networks. Permit only the application/database pairs that need access; block container access to cloud metadata and host management endpoints. Observe outbound requirements before enforcing an allowlist, including DNS, mail, storage, API callbacks and IPv6. A proxy sharing the database network weakens isolation. A read-only Docker socket mount still permits mutating API calls: remove it where possible or use an authenticated, method/path-restricted discovery API without granting container creation, exec or archive access. Document any management component that still has host-level trust.
 
+For Traefik's non-Swarm Docker provider, the `docker-discovery` template restricts
+requests and redacts environment, commands, mounts, health logs and unrelated
+labels. Put it on a dedicated internal network with Traefik only, require a
+unique service-local credential, publish no port and run the broker rootless
+with a read-only root, no capabilities, no-new-privileges and tested resource
+limits. Routing labels can still carry sensitive values; preserve network and
+authentication boundaries. The broker itself retains daemon trust.
+
+Before removing a production socket, prove discovery/events, idle renewal,
+restart recovery, secret redaction and denial from an app network using the
+actual Traefik image. Preserve existing TLS, ports, app routes and image bytes.
+Persist changes through the native deployment configuration, keep private
+original-host recovery state and test the local image pull policy. A normal
+saved-config restart and forced default regeneration have different behavior:
+regeneration needs review because it can remove the broker and restore a socket.
+
+Monitor explicit reviewed container controls every five minutes. Check limits,
+kernel no-new-privileges, runtime UID, health, mounts, networks, Docker endpoint
+and socket absence as applicable. Never learn a policy from the current running
+fleet automatically. Combine its freshness with the process heartbeat using the
+older timestamp; missing control checks must trigger lost coverage externally.
+Transmit fixed counts/booleans/timestamps only and preserve publisher credentials.
+
+The 23 October ops-vps rollout passed the real canary and native proxy restart
+with unchanged Traefik image bytes, application routes/TLS, ports and data mounts.
+Its broker has an isolated internal network, authentication, redaction and tested
+128 MiB/0.5 CPU/64-PID containment. Six shared and four dedicated reviewed
+profiles feed external freshness monitoring. This does not establish socket
+restriction on the dedicated proxy, remove Sentinel's trust or cover containers
+without an explicit reviewed policy.
+
 Close incident credentials at their issuer: removing an environment variable does not revoke an OAuth client secret, mail API key or controller token. Identify the exact credential and dependent clients, create/test the replacement, then revoke the old credential and verify rejection. Keep provider account audit evidence and original incident artifacts. Never print credential values into the patch ledger.
 
 For a controller operator token, preserve the intended owner, team, permissions

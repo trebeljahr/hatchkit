@@ -1,0 +1,11 @@
+[Unit]
+Description=Check reviewed container policy every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=10s
+Unit=hatchkit-container-policy.service
+
+[Install]
+WantedBy=timers.target
