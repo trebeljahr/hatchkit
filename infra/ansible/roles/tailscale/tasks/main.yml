@@ -87,11 +87,11 @@
   failed_when: tailscale_verify.rc != 0
   when: tailscale_restrict_ssh
 
-# Restrict SSH to Tailscale network after verifying connectivity
-- name: Restrict SSH to Tailscale CGNAT range
+# Restrict the input interface, including the tailnet's IPv6 addresses.
+- name: Restrict SSH to the Tailscale interface
   community.general.ufw:
     rule: allow
-    from_ip: 100.64.0.0/10
+    interface_in: tailscale0
     port: "22"
     proto: tcp
     comment: SSH via Tailscale only
@@ -110,5 +110,5 @@
   ansible.builtin.debug:
     msg: >
       Tailscale is running. SSH via tailnet: ssh {{ ssh_allowed_users | default(['root']) | first }}@{{ tailscale_hostname }}.
-      Emergency access: Hetzner web console (VNC) → ufw allow 22/tcp.
+      Emergency access: repair Tailscale from Hetzner's authenticated web console (VNC). Keep public SSH closed.
   when: tailscale_restrict_ssh

@@ -509,7 +509,7 @@ tailscale status
 
 # Restrict SSH to Tailscale only (after verifying Tailscale SSH works!)
 ufw delete allow 22/tcp
-ufw allow from 100.64.0.0/10 to any port 22 proto tcp comment 'SSH via Tailscale'
+ufw allow in on tailscale0 to any port 22 proto tcp comment 'SSH via Tailscale'
 ```
 
 **Tailscale SSH mode:** The `--ssh` flag enables Tailscale's built-in SSH server. This means you can use `tailscale ssh deploy@<hostname>` without configuring SSH keys at all — Tailscale handles authentication via your identity provider. Your regular OpenSSH server still works over the tailnet for compatibility.
