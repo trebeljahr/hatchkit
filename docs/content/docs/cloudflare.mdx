@@ -121,6 +121,15 @@ successfully while its public hostname still returns Cloudflare's empty-site
 out of the routing configuration until the migration target is verified; then
 record the intended domains/routes there so later deployments preserve them.
 
+Domain provisioning and routine version deployments can use different
+credentials. During one migration, the per-Worker CI token returned
+Cloudflare error `10002` for custom-domain setup; the local operator token could
+perform that step. Keep the operator token local. A repository-owned workflow
+can upload/activate versions and check its public hosts without reapplying
+domains on each run. Provision those domains separately with the operator,
+and retain their declarations for explicit routing changes. Do not broaden CI
+credentials to work around a domain-setup failure.
+
 ## Secrets
 
 `CLOUDFLARE_API_TOKEN` holds the Worker's own token. `CLOUDFLARE_ACCOUNT_ID` identifies its account.
