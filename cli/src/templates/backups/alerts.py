@@ -16,6 +16,35 @@ import sys
 
 from runner import read_status
 
+RESTORE_TIMER = Path('/etc/systemd/system/hatchkit-restore-check.timer')
+
+
+def restore_issues(config, work, now=None):
+    if not RESTORE_TIMER.is_file():
+        return []  # Legacy installations acquire this check with the drill units.
+    now = now or dt.datetime.now(dt.timezone.utc)
+    issues = []
+    try:
+        report = json.loads((work / 'restore-check-all.json').read_text())
+        rows = {r['project']: r for r in report['results']}
+    except (OSError, ValueError, KeyError, TypeError):
+        rows = {}
+    for project in config['projects']:
+        row = rows.get(project['name'], {})
+        try:
+            checked = dt.datetime.fromisoformat(row['checkedAt'])
+            fresh = dt.timedelta(minutes=-5) <= now - checked <= dt.timedelta(days=9)
+        except (ValueError, KeyError, TypeError):
+            fresh = False
+        if not row.get('ok') or not fresh:
+            issues.append(project['name'] + ': isolated native restore failed, is missing or is older than nine days.')
+    try:
+        if unit_value('hatchkit-restore-check.timer', 'ActiveState') != 'active':
+            issues.append('Weekly native restore timer is not active.')
+    except Exception:
+        issues.append('Weekly native restore timer state could not be read.')
+    return issues
+
 
 def unit_value(unit, prop):
     return subprocess.check_output(
@@ -48,7 +77,7 @@ def issues_for(config, work):
             issues.append('Daily backup timer is not active.')
     except Exception:
         issues.append('Backup service/timer state could not be read.')
-    return sorted(issues)
+    return sorted(issues + restore_issues(config, work))
 
 
 def send_email(settings, subject, body):

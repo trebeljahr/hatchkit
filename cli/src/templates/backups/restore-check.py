@@ -151,7 +151,9 @@ def main():
     for project in config['projects']:
         if args.project and project['name'] != args.project:
             continue
-        result = {'project': project['name'], 'ok': False}
+        started = time.monotonic()
+        result = {'project': project['name'], 'ok': False,
+                  'startedAt': dt.datetime.now(dt.timezone.utc).isoformat()}
         try:
             project_env = {**env, 'RESTIC_REPOSITORY': config['repositoryBase'].rstrip('/') + '/' + project['name']}
             snapshots = json.loads(runner.restic(['snapshots', '--json', '--tag', 'hatchkit-verified'], project_env))
@@ -172,6 +174,7 @@ def main():
         except Exception as error:
             result['error'] = str(error) if isinstance(error, runner.BackupError) else type(error).__name__
         result['checkedAt'] = dt.datetime.now(dt.timezone.utc).isoformat()
+        result['durationSeconds'] = round(time.monotonic() - started, 3)
         results.append(result)
         print(json.dumps(result), flush=True)
         combined_path = work / 'restore-check-all.json'

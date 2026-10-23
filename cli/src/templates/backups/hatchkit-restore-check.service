@@ -1,0 +1,20 @@
+[Unit]
+Description=Restore verified backups into isolated disposable engines
+Wants=network-online.target
+After=network-online.target docker.service
+OnFailure=hatchkit-backup-alerts.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/restore-check.py
+User=root
+UMask=0077
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=1536M
+TimeoutStartSec=6h
+TimeoutStopSec=90
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only

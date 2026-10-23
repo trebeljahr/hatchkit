@@ -59,6 +59,26 @@ class BackupAlerts(unittest.TestCase):
             self.assertIn('app-redis no longer exist', issues[0])
             self.assertIn('hatchkit backup sources --project chess-app', issues[0])
 
+    def test_restore_failures_staleness_and_future_dates_are_visible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            timer = root / 'restore.timer'
+            timer.write_text('test fixture')
+            now = dt.datetime.now(dt.timezone.utc)
+            config = {'projects': [{'name': n} for n in ['fresh', 'failed', 'stale', 'missing', 'future']]}
+            rows = [{'project': 'fresh', 'ok': True, 'checkedAt': now.isoformat()},
+                    {'project': 'failed', 'ok': False, 'checkedAt': now.isoformat(), 'error': 'PRIVATE'},
+                    {'project': 'stale', 'ok': True, 'checkedAt': (now-dt.timedelta(days=10)).isoformat()},
+                    {'project': 'future', 'ok': True, 'checkedAt': (now+dt.timedelta(hours=1)).isoformat()}]
+            (root / 'restore-check-all.json').write_text(json.dumps({'results': rows}))
+            with patch.object(alerts, 'RESTORE_TIMER', timer), patch.object(alerts, 'unit_value', return_value='inactive'):
+                issues = alerts.restore_issues(config, root, now)
+            self.assertEqual(len(issues), 5)
+            self.assertNotIn('PRIVATE', str(issues))
+            self.assertFalse(any(i.startswith('fresh:') for i in issues))
+            with patch.object(alerts, 'RESTORE_TIMER', root / 'not-installed'):
+                self.assertEqual(alerts.restore_issues(config, root, now), [])
+
     def test_test_email_does_not_change_failure_state(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)

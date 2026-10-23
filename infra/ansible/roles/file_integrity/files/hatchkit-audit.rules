@@ -1,0 +1,14 @@
+-b 8192
+-f 1
+--backlog_wait_time 60000
+-w /etc/passwd -p wa -k hatchkit_auth
+-w /etc/shadow -p wa -k hatchkit_auth
+-w /etc/sudoers -p wa -k hatchkit_auth
+-w /etc/sudoers.d -p wa -k hatchkit_auth
+-w /etc/ssh -p wa -k hatchkit_ssh
+-w /etc/systemd/system -p wa -k hatchkit_startup
+-w /etc/cron.d -p wa -k hatchkit_startup
+-w /etc/hatchkit-security -p wa -k hatchkit_security
+-w /opt/hatchkit-backups -p wa -k hatchkit_security
+-w /usr/bin/sudo -p x -k hatchkit_privilege
+-a always,exit -F arch=b64 -F euid=0 -F auid>=1000 -F auid!=unset -S execve -k hatchkit_admin

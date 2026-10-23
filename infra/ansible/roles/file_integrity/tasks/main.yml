@@ -54,3 +54,56 @@
     name: auditd
     enabled: true
     state: started
+
+- name: Bound audit history and low-disk behavior
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: '^\s*{{ item.key }}\s*='
+    line: '{{ item.key }} = {{ item.value }}'
+    backup: true
+  loop:
+    - {key: max_log_file, value: '32'}
+    - {key: num_logs, value: '14'}
+    - {key: max_log_file_action, value: ROTATE}
+    - {key: space_left, value: '512'}
+    - {key: space_left_action, value: SYSLOG}
+    - {key: admin_space_left, value: '256'}
+    - {key: admin_space_left_action, value: SUSPEND}
+    - {key: disk_full_action, value: SUSPEND}
+    - {key: disk_error_action, value: SYSLOG}
+  register: audit_logging
+
+- name: Reload audit logging configuration
+  ansible.builtin.command: auditctl --signal reload
+  when: audit_logging.changed
+
+- name: Install scoped audit policy
+  ansible.builtin.copy:
+    src: hatchkit-audit.rules
+    dest: /etc/audit/rules.d/70-hatchkit.rules
+    owner: root
+    group: root
+    mode: '0600'
+    backup: true
+
+- name: Persist immutable audit policy after the rules
+  ansible.builtin.copy:
+    content: "-e 2\n"
+    dest: /etc/audit/rules.d/99-hatchkit-finalize.rules
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Read current audit enforcement state
+  ansible.builtin.command: auditctl -s
+  register: audit_state
+  changed_when: false
+
+- name: Load policy when kernel audit rules are mutable
+  ansible.builtin.command: augenrules --load
+  when: "'enabled 2' not in audit_state.stdout"
+
+- name: Explain immutable-host policy updates
+  ansible.builtin.debug:
+    msg: Existing immutable audit rules remain active. Review any policy diff before a scheduled reboot loads it.
+  when: "'enabled 2' in audit_state.stdout"

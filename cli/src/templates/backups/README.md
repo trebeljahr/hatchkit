@@ -309,3 +309,9 @@ affect several applications. Do not import a whole shared-service dump into one
 client project's database. File archives preserve original metadata and symlinks;
 the safe inspection copy deliberately extracts regular files only. Use the
 retained original archive when planning a metadata-preserving file recovery.
+
+### Weekly native recovery drills
+
+The bundle includes `hatchkit-restore-check.service` and `.timer`. Enable the timer after an initial successful full drill. It restores every registered project serially into disposable, network-isolated database containers, checks checksums/SQLite integrity and records native import results plus elapsed time. It publishes no ports and mounts no production data. Keep the source engine image IDs available; a missing image fails visibly rather than pulling an unreviewed replacement.
+
+The weekly timer uses Sunday 02:00 UTC with up to one hour jitter. Its independent freshness limit is nine days. Once the drill units are installed, backup alerts also report failed/missing/stale project restores and a stopped drill timer. A native engine import does not prove full application startup; run application recovery checks separately, especially before changing a database-backed runtime.
