@@ -395,35 +395,49 @@ INSPECT = '{{json .Name}}\t{{json .Config.Image}}\t{{json .Image}}\t{{json (inde
 IMAGE_INSPECT = '{{json .Id}}\t{{json .Config}}\t{{json .RepoDigests}}'
 
 
-def list_services(docker, services):
-    """Running containers of the watched images, grouped by service and version."""
+def list_services(docker, services, skipped=None):
+    """Resolve watched upstreams even after local package/runtime rebuilds."""
+    skipped = skipped if skipped is not None else []
     ids = docker(['ps', '-q', '--no-trunc']).split()
     if not ids:
-        return [], []
+        return [], {}
     by_repo = {image: s for s in services for image in s['images']}
-    containers = []
+    inventory = []
     for line in docker(['inspect', '--format', INSPECT, *ids]).splitlines():
         try:
             fields = [json.loads(f) for f in line.split('\t')]
             name, ref, image_id = fields[:3]
             original = fields[3] if len(fields) > 3 else None
+            inventory.append((name, ref, image_id, original))
         except ValueError:
-            continue
-        repo, tag = split_image(original or ref or '')
-        if repo in by_repo:
-            containers.append({'name': name.lstrip('/'), 'ref': ref, 'repo': repo, 'tag': tag,
-                               'imageId': image_id, 'service': by_repo[repo]})
+            skipped.append('Container inventory: unreadable identity')
     images = {}
-    wanted = sorted({c['imageId'] for c in containers})
+    wanted = sorted({row[2] for row in inventory})
     if wanted:
         for line in docker(['image', 'inspect', '--format', IMAGE_INSPECT, *wanted]).splitlines():
             try:
                 image_id, config, digests = (json.loads(f) for f in line.split('\t'))
             except ValueError:
+                skipped.append('Image inventory: unreadable identity')
                 continue
             config = config or {}
             images[image_id] = {'labels': config.get('Labels') or {}, 'env': config.get('Env') or [],
                                 'digests': digests or []}
+    containers = []
+    derived = lambda ref: isinstance(ref, str) and ref.startswith(('hatchkit-security/', 'hatchkit-rollback/', 'sha256:'))
+    for name, ref, image_id, original in inventory:
+        baked = images.get(image_id, {}).get('labels', {}).get('io.hatchkit.security.original-image')
+        candidates = [origin for origin in (original, baked) if origin and not derived(origin)]
+        if len(set(candidates)) > 1:
+            skipped.append('Upstream advisory coverage in ' + name.lstrip('/') + ': conflicting upstream provenance')
+            continue
+        origin = candidates[0] if candidates else ref
+        repo, tag = split_image(origin or '')
+        if repo in by_repo:
+            containers.append({'name': name.lstrip('/'), 'ref': ref, 'repo': repo, 'tag': tag,
+                               'imageId': image_id, 'service': by_repo[repo]})
+        elif not candidates and (derived(original) or derived(baked) or (ref or '').startswith(('hatchkit-security/', 'hatchkit-rollback/'))):
+            skipped.append('Upstream advisory coverage in ' + name.lstrip('/') + ': unresolved derived-image provenance')
     return containers, images
 
 
@@ -721,9 +735,9 @@ def image_package_findings(now, path=None):
 
 def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=None, chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False):
     now = now or dt.datetime.now(dt.timezone.utc)
-    containers, images = list_services(docker, services)
-    groups = {}
     skipped = []
+    containers, images = list_services(docker, services, skipped)
+    groups = {}
     for container in containers:
         service = container['service']
         image = images.get(container['imageId'], {})

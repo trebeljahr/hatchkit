@@ -1938,6 +1938,23 @@ the replacement database and keep functional checks inside the rollback boundary
 Tie permission proof to exact candidate/live IDs and an expiry; a passing test on
 another image or an earlier deployment cannot authorize the current rollout.
 
+Keep a rooted `io.hatchkit.security.original-image` reference in both rebuilt
+image metadata and canonical service labels. Preserve it across every rebuild;
+pointing at another local security image can silently remove upstream advisory
+coverage. Recover an uncertain origin from retained snapshots and immutable
+layer ancestry before changing it. Missing or conflicting origins must produce
+a coverage warning. Image package scanning remains necessary for dependency
+coverage even when the upstream product has no advisory feed.
+
+Exercise the actual controller parser in a rolled-back transaction with jobs
+suppressed before deployment. Compare component IDs, named data volumes,
+environment, ports, pull policy, image identity, labels and permission/resource
+settings. Then deploy one component through the normal controller path and
+verify the running result plus application/database and backup checks. A parser
+probe alone does not establish deployment durability. Retain original-host
+configuration snapshots and image anchors for recovery; never copy rendered
+credentials between hosts as a shortcut.
+
 Preserve upstream database repository basenames in derived image aliases and
 test the controller's classification using the actual service context. An
 arbitrary local image name can make the next deployment treat a database as a

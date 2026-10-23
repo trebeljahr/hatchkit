@@ -701,6 +701,43 @@ class RuntimeSecurityTests(unittest.TestCase):
         self.assertEqual(found[0]['tag'],'2.5.6')
         self.assertEqual(found[0]['service']['key'],'uptime-kuma')
 
+    def test_nested_derived_origin_is_visible_as_lost_coverage(self):
+        row=container('kuma','hatchkit-security/kuma:2')
+        fake=FakeDocker([row])
+        def docker(args,**kwargs):
+            result=fake(args,**kwargs)
+            return result.rstrip()+'\t'+json.dumps('hatchkit-security/kuma:1')+'\n' if args[0]=='inspect' else result
+        skipped=[]
+        found,_=uw.list_services(docker,SERVICES,skipped)
+        self.assertEqual(found,[])
+        self.assertIn('unresolved derived-image provenance',skipped[0])
+        self.assertNotIn(SECRET,json.dumps(skipped))
+
+    def test_baked_upstream_survives_container_recreation(self):
+        row=container('kuma','hatchkit-security/kuma:2',labels={'io.hatchkit.security.original-image':'louislam/uptime-kuma:2.5.6'})
+        skipped=[]
+        found,_=uw.list_services(FakeDocker([row]),SERVICES,skipped)
+        self.assertEqual(found[0]['service']['key'],'uptime-kuma')
+        self.assertEqual(skipped,[])
+
+    def test_resolved_database_origin_is_not_missing_vendor_coverage(self):
+        row=container('postgres','hatchkit-security/postgres:20261023',labels={'io.hatchkit.security.original-image':'postgres:16-alpine'})
+        skipped=[]
+        found,_=uw.list_services(FakeDocker([row]),SERVICES,skipped)
+        self.assertEqual(found,[])
+        self.assertEqual(skipped,[])
+
+    def test_conflicting_origins_fail_coverage_instead_of_choosing_one(self):
+        row=container('kuma','hatchkit-security/kuma:2',labels={'io.hatchkit.security.original-image':'louislam/uptime-kuma:2.5.6'})
+        fake=FakeDocker([row])
+        def docker(args,**kwargs):
+            result=fake(args,**kwargs)
+            return result.rstrip()+'\t'+json.dumps('listmonk/listmonk:v6.2.0')+'\n' if args[0]=='inspect' else result
+        skipped=[]
+        found,_=uw.list_services(docker,SERVICES,skipped)
+        self.assertEqual(found,[])
+        self.assertIn('conflicting upstream provenance',skipped[0])
+
     def test_bundled_store_is_checked_even_when_system_store_passes(self):
         def docker(args,**kwargs):
             if args[0]=='ps':return 'id'
