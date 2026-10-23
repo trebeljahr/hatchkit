@@ -1929,6 +1929,15 @@ network and private temporary records removed after the containers stop. Where
 initialization changes ownership and then changes permissions, test both actions:
 `CHOWN` does not replace `FOWNER`. Add only the capability demonstrated necessary.
 
+Test the actual production thread/user settings and native backup capture under
+the proposed permissions. A restore-only configuration can accidentally redirect
+new backups into its read-only import mount; preserve production's writable backup
+location separately. Check configuration bind mounts explicitly: a read-only root
+does not override a writable bind. Require the real application to reconnect to
+the replacement database and keep functional checks inside the rollback boundary.
+Tie permission proof to exact candidate/live IDs and an expiry; a passing test on
+another image or an earlier deployment cannot authorize the current rollout.
+
 Keep database-only networks internal and separate from public proxy networks. Permit only the application/database pairs that need access; block container access to cloud metadata and host management endpoints. Observe outbound requirements before enforcing an allowlist, including DNS, mail, storage, API callbacks and IPv6. A proxy sharing the database network weakens isolation. A read-only Docker socket mount still permits mutating API calls: remove it where possible or use an authenticated, method/path-restricted discovery API without granting container creation, exec or archive access. Document any management component that still has host-level trust.
 
 Close incident credentials at their issuer: removing an environment variable does not revoke an OAuth client secret, mail API key or controller token. Identify the exact credential and dependent clients, create/test the replacement, then revoke the old credential and verify rejection. Keep provider account audit evidence and original incident artifacts. Never print credential values into the patch ledger.
