@@ -2089,6 +2089,37 @@ without an explicit reviewed policy.
 
 Close incident credentials at their issuer: removing an environment variable does not revoke an OAuth client secret, mail API key or controller token. Identify the exact credential and dependent clients, create/test the replacement, then revoke the old credential and verify rejection. Keep provider account audit evidence and original incident artifacts. Never print credential values into the patch ledger.
 
+For a Go service dependency rebuild, pin the existing application commit and a
+supported patched Go builder by digest. Verify the actual dependency versions
+embedded in the resulting binary, test with the build network disabled, preserve
+embedded frontend assets, update final-image packages and scan the exact final
+image. A scanner's suggested fix floor can lag vendor guidance; Listmonk's
+24 October rebuild required [Echo 4.15.4](https://github.com/labstack/echo/security/advisories/GHSA-vfp3-v2gw-7wfq), rather than the earlier reported 4.15.3.
+Use synthetic isolated data to exercise authentication, image processing,
+uploads, deletion and restart recovery before touching the production volume.
+
+Listmonk's tested runtime profile is 1 GiB memory, 1.25 GiB combined memory/swap,
+one CPU, 128 PIDs, read-only root, a 32 MiB temporary directory, no capabilities
+and `no-new-privileges`. Its existing root user remains because uploads are
+root-owned; this does not establish a non-root deployment. The reusable
+`cli/src/templates/docker-discovery/listmonk-runtime.compose.yml` fragment and
+`listmonk-policy.example.json` are review inputs, never automatically applied.
+Replace the example selector, confirm actual mount destinations and user, merge
+the rule into the existing policy and test with the real service configuration.
+Do not overwrite other reviewed profiles or change upload ownership implicitly.
+
+Exercise the controller parser in a rolled-back transaction with jobs suppressed
+and compare component IDs, volume identities, existing environment values,
+commands, health checks, ports and routing. Permit controller metadata additions
+only when exact names and values match the installed generator. Validate the
+actual generated deployment file with `docker compose config --quiet` before
+starting the component: a valid YAML roundtrip alone does not prove Compose
+accepts its types. In particular, omit an empty `cap_add` field when a serializer
+would emit an object. Keep `cap_drop: [ALL]` and verify zero effective kernel
+capabilities afterward. Retain the old image and private database/upload recovery
+points; restore canonical configuration and the exact original runtime on
+failure. Recovery must remain available after scan/canary freshness expires.
+
 For a controller operator token, preserve the intended owner, team, permissions
 and expiry during an equivalent rotation. Store the replacement in the normal
 operator credential store, read it back, and test a real authenticated endpoint

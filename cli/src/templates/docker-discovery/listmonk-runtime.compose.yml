@@ -1,0 +1,18 @@
+# Review and merge into the existing Listmonk component after a compatibility
+# canary. This fragment provides no image, credentials, ports or data volumes.
+# Keep the actual entrypoint, command, user, uploads volume and environment.
+# Remove any existing cap_add; omit an empty cap_add field because some native
+# YAML serializers emit an object instead of the sequence Compose requires.
+services:
+  listmonk:
+    mem_limit: 1g
+    memswap_limit: 1280m
+    cpus: 1.0
+    pids_limit: 128
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777

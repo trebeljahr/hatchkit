@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "policies": [
+    {
+      "resource": "listmonk",
+      "selector": { "name": "listmonk-REPLACE_RESOURCE_UUID" },
+      "expected": {
+        "Memory": 1073741824,
+        "MemorySwap": 1342177280,
+        "NanoCpus": 1000000000,
+        "PidsLimit": 128,
+        "ReadonlyRootfs": true,
+        "uid": 0,
+        "healthy": true,
+        "noNewPrivileges": true,
+        "noHostNamespaces": true,
+        "noDirectDockerSocket": true,
+        "CapDrop": ["ALL"],
+        "CapAdd": [],
+        "mountDestinations": ["/listmonk/uploads"],
+        "Tmpfs": { "/tmp": "rw,nosuid,nodev,noexec,size=32m,mode=1777" }
+      }
+    }
+  ]
+}

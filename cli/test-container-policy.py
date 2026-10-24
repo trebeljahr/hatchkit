@@ -36,5 +36,16 @@ class Policy(unittest.TestCase):
   a=fixture();b=fixture();a['Name']='/abcdefghijklmnopqrstuv-old';b['Name']='/abcdefghijklmnopqrstuv-new';b['HostConfig']['Memory']=0
   rule=policy();rule['selector']={'prefix':'abcdefghijklmnopqrstuv-'}
   self.assertIn('Memory',[x['field']for x in p.evaluate([a,b],[rule],lambda pid:{'uid':65532,'nnp':1})])
+ def test_temporary_filesystem_sizes_and_modes_normalize_without_ignoring_restrictions(self):
+  d=fixture();rule=policy();rule['expected']['Tmpfs']={'/tmp':'rw,nosuid,nodev,noexec,size=32m,mode=1777'}
+  d['HostConfig']['Tmpfs']={'/tmp':'nosuid,nodev,noexec,size=33554432,mode=01777'}
+  check=lambda:p.evaluate([d],[rule],lambda pid:{'uid':65532,'nnp':1})
+  self.assertEqual(check(),[])
+  for actual in [{}, {'/tmp':'nosuid,nodev,size=32m,mode=1777'}, {'/tmp':'nosuid,nodev,noexec,size=64m,mode=1777'}, {'/tmp':'nosuid,nodev,noexec,size=32m,mode=777'}, {'/tmp':'nosuid,nodev,noexec,size=32m,mode=1777','/extra':'size=1m'}]:
+   d['HostConfig']['Tmpfs']=actual
+   self.assertIn('temporaryFilesystems',[x['field']for x in check()])
+ def test_duplicate_or_invalid_tmpfs_options_fail_closed(self):
+  for value in ['size=32m,size=64m','size=unlimited','mode=999']:
+   with self.assertRaises(ValueError):p.tmpfs_options(value)
 
 if __name__=='__main__':unittest.main()

@@ -22,6 +22,25 @@ def caps(values):
     return {c.upper().removeprefix('CAP_') for c in values or []}
 
 
+def tmpfs_options(value):
+    """Normalize Docker/Compose size and mode spellings without dropping flags."""
+    result = {}
+    for item in value.split(','):
+        key, separator, option = item.partition('=')
+        if key in result:
+            raise ValueError('Duplicate temporary-filesystem option')
+        if key == 'size':
+            match = re.fullmatch(r'(\d+)([kmg]?)', option.lower())
+            if not match:
+                raise ValueError('Invalid temporary-filesystem size')
+            result[key] = int(match[1])*{'': 1, 'k': 1024, 'm': 1024**2, 'g': 1024**3}[match[2]]
+        elif key == 'mode':
+            result[key] = int(option, 8)
+        elif key != 'rw':
+            result[key] = option if separator else True
+    return result
+
+
 def discovery_pair(containers, pair):
     clients = [d for d in containers if d['Name'].lstrip('/') == pair['client']]
     brokers = [d for d in containers if d['Name'].lstrip('/') == pair['broker']]
@@ -77,6 +96,10 @@ def evaluate(containers, policies, proc=kernel_status):
                 require(set(d['NetworkSettings']['Networks']) == set(expected['networks']), 'isolatedNetworks')
             if 'mountDestinations' in expected:
                 require({m['Destination'] for m in d['Mounts']} == set(expected['mountDestinations']), 'mounts')
+            if 'Tmpfs' in expected:
+                actual = {path: tmpfs_options(value) for path, value in (host.get('Tmpfs') or {}).items()}
+                wanted = {path: tmpfs_options(value) for path, value in expected['Tmpfs'].items()}
+                require(actual == wanted, 'temporaryFilesystems')
             if expected.get('noDirectDockerSocket'):
                 dangerous = {'/', '/var', '/var/run', '/run', '/var/run/docker.sock', '/run/docker.sock', '/var/lib/docker'}
                 require(all(not m['Destination'].endswith('/docker.sock') and (m['Type'] != 'bind' or (m.get('Source', '').rstrip('/') not in {p.rstrip('/') for p in dangerous} and not m.get('Source', '').endswith('/docker.sock'))) for m in d['Mounts']), 'directDockerSocket')
