@@ -62,6 +62,11 @@ Traefik image bytes, ports, TLS/data mounts and unrelated settings. Keep private
 original configuration and an original-host image anchor. Check activity status
 and use `proxy-discovery-host.py` to verify real application routes/TLS and all
 other running containers. Never repeat an ambiguous deployment request blindly.
+Pin the actual inspected Traefik repository manifest digest and verify it
+resolves to the running image ID. A manifest digest and image configuration ID
+can differ. Do not construct a repository digest by prefixing an image ID.
+Dedicated game health checks must use their real public RPC prefixes; an
+unrouted container-only health path is not evidence of a proxy failure.
 Rollback restores the exact private canonical configuration through the same
 native actions; inspect concurrent changes before invoking it.
 

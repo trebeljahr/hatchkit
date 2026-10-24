@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "policies": [
+    {
+      "resource": "proxy-error-pages",
+      "selector": { "name": "coolify-proxy-error-pages" },
+      "expected": {
+        "Memory": 134217728,
+        "MemorySwap": 268435456,
+        "NanoCpus": 250000000,
+        "PidsLimit": 64,
+        "uid": 0,
+        "noPublishedPorts": true,
+        "noHostNamespaces": true,
+        "noDirectDockerSocket": true,
+        "networks": ["coolify"],
+        "mountDestinations": ["/www"]
+      }
+    }
+  ]
+}

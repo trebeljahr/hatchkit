@@ -2087,6 +2087,26 @@ profiles feed external freshness monitoring. This does not establish socket
 restriction on the dedicated proxy, remove Sentinel's trust or cover containers
 without an explicit reviewed policy.
 
+Keep repository manifest digests separate from image configuration IDs when
+pinning a proxy. Verify that the inspected manifest resolves locally to the
+exact image running before the change. Probe the application's actual public
+route, including required RPC prefixes; an unrouted container health path must
+not trigger a proxy restart. Existing Python or Node applications can provide
+the negative network-access probe without installing another runtime in them.
+
+Inspect native restart side effects as well as Compose services. The installed
+controller can create `coolify-proxy-error-pages` outside Compose for static
+error/maintenance pages. Account for this exact component explicitly and keep
+rejecting unrelated container changes. Verify its image, command, read-only
+`/www` mount, no public ports/socket and actual static response before bounding
+it. The tested resource profile is 128 MiB memory, 256 MiB combined memory/swap,
+0.25 CPU and 64 PIDs; `error-pages-policy.example.json` records these checks.
+This profile retains its root user and does not establish read-only root or
+`no-new-privileges`. Docker retains resource updates across restarts, and the
+inspected native helper starts an existing container. Deleting/recreating it
+can restore upstream defaults; keep drift alerts and review that lifecycle in
+the controller compatibility work.
+
 Close incident credentials at their issuer: removing an environment variable does not revoke an OAuth client secret, mail API key or controller token. Identify the exact credential and dependent clients, create/test the replacement, then revoke the old credential and verify rejection. Keep provider account audit evidence and original incident artifacts. Never print credential values into the patch ledger.
 
 For a Go service dependency rebuild, pin the existing application commit and a
