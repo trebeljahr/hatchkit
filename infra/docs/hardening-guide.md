@@ -434,6 +434,18 @@ checks finish. Never automatically accept an AIDE candidate after APT. Match
 changed files/symlinks to signed package artifacts; separately explain generated
 initramfs, preserved-content metadata and exact maintainer migrations.
 
+After boot, compare container images, data mounts, deployment controls, network
+memberships and kernel confinement with the private preflight snapshot. Docker
+may serialize unset DNS fields from `null` to empty arrays on reload; canonicalize
+only that representation while rejecting configured DNS or other control changes.
+Check actual routed app endpoints with valid TLS and respect router path prefixes.
+Some apps expose only RPC/WebSocket prefixes and keep `/health` internal; use a
+read-only public RPC health/version query for their routed check. Verify both
+public IPv4/IPv6 origin denial from the other host, with working connectivity
+controls, and verify audit/monitors before restarting that host. A GRUB environment
+timestamp change needs explicit review against the prior trusted content hashes;
+it does not justify automatic baseline acceptance.
+
 Verify:
 
 ```bash
