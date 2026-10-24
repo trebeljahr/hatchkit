@@ -1,6 +1,7 @@
 """Scoped assessment fixtures; no live Docker, filesystem state or credentials."""
 import datetime as dt
 import json
+import importlib.util
 import os
 from pathlib import Path
 import sys
@@ -151,6 +152,7 @@ class Assessments(unittest.TestCase):
             state, error = uw.check(None, [], None, self.root, {}, lambda *a: sent.append(a), when)
         self.assertIsNone(error);self.assertEqual(len(sent), 1)
         self.assertEqual(state['mailed'], 'incomplete');self.assertIn('expired', sent[0][2])
+
 
 
 if __name__ == '__main__':

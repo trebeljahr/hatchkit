@@ -32,6 +32,7 @@ import { SECRET_KEYS, setSecret } from "./src/utils/secrets.js";
 
 for (const file of [
   "test-update-watch.py",
+  "test-image-assessments.py",
   "test-image-vulnerabilities.py",
   "test-health-publisher.py",
   "test-file-integrity.py",
