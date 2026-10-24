@@ -616,7 +616,7 @@ class Check(unittest.TestCase):
         first=check(NOW)
         self.assertEqual(first['mailed'],'weekly-review')
         self.assertIn('Weekly package review',self.sent[-1][1])
-        self.assertIn('example-site: zlib 1 → 2',self.sent[-1][2])
+        self.assertIn('example-site: zlib 1 → reported fix floors 2',self.sent[-1][2])
         self.assertNotIn('opaque-id',self.sent[-1][2]);self.assertNotIn('OVERDUE',self.sent[-1][2])
         rows.append({**rows[0],'id':'CVE-2026-another'})
         later=check(NOW+dt.timedelta(days=1))
@@ -685,6 +685,14 @@ class Check(unittest.TestCase):
         self.assertEqual(uw.acknowledged_review_week(previous,early),'2026-W44')
         previous['findings'].append({**row,'id':'CVE-unsent'})
         self.assertIsNone(uw.acknowledged_review_week(previous,early))
+
+    def test_weekly_candidates_merge_advisories_for_the_same_installed_package(self):
+        row={'kind':'image-package','service':'image','id':'CVE-one','name':'grpc','version':'1.8.22',
+             'fixed':'1.9.16','containers':['app'],'containerDisplayNames':['uptime-kuma']}
+        lines=uw.weekly_package_review([row,{**row,'id':'CVE-two','fixed':'1.13.6'},
+                                        {**row,'id':'CVE-three','fixed':'1.9.16, 1.13.6'}])
+        entries=[line for line in lines if line.startswith('- ')]
+        self.assertEqual(entries,['- uptime-kuma: grpc 1.8.22 → reported fix floors 1.9.16 / 1.13.6'])
 
     def test_package_mail_groups_replicas_aliases_fixes_and_urgent_workloads(self):
         row={'kind':'image-package','service':'sha256:old','id':'GHSA-test',

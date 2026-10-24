@@ -1069,17 +1069,22 @@ def weekly_package_review(findings):
         workloads.update(names)
         advisories.add(advisory_id(finding))
         if finding.get('fixed'):
-            key = (finding.get('name'), finding.get('version'), finding['fixed'])
-            fixes.setdefault(key, set()).update(names)
+            key = (finding.get('name'), finding.get('version'))
+            entry = fixes.setdefault(key, {'targets':set(), 'floors':set()})
+            entry['targets'].update(names)
+            entry['floors'].update(version.strip() for version in finding['fixed'].split(',') if version.strip())
         else:
             no_fix.add((advisory_id(finding), finding.get('name')))
     lines = ['Weekly package review: %d workloads; %d distinct scanner advisories.' % (len(workloads), len(advisories)),
              'Next maintenance candidates (verify vendor floors, rebuild and test before deployment):']
-    for (name, version, fixed), targets in sorted(fixes.items(), key=lambda item: (-len(item[1]), item[0]))[:5]:
+    for (name, version), entry in sorted(fixes.items(), key=lambda item: (-len(item[1]['targets']), item[0]))[:5]:
+        targets = entry['targets']
         shown = ', '.join(sorted(targets)[:3])
         if len(targets) > 3:
             shown += ' and %d more' % (len(targets)-3)
-        lines.append('- %s: %s %s → %s' % (shown, name, version, fixed))
+        floors = sorted(entry['floors'], key=lambda value: (parse_version(value).key() if parse_version(value) else (), value))
+        fixed = ' / '.join(floors[:4]) + (' / …' if len(floors)>4 else '')
+        lines.append('- %s: %s %s → reported fix floors %s' % (shown, name, version, fixed))
     if not fixes:
         lines.append('- No package fix is currently reported; vendor applicability review is needed.')
     elif len(fixes) > 5:
