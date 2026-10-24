@@ -1,0 +1,34 @@
+# Reviewed image applicability
+
+The optional `/etc/hatchkit-security/image-assessments.json` is root-owned mode
+0600. Start from the empty example. Reviews are explicit operator decisions;
+feed text cannot create or extend one. Raw findings, severities, first-seen
+timestamps and deadlines remain in the private ledger.
+
+The supported `busybox-static-httpd-awk-ash-v1` predicate covers only
+CVE-2026-38753, CVE-2026-38754 and CVE-2026-38755. Bind a review to the exact
+container name, immutable image ID, `busybox` package/version and advisory IDs.
+Supply a named owner, reason, primary HTTPS evidence, `reviewedAt` and
+`expiresAt` no more than seven days later. Duplicate/overlapping reviews fail.
+
+Every run verifies the fixed direct `httpd` command, image and read-only
+`/www` mount. The host-admin-owned content directory must contain only regular,
+non-executable, non-group/world-writable 503/maintenance HTML files. Scripts,
+CGI directories, symlinks, HTTP configuration overrides and unexpected paths
+invalidate the review. The current fleet's trusted host-admin UIDs are 0/1000;
+review that predicate before adapting it to another host.
+
+A current assessment leaves its raw matches visible and removes them from the
+unreviewed weekly maintenance queue. Expiry or a changed live boundary becomes
+incomplete coverage and bypasses the weekly gate. Resolved findings do not leave
+stale-review alerts behind. Known exploitation and explicitly affected internet
+exposure always bypass assessments. Add a separately reviewed predicate for a
+different vulnerability or execution context; never broaden this one by editing
+advisory lists. Keep the review file under manual AIDE baseline review too.
+
+Fixture checks:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 cli/test-image-assessments.py
+PYTHONDONTWRITEBYTECODE=1 python3 cli/test-update-watch.py
+```

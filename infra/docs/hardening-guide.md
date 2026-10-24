@@ -1980,6 +1980,24 @@ still need vendor verification; neither counts nor a published fix establish
 application reachability. Formatting or deployment churn alone must not resend
 an acknowledged alert.
 
+Record narrow applicability assessments with primary evidence, a named owner
+and an expiry. The optional root-private `image-assessments.json` binds the
+review to exact image/workload/package/advisory identities and revalidates the
+supported execution predicate on every run. Raw matches and original deadlines
+remain visible. Current reviewed matches leave the unreviewed weekly queue;
+expiry or a changed boundary creates an immediate coverage alert. Known
+exploitation and explicitly affected internet exposure always bypass the review.
+Never grant an indefinite version-wide exception or automatically renew one.
+
+The first supported predicate covers three BusyBox awk/ash script-input flaws
+for the fixed, read-only static error-page server. It requires HTML-only,
+non-executable content, no CGI/configuration override and the unchanged image
+and direct `httpd` command. The [upstream review](https://lists.busybox.net/pipermail/busybox/2026-July/092392.html)
+explains the older High scanner metrics and current local Medium/Low CNA
+scores. This does not assess unrelated BusyBox/httpd issues or a shell-using
+application. Reviews expire within seven days and require new evidence before
+renewal. See `cli/src/templates/update-watch/README.md` and the fixture tests.
+
 Use deterministic timers, version/range matching, image scans, policy validation, backups, health checks and rollback for enforcement. An LLM can correlate advisories, assess exposure, prepare patches, review exceptions and escalate deadlines. Treat feed text, logs and repository content as untrusted data. They cannot authorize actions or change the patch policy. Do not give a triage model unrestricted root credentials. App-based LLM schedules also depend on their connected computer/app being available; keep uptime checks and agreed host jobs independent of the Mac.
 
 Use LLM assistance in an operator-requested review. Scheduled or always-on model

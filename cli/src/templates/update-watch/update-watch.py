@@ -51,10 +51,11 @@ from pathlib import Path
 import re
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import urllib.error
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 import urllib.request
 from zoneinfo import ZoneInfo
 
@@ -80,6 +81,7 @@ CONSTRAINT = re.compile(r'(>=|<=|==|=|>|<)?\s*([vV]?\d[0-9A-Za-z.+-]*)')
 # How many upgrade logs to read, newest first, to count a failing streak.
 UPGRADE_LOGS = 60
 MAX_MAIL_FINDINGS = 50
+IMAGE_ASSESSMENTS = '/etc/hatchkit-security/image-assessments.json'
 
 
 class WatchError(Exception):
@@ -827,6 +829,110 @@ def image_package_findings(now, path=None):
         return [], ['Final image vulnerability scan is missing, invalid or older than 36 hours']
 
 
+def static_httpd_boundary(container, expected_root=Path('/data/coolify/proxy/error-pages'), trusted_uids=(0, 1000)):
+    """This predicate covers reviewed awk/ash input paths, not httpd CVEs."""
+    config = container['Config']
+    if config.get('Entrypoint') or config.get('Cmd') != ['httpd', '-f', '-p', '80', '-h', '/www']:
+        return False
+    mounts = container['Mounts']
+    if len(mounts) != 1 or mounts[0]['Type'] != 'bind' or mounts[0]['Destination'] != '/www' or mounts[0]['RW']:
+        return False
+    root = Path(mounts[0]['Source'])
+    if root.resolve() != expected_root:
+        return False
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid not in trusted_uids or info.st_mode & 0o022:
+        return False
+    files = list(root.iterdir())
+    if not 0 < len(files) <= 256:
+        return False
+    for file in files:
+        info = file.lstat()
+        if (not re.fullmatch(r'(503|maintenance-[A-Za-z0-9_-]{1,128})\.html', file.name)
+                or not stat.S_ISREG(info.st_mode) or info.st_uid not in trusted_uids
+                or info.st_mode & 0o133 or info.st_size > 1048576):
+            return False
+    return True
+
+
+def apply_image_assessments(findings, docker, now, path=None, boundary=static_httpd_boundary):
+    """Keep raw findings/clocks; revalidate narrowly scoped operator reviews.
+
+    Missing optional configuration changes nothing. A live matching review that
+    expires or loses its predicate becomes incomplete coverage, never a silent
+    exception. Known exploitation always bypasses an assessment.
+    """
+    target = Path(path or IMAGE_ASSESSMENTS)
+    findings = [{k: v for k, v in f.items() if k != 'assessment'} for f in findings]
+    if not target.exists():
+        return findings, []
+    try:
+        info = target.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 262144:
+            raise ValueError('Invalid assessment file')
+        if path is None and (info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600):
+            raise ValueError('Unsafe assessment ownership or mode')
+        data = json.loads(target.read_text())
+        if data['schema'] != 1 or not isinstance(data['reviews'], list) or len(data['reviews']) > 100:
+            raise ValueError('Invalid assessment schema')
+        rows, seen, assigned, skipped = [dict(f) for f in findings], set(), set(), []
+        for review in data['reviews']:
+            identifier = review['id']
+            if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,79}', identifier) or identifier in seen:
+                raise ValueError('Duplicate or invalid review identity')
+            seen.add(identifier)
+            if review['predicate'] != 'busybox-static-httpd-awk-ash-v1':
+                raise ValueError('Unsupported review predicate')
+            # This predicate has been reviewed only for these three script flaws.
+            if not set(review['advisories']) or not set(review['advisories']) <= {'CVE-2026-38753', 'CVE-2026-38754', 'CVE-2026-38755'}:
+                raise ValueError('Advisory outside the reviewed predicate')
+            if not re.fullmatch(r'sha256:[a-f0-9]{64}', review['imageId']):
+                raise ValueError('Invalid image identity')
+            if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', review['container']):
+                raise ValueError('Invalid workload identity')
+            if review['package'] != 'busybox' or not full_version(review['version']):
+                raise ValueError('Unexpected package')
+            bindings = {(review['container'], review['imageId'], review['package'], review['version'], advisory) for advisory in review['advisories']}
+            if assigned & bindings:
+                raise ValueError('Overlapping assessment bindings')
+            assigned.update(bindings)
+            if not all(isinstance(review[k], str) and 0 < len(review[k]) <= 1000 and not re.search(r'[\x00-\x1f\x7f]', review[k]) for k in ['owner', 'reason']):
+                raise ValueError('Invalid review explanation')
+            evidence = review['evidence']
+            if not isinstance(evidence, list) or not 1 <= len(evidence) <= 10:
+                raise ValueError('Missing evidence')
+            for url in evidence:
+                parsed = urlsplit(url)
+                if len(url) > 1000 or parsed.scheme != 'https' or not parsed.hostname or parsed.username is not None or parsed.password is not None or re.search(r'[\x00-\x20\x7f]', url):
+                    raise ValueError('Invalid evidence URL')
+            checked, expires = map(dt.datetime.fromisoformat, [review['reviewedAt'], review['expiresAt']])
+            if checked.tzinfo is None or expires.tzinfo is None or checked > now + dt.timedelta(minutes=5) or not dt.timedelta(0) < expires-checked <= dt.timedelta(days=7):
+                raise ValueError('Invalid review lifetime')
+            selected = [f for f in rows if f.get('kind') == 'image-package'
+                        and f.get('name') == review['package'] and f.get('version') == review['version']
+                        and f.get('id') in review['advisories'] and f.get('containers') == [review['container']]]
+            if not selected:
+                continue  # Resolved findings do not create stale-review alerts.
+            if now >= expires:
+                skipped.append('Image applicability review expired: '+identifier)
+                continue
+            try:
+                container = json.loads(docker(['inspect', '--format', '{{json .}}', review['container']]))
+                if container['Image'] != review['imageId'] or container['Name'].lstrip('/') != review['container'] or not boundary(container):
+                    raise ValueError('Review boundary changed')
+                docker(['exec', review['container'], '/bin/busybox', 'test', '!', '-e', '/etc/httpd.conf'])
+            except (WatchError, OSError, ValueError, KeyError, TypeError):
+                skipped.append('Image applicability review context changed: '+identifier)
+                continue
+            for finding in selected:
+                if not immediate_finding(finding):
+                    finding['assessment'] = {k: review[k] for k in ['id', 'owner', 'reason', 'evidence', 'reviewedAt', 'expiresAt', 'imageId', 'predicate']}
+                    finding['assessment']['status'] = 'not-reachable-in-reviewed-configuration'
+        return rows, skipped
+    except (OSError, ValueError, KeyError, TypeError):
+        return findings, ['Image applicability review configuration is invalid; raw ledger retained']
+
+
 def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=None, chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False, host_packages=False):
     now = now or dt.datetime.now(dt.timezone.utc)
     skipped = []
@@ -951,6 +1057,9 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
                 finding['knownExploited'] = bool(ids & exploited)
         except FeedError as failure:
             skipped.append(str(failure))
+    if image_packages:
+        findings, assessment_skipped = apply_image_assessments(findings, docker, now)
+        skipped += assessment_skipped
     severity_rank = {'critical': 0, 'high': 1}
     findings.sort(key=lambda f: (f['kind'] != 'auto-update', severity_rank.get(f.get('severity'), 2), f['service']))
     notes = [g['name'] + ' publishes no advisory feed; it is compared with its latest release only.'
@@ -1034,6 +1143,15 @@ def immediate_finding(finding):
     # A scanner score alone is not a verified application exposure.
     return bool(finding.get('knownExploited') or
                 (finding.get('applicability') == 'affected' and finding.get('exposure') == 'internet'))
+
+
+def current_assessment(finding, now):
+    review = finding.get('assessment') or {}
+    try:
+        return (not immediate_finding(finding) and review['status'] == 'not-reachable-in-reviewed-configuration'
+                and dt.datetime.fromisoformat(review['reviewedAt']) <= now < dt.datetime.fromisoformat(review['expiresAt']))
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def weekly_review_key(now):
@@ -1274,7 +1392,7 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
                 finding['dueAt'] = min(dt.datetime.fromisoformat(finding['dueAt']), dt.datetime.fromisoformat(old['dueAt'])).isoformat(timespec='seconds')
             finding['overdue'] = now >= dt.datetime.fromisoformat(finding['dueAt'])
     immediate = [f for f in findings if immediate_finding(f)]
-    review = [f for f in findings if not immediate_finding(f)]
+    review = [f for f in findings if not immediate_finding(f) and not current_assessment(f, now)]
     kind = 'error' if error else 'findings' if immediate else 'incomplete' if skipped else None
     fingerprint = notification_fingerprint(kind, immediate, error, skipped)
     prior_notified = prior_immediate_fingerprint(previous)
@@ -1295,6 +1413,7 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
              'lastWeeklyReviewKey': last_week,
              'lastWeeklyReviewAt': previous.get('lastWeeklyReviewAt'),
              'unreviewedPackageMatches': len(review),
+             'assessedPackageMatches': sum(current_assessment(f, now) for f in findings),
              'findingFirstSeen': first_seen}
     if kev:
         state['kev'] = (report or {}).get('kev')
