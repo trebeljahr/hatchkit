@@ -29,6 +29,12 @@ Deploy with these controls:
 - Exact tested image, `pull_policy: never` for a local image, and rooted image
   provenance. Keep package scans and a tested rebuild path for the broker too.
 
+`compose.yaml.example` contains the reusable broker module and required client
+integration notes. Merge it into the native private proxy configuration; preserve
+existing Traefik flags and add its internal network/healthy dependency. The module
+alone does not remove a client's socket. Never print rendered configuration to
+inspect it: its environment/provider arguments contain the service-local token.
+
 The Dockerfile expects an inspected official Python Alpine base digest. Build
 and scan on the application host. Use the real installed Traefik image in the
 canary; provider behavior can change between releases. Fixture guards:

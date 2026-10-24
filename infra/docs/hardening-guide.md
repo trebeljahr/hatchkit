@@ -409,9 +409,30 @@ Unattended-Upgrade::Allowed-Origins {
 Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
 Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
-Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-Time "04:00";
 ```
+
+Keep automatic reboot disabled until a maintenance window and recovery procedure
+are agreed. A clock time alone does not coordinate two VPSs or verify that their
+applications, tailnet access and firewall recover. This matches the Ansible
+default. Refresh signed APT metadata before reviewing an update: a cached package
+list can miss a newly published security revision. Keep native phased deferrals.
+
+For a reviewed manual batch, pin the exact versions and refuse additions or
+removals unless separately reviewed. Retain authenticated package artifacts and
+original configuration on the original host. Require fresh verified backups,
+package consistency and no active deployment. Check application containers,
+images/data, runtime firewall and tailnet afterward. After AppArmor updates,
+verify both running kernel confinement and a new disposable confined container.
+
+Installing a library does not replace copies mapped by long-running processes.
+Review `needrestart` output; reload a tested service set and preserve existing SSH
+sessions. Respect vendor-deferred DBus, login, network and shutdown-helper
+services. Keep required reboots visible until a coordinated restart and post-boot
+checks finish. Never automatically accept an AIDE candidate after APT. Match
+changed files/symlinks to signed package artifacts; separately explain generated
+initramfs, preserved-content metadata and exact maintainer migrations.
 
 Verify:
 
@@ -421,7 +442,7 @@ unattended-upgrades --dry-run --debug
 
 **What could go wrong:**
 - **Breaking changes in security updates:** Rare but possible. A security patch to OpenSSL could break TLS in your application. The risk is real but small — Ubuntu security updates are conservative and well-tested.
-- **Automatic reboot during peak hours:** The `Automatic-Reboot-Time "04:00"` setting helps, but if your users are global, there's no good time. For game servers with active sessions, this is a real concern. Consider disabling auto-reboot and scheduling maintenance windows instead.
+- **Reboot interrupts active work:** Use a coordinated maintenance window, one host at a time. Verify recovery before starting the second host. The example keeps automatic reboot disabled.
 - **Disk space:** Old kernels accumulate and fill `/boot`. The `Remove-Unused-Kernel-Packages` and `Remove-Unused-Dependencies` settings in the config above prevent this by automatically cleaning up old kernels and orphaned packages during unattended upgrades. Without these settings, a full `/boot` partition blocks all future updates — a surprisingly common failure mode.
 - **apt lock contention:** If you're running `apt` manually while unattended-upgrades is running, you'll get lock errors. Not dangerous, just annoying. Wait and retry.
 
@@ -1138,7 +1159,7 @@ reboot
 
 **Why it matters:** If your web application is compromised, AppArmor limits what the attacker can access — even if they're running as the same user as your app. The app can only read/write files explicitly listed in its profile.
 
-**Is it already installed?** Yes. Ubuntu 24.04 ships with AppArmor installed, enabled, and enforcing by default. You don't need to install anything — it's been protecting your system since first boot. It comes with profiles for common services like `sshd`, `apt`, and `man`.
+**Is it already installed?** Ubuntu 24.04 normally includes AppArmor. Check the loaded profiles and each workload's actual label. An enabled AppArmor service does not automatically confine every host program.
 
 **How to check the current state:**
 
@@ -1153,26 +1174,34 @@ aa-status
 # ...
 ```
 
-**How AppArmor relates to Docker:** Docker automatically applies a default AppArmor profile (`docker-default`) to every container it launches. This profile blocks containers from:
-- Writing to `/proc` and `/sys` (prevents kernel tampering)
-- Mounting filesystems
-- Accessing raw network sockets
-- Loading kernel modules
-- Modifying AppArmor profiles from inside the container
+**How AppArmor relates to Docker:** Docker generates `docker-default` for ordinary containers. It adds mount and sensitive kernel-path restrictions while retaining broad application compatibility. Its file/network rules are not a general allowlist, and raw sockets are not universally blocked. Capabilities, seccomp and network isolation supply separate controls. The container profile does not automatically confine the Docker daemon.
 
-You can verify this with `docker inspect <container> | grep AppArmor` — you should see `"AppArmorProfile": "docker-default"`. If you see `"AppArmorProfile": ""` or the container was started with `--security-opt apparmor=unconfined`, that container has no AppArmor protection.
-
-**When to invest time in custom profiles:** The default Docker profile is solid for most workloads. Custom AppArmor profiles are worth writing if you're running untrusted code (user uploads, plugins), high-value services (payment processing), or if you want to restrict a specific container beyond the defaults (e.g., preventing it from reading certain host-mounted volumes). For a typical game server running your own code in Docker, the default profile is sufficient.
-
-**How to enforce all profiles:**
+Inspect only the declared label, then check the kernel label:
 
 ```bash
-# Enforce mode = violations are blocked and logged
-aa-enforce /etc/apparmor.d/*
-
-# Complain mode = violations are logged but allowed (useful for testing)
-aa-complain /etc/apparmor.d/*
+docker inspect --format '{{.AppArmorProfile}}' your-container
+docker exec your-container cat /proc/self/attr/current
 ```
+
+Require the expected enforcing label. Inspecting the full container JSON can expose credentials. Test a new disposable container after runtime or AppArmor updates too. [Docker's profile documentation](https://docs.docker.com/engine/security/apparmor/) and [current built-in template](https://github.com/moby/profiles/blob/main/apparmor/template.go) describe the policy; check the deployed version before changing it.
+
+**Custom profiles:** Add workload-specific restrictions after testing real filesystem, network and migration needs. Keep resource limits, no-new-privileges, reduced capabilities and data/network isolation alongside AppArmor.
+
+**Load a reviewed profile after an isolated canary:**
+
+```bash
+# Syntax/cache-independent check without changing kernel policy:
+apparmor_parser -Q -T /etc/apparmor.d/your-reviewed-profile
+# Load this tested profile:
+apparmor_parser -r /etc/apparmor.d/your-reviewed-profile
+```
+
+An allow-all profile can grant a namespace exception rather than confinement.
+On these headless VPSs, Nautilus is absent and no process uses its profile, so its
+unused exception is persistently disabled by a named link under
+`/etc/apparmor.d/disable/`. Only that named live profile was removed; all other
+kernel profiles and container controls stayed unchanged. Missing package
+profiles need migration/payload review before restoration or baseline acceptance.
 
 ---
 

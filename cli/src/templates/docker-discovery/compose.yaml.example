@@ -1,0 +1,43 @@
+# Merge through the existing private/native proxy configuration after a real
+# canary. This broker module alone does not remove Traefik's socket access.
+# Preserve existing Traefik image, ports, TLS/data mounts and other commands.
+# Remove its direct Docker socket mount; append these provider arguments:
+#   --providers.docker.endpoint=tcp://hatchkit-docker-discovery:2375
+#   --providers.docker.username=discovery
+#   --providers.docker.password=${DISCOVERY_TOKEN}
+# Add the discovery network and a service_healthy dependency to Traefik.
+# Generate/store the token inside the private deployment system; never print it.
+services:
+  hatchkit-docker-discovery:
+    image: ${DISCOVERY_IMAGE:?set the exact scanned and canary-tested image}
+    pull_policy: never
+    container_name: hatchkit-docker-discovery
+    restart: unless-stopped
+    user: 65532:65532
+    group_add:
+      - ${DOCKER_SOCKET_GID:?inspect the actual host socket group}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    memswap_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    environment:
+      DISCOVERY_TOKEN: ${DISCOVERY_TOKEN:?set the private 43-character service token}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [discovery]
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import http.client;c=http.client.HTTPConnection('127.0.0.1',2375,timeout=2);c.request('GET','/_ping');r=c.getresponse();assert r.status==200 and r.read()==b'OK'"
+      interval: 5s
+      timeout: 3s
+      start_period: 2s
+      retries: 3
+networks:
+  discovery:
+    internal: true
