@@ -2120,6 +2120,13 @@ capabilities afterward. Retain the old image and private database/upload recover
 points; restore canonical configuration and the exact original runtime on
 failure. Recovery must remain available after scan/canary freshness expires.
 
+Use `hatchkit-host-integrity-quick.service` for the bounded process check after
+maintenance, followed by `hatchkit-file-integrity.service` for production AIDE,
+the container-policy check and the health publisher. The daily
+`hatchkit-host-integrity.service` deliberately samples CPU and outbound peers for
+an hour; it is not a quick post-deployment check. Preserve its scheduled timer
+and previous complete findings when correcting a mistaken manual invocation.
+
 For a controller operator token, preserve the intended owner, team, permissions
 and expiry during an equivalent rotation. Store the replacement in the normal
 operator credential store, read it back, and test a real authenticated endpoint
