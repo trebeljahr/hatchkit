@@ -56,6 +56,7 @@ import sys
 import urllib.error
 from urllib.parse import quote
 import urllib.request
+from zoneinfo import ZoneInfo
 
 BACKUP_CONFIG = '/etc/hatchkit-backups/config.json'
 SERVICES_NAME = 'update-watch-services.json'
@@ -794,10 +795,15 @@ def host_package_findings(now, cache=None, sources=None, refresh_path=None, dist
 
 
 def image_package_findings(now, path=None):
+    live_names = path is None
     path = Path(path) if path is not None else work_dir()[0] / 'image-vulnerability-status.json'
     try:
         report = json.loads(path.read_text())
         findings = report.get('findings', [])
+        if live_names:
+            names = workload_display_names()
+            for finding in findings:
+                finding['containerDisplayNames'] = [names.get(name, name) for name in finding.get('containers', [])]
         checked = dt.datetime.fromisoformat(report['checkedAt'])
         if now - checked > dt.timedelta(hours=36) or checked > now + dt.timedelta(minutes=5):
             return findings, ['Final image vulnerability scan is stale; previous ledger retained, current coverage incomplete']
@@ -1004,10 +1010,71 @@ def advisory_id(finding):
     return next(iter(sorted(a for a in aliases if a.startswith('CVE-'))), finding.get('id', 'unknown'))
 
 
+def workload_display_names(docker=run_docker):
+    """Read only container name and one display label, never environment/commands."""
+    try:
+        ids = docker(['ps', '-q']).split()
+        if not ids:
+            return {}
+        text = docker(['inspect', '--format', '{{json .Name}}\t{{json (index .Config.Labels "coolify.serviceName")}}', *ids])
+        names = {}
+        for line in text.splitlines():
+            raw, label = map(json.loads, line.split('\t'))
+            name = raw.lstrip('/')
+            if isinstance(label, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 ._()/:-]{0,99}', label):
+                names[name] = label
+        return names
+    except (WatchError, OSError, ValueError, TypeError):
+        return {}
+
+
+def immediate_finding(finding):
+    if finding.get('kind') != 'image-package':
+        return True
+    # A scanner score alone is not a verified application exposure.
+    return bool(finding.get('knownExploited') or
+                (finding.get('applicability') == 'affected' and finding.get('exposure') == 'internet'))
+
+
+def weekly_review_key(now):
+    local = now.astimezone(ZoneInfo('Australia/Sydney'))
+    if local.weekday() == 0 and local.hour < 9:
+        return None
+    year, week, _ = local.isocalendar()
+    return '%04d-W%02d' % (year, week)
+
+
+def weekly_package_review(findings):
+    fixes, workloads, advisories, no_fix = {}, set(), set(), set()
+    for finding in findings:
+        names = set(finding.get('containerDisplayNames') or finding.get('containers') or [finding.get('service', 'unknown')])
+        workloads.update(names)
+        advisories.add(advisory_id(finding))
+        if finding.get('fixed'):
+            key = (finding.get('name'), finding.get('version'), finding['fixed'])
+            fixes.setdefault(key, set()).update(names)
+        else:
+            no_fix.add((advisory_id(finding), finding.get('name')))
+    lines = ['Weekly package review: %d workloads; %d distinct scanner advisories.' % (len(workloads), len(advisories)),
+             'Next maintenance candidates (verify vendor floors, rebuild and test before deployment):']
+    for (name, version, fixed), targets in sorted(fixes.items(), key=lambda item: (-len(item[1]), item[0]))[:5]:
+        shown = ', '.join(sorted(targets)[:3])
+        if len(targets) > 3:
+            shown += ' and %d more' % (len(targets)-3)
+        lines.append('- %s: %s %s → %s' % (shown, name, version, fixed))
+    if not fixes:
+        lines.append('- No package fix is currently reported; vendor applicability review is needed.')
+    elif len(fixes) > 5:
+        lines.append('%d further package/version candidates remain in the private ledger.' % (len(fixes)-5))
+    lines += ['%d advisory/package pairs have no reported fix and need vendor applicability review.' % len(no_fix),
+              'Scanner matches do not establish reachable exposure. Unreviewed matches have no daily overdue reminders.']
+    return lines
+
+
 def package_mail_groups(findings):
     groups = {}
     for finding in findings:
-        workloads = tuple(sorted(set(finding.get('containers') or [finding.get('service', 'unknown image')])))
+        workloads = tuple(sorted(set(finding.get('containerDisplayNames') or finding.get('containers') or [finding.get('service', 'unknown image')])))
         groups.setdefault(workloads, []).append(finding)
     def priority(item):
         names, rows = item
@@ -1050,9 +1117,15 @@ def mail_body(report, error):
             if len(direct) > MAX_MAIL_FINDINGS:
                 lines.append(str(len(direct) - MAX_MAIL_FINDINGS) + ' further direct findings retained in the private ledger.')
         if packages:
-            lines += ['', 'Image package matches by workload:',
-                      'Vendor applicability and application reachability still need review; these are not incident counts.', '']
-            lines += package_mail_groups(packages)
+            if report.get('weeklyPackageReview'):
+                urgent = [f for f in packages if immediate_finding(f)]
+                if urgent:
+                    lines += ['', 'Urgent package findings:'] + package_mail_groups(urgent)
+                lines += [''] + weekly_package_review([f for f in packages if not immediate_finding(f)])
+            else:
+                lines += ['', 'Image package matches by workload:',
+                          'Vendor applicability and application reachability still need review; these are not incident counts.', '']
+                lines += package_mail_groups(packages)
         lines += ['', 'Full finding ledger: /var/lib/hatchkit-backups/update-watch-status.json',
                   'Review vendor guidance and exposure, then apply compatible fixes with backup, functional checks and rollback. '
                   'Keep original deadlines; record any exception with evidence and an expiry.']
@@ -1107,6 +1180,19 @@ def prior_notification_fingerprint(previous):
     if notified == legacy:
         return notification_fingerprint(old_kind, old_rows, previous.get('error'), old_skips)
     return notified
+
+
+def prior_immediate_fingerprint(previous):
+    acknowledged = prior_notification_fingerprint(previous)
+    if previous.get('notificationIdentityVersion') == 3:
+        return acknowledged
+    rows, skipped, error = previous.get('findings', []), previous.get('skipped', []), previous.get('error')
+    old_kind = 'error' if error else 'findings' if rows else 'incomplete' if skipped else None
+    if acknowledged == notification_fingerprint(old_kind, rows, error, skipped):
+        rows = [f for f in rows if immediate_finding(f)]
+        kind = 'error' if error else 'findings' if rows else 'incomplete' if skipped else None
+        return notification_fingerprint(kind, rows, error, skipped) if kind else None
+    return acknowledged
 
 
 def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_SOURCE, cloudflare=None,
@@ -1164,37 +1250,64 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
             if old.get('dueAt'):
                 finding['dueAt'] = min(dt.datetime.fromisoformat(finding['dueAt']), dt.datetime.fromisoformat(old['dueAt'])).isoformat(timespec='seconds')
             finding['overdue'] = now >= dt.datetime.fromisoformat(finding['dueAt'])
-    fingerprint = notification_fingerprint(kind, findings, error, skipped)
-    prior_notified = prior_notification_fingerprint(previous)
+    immediate = [f for f in findings if immediate_finding(f)]
+    review = [f for f in findings if not immediate_finding(f)]
+    kind = 'error' if error else 'findings' if immediate else 'incomplete' if skipped else None
+    fingerprint = notification_fingerprint(kind, immediate, error, skipped)
+    prior_notified = prior_immediate_fingerprint(previous)
+    week = weekly_review_key(now)
+    last_week = previous.get('lastWeeklyReviewKey')
+    # An acknowledged old daily digest already served this week's review.
+    # Upgrading the monitor must not send the same inventory again.
+    if not last_week and previous.get('notificationIdentityVersion') != 3 and previous.get('checkedAt') and previous.get('notifiedFingerprint') and not previous.get('mailError'):
+        last_week = week
+    weekly_due = bool(review and week and week != last_week and not error)
     state = {'checkedAt': now.isoformat(timespec='seconds'), 'ok': not error and not findings and not skipped,
              'error': error, 'services': [{'service': s['service'], 'version': s['version'],
                                            'latest': (s['latest'] or {}).get('version')}
                                           for s in (report or {}).get('services', [])],
              'findings': findings, 'skipped': skipped, 'mailed': None, 'messageId': None,
              'notifiedFingerprint': prior_notified if kind else None,
-             'notificationIdentityVersion': 2,
+             'notificationIdentityVersion': 3,
+             'lastWeeklyReviewKey': last_week,
+             'lastWeeklyReviewAt': previous.get('lastWeeklyReviewAt'),
+             'unreviewedPackageMatches': len(review),
              'findingFirstSeen': first_seen}
     if kev:
         state['kev'] = (report or {}).get('kev')
     mail_error = None
-    overdue_reminder = any(f.get('overdue') for f in findings) and (
-        not previous.get('lastNotifiedAt') or
-        now - dt.datetime.fromisoformat(previous['lastNotifiedAt']) >= dt.timedelta(hours=24))
+    urgent_last = previous.get('lastImmediateNotifiedAt', previous.get('lastNotifiedAt'))
+    overdue_reminder = any(f.get('overdue') for f in immediate) and (
+        not urgent_last or now - dt.datetime.fromisoformat(urgent_last) >= dt.timedelta(hours=24))
     state['lastNotifiedAt'] = previous.get('lastNotifiedAt')
-    if kind and (fingerprint != prior_notified or overdue_reminder):
+    state['lastImmediateNotifiedAt'] = urgent_last
+    immediate_due = bool(kind and (fingerprint != prior_notified or overdue_reminder))
+    if immediate_due or weekly_due:
+        if weekly_due and not immediate_due:
+            subject = '[Hatchkit] Weekly package review — ' + hostname
+            state['notificationCategory'] = 'Weekly package review'
         if kind == 'findings':
             old_ids = {finding_identity(f) for f in previous.get('findings', [])}
-            new_ids = {finding_identity(f) for f in findings} - old_ids
+            new_ids = {finding_identity(f) for f in immediate} - old_ids
             category = ('Initial inventory' if not previous.get('checkedAt') else
                         'New advisories' if new_ids else
                         'Overdue review' if overdue_reminder else 'Advisory changes')
             subject = '[Hatchkit] Update watch: ' + category + ('; coverage incomplete' if skipped else '') + ' — ' + hostname
             state['notificationCategory'] = category
-        body = mail_body(report, error)
+        if immediate_due and kind == 'incomplete':
+            subject = '[Hatchkit] Update watch could not check everything — ' + hostname
+        body_report = dict(report, findings=immediate + (review if weekly_due else []),
+                           weeklyPackageReview=weekly_due) if report else None
+        body = mail_body(body_report, error)
         try:
             state['messageId'] = send(mail_settings(config), subject, body)
-            state['mailed'] = kind
-            state['notifiedFingerprint'] = fingerprint
+            state['mailed'] = kind or 'weekly-review'
+            if immediate_due:
+                state['notifiedFingerprint'] = fingerprint
+                state['lastImmediateNotifiedAt'] = now.isoformat(timespec='seconds')
+            if weekly_due:
+                state['lastWeeklyReviewKey'] = week
+                state['lastWeeklyReviewAt'] = now.isoformat(timespec='seconds')
             state['lastNotifiedAt'] = now.isoformat(timespec='seconds')
         except Exception as failure:  # SMTP errors may echo login details; keep the type only
             mail_error = failure if isinstance(failure, WatchError) else type(failure).__name__

@@ -595,7 +595,7 @@ class Check(unittest.TestCase):
         first=check(NOW)
         self.assertEqual(len(first['findings']),250)
         self.assertEqual(len(first['findingFirstSeen']),250)
-        self.assertIn('250 distinct advisories',self.sent[-1][2])
+        self.assertIn('250 distinct scanner advisories',self.sent[-1][2])
         self.assertIn('Full finding ledger:',self.sent[-1][2])
         for r in rows:
             r['service']='sha256:new';r['containers']=['app-20261024T010000']
@@ -603,7 +603,76 @@ class Check(unittest.TestCase):
         self.assertTrue(all(r['overdue']for r in rebuilt['findings']))
         self.assertEqual(first['findingFirstSeen'],rebuilt['findingFirstSeen'])
         sent=len(self.sent);check(NOW+dt.timedelta(hours=25));self.assertEqual(len(self.sent),sent)
-        check(NOW+dt.timedelta(hours=48));self.assertEqual(len(self.sent),sent+1)
+        check(NOW+dt.timedelta(hours=48));self.assertEqual(len(self.sent),sent)
+        check(NOW+dt.timedelta(days=7));self.assertEqual(len(self.sent),sent+1)
+
+    def test_weekly_unreviewed_digest_stays_quiet_on_daily_overdue_and_new_matches(self):
+        rows=[{'kind':'image-package','service':'image','id':'CVE-2026-test','name':'zlib','version':'1',
+               'fixed':'2','severity':'critical','containers':['opaque-id'],
+               'containerDisplayNames':['example-site'],'summary':'scanner match'}]
+        def check(when,skipped=()):
+            with patch.object(uw,'scan',side_effect=lambda *a,**k:{'services':[],'findings':[dict(r) for r in rows],'skipped':list(skipped)}):
+                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
+        first=check(NOW)
+        self.assertEqual(first['mailed'],'weekly-review')
+        self.assertIn('Weekly package review',self.sent[-1][1])
+        self.assertIn('example-site: zlib 1 → 2',self.sent[-1][2])
+        self.assertNotIn('opaque-id',self.sent[-1][2]);self.assertNotIn('OVERDUE',self.sent[-1][2])
+        rows.append({**rows[0],'id':'CVE-2026-another'})
+        later=check(NOW+dt.timedelta(days=1))
+        self.assertTrue(later['findings'][0]['overdue']);self.assertEqual(len(self.sent),1)
+        check(NOW+dt.timedelta(days=6));self.assertEqual(len(self.sent),1)
+        check(NOW+dt.timedelta(days=7));self.assertEqual(len(self.sent),2)
+        check(NOW+dt.timedelta(days=7,hours=4));self.assertEqual(len(self.sent),2)
+        rows.clear();check(NOW+dt.timedelta(days=14));self.assertEqual(len(self.sent),2)
+
+    def test_exploitation_and_lost_coverage_bypass_weekly_gate_without_repeating_raw_inventory(self):
+        row={'kind':'image-package','service':'image','id':'CVE-2026-test','name':'pkg','version':'1',
+             'severity':'critical','containers':['app'],'summary':'scanner match'}
+        def check(when,skipped=()):
+            with patch.object(uw,'scan',side_effect=lambda *a,**k:{'services':[],'findings':[dict(row)],'skipped':list(skipped)}):
+                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
+        check(NOW)
+        check(NOW+dt.timedelta(hours=1),['Image scan failed'])
+        self.assertEqual(len(self.sent),2);self.assertIn('could not check everything',self.sent[-1][1])
+        self.assertNotIn('scanner match',self.sent[-1][2])
+        row['knownExploited']=True
+        urgent=check(NOW+dt.timedelta(hours=2))
+        self.assertEqual(urgent['mailed'],'findings');self.assertEqual(len(self.sent),3)
+        self.assertIn('KNOWN EXPLOITED',self.sent[-1][2])
+        check(NOW+dt.timedelta(hours=3));self.assertEqual(len(self.sent),3)
+
+    def test_failed_weekly_delivery_retries_without_advancing_week(self):
+        row={'kind':'image-package','service':'image','id':'CVE-test','name':'pkg','version':'1','severity':'high','summary':'test'}
+        with patch.object(uw,'scan',side_effect=lambda *a,**k:{'services':[],'findings':[dict(row)],'skipped':[]}):
+            failed,error=uw.check(None,[],None,self.work,self.config,lambda *a:(_ for _ in ()).throw(OSError(SECRET)),NOW)
+            self.assertIsNotNone(error);self.assertIsNone(failed['lastWeeklyReviewKey'])
+            self.assertNotIn(SECRET,json.dumps(failed))
+            sent,error=uw.check(None,[],None,self.work,self.config,self.send,NOW+dt.timedelta(hours=1))
+            self.assertIsNone(error);self.assertEqual(sent['mailed'],'weekly-review')
+            self.assertIsNotNone(sent['lastWeeklyReviewKey'])
+
+    def test_old_acknowledged_daily_digest_migrates_without_an_extra_inventory_mail(self):
+        row={'kind':'image-package','service':'image','id':'CVE-test','name':'pkg','version':'1','severity':'critical','summary':'test'}
+        previous={'checkedAt':NOW.isoformat(),'findings':[row],'skipped':[],'error':None,
+                  'notificationIdentityVersion':2,'lastNotifiedAt':NOW.isoformat(),
+                  'notifiedFingerprint':uw.notification_fingerprint('findings',[row],None,[])}
+        (self.work/uw.STATUS_NAME).write_text(json.dumps(previous))
+        with patch.object(uw,'scan',return_value={'services':[],'findings':[dict(row)],'skipped':[]}):
+            current,_=uw.check(None,[],None,self.work,self.config,self.send,NOW+dt.timedelta(hours=25))
+        self.assertIsNone(current['mailed']);self.assertEqual(self.sent,[])
+        self.assertEqual(current['lastWeeklyReviewKey'],uw.weekly_review_key(NOW))
+
+    def test_week_boundary_uses_sydney_and_name_lookup_reads_only_a_display_label(self):
+        before=dt.datetime(2026,10,25,21,59,tzinfo=dt.timezone.utc) # Monday 08:59 AEDT
+        after=before+dt.timedelta(minutes=1)
+        self.assertIsNone(uw.weekly_review_key(before));self.assertEqual(uw.weekly_review_key(after),'2026-W44')
+        calls=[]
+        def docker(argv):
+            calls.append(argv)
+            return 'id' if argv==['ps','-q'] else '"/opaque-id"\t"chess-server"\n"/other"\t"bad\\nlabel"'
+        self.assertEqual(uw.workload_display_names(docker),{'opaque-id':'chess-server'})
+        self.assertEqual(calls[1],['inspect','--format','{{json .Name}}\t{{json (index .Config.Labels "coolify.serviceName")}}','id'])
 
     def test_package_mail_groups_replicas_aliases_fixes_and_urgent_workloads(self):
         row={'kind':'image-package','service':'sha256:old','id':'GHSA-test',
@@ -641,7 +710,7 @@ class Check(unittest.TestCase):
         rows.append(dict(rows[0]))
         check(NOW+dt.timedelta(hours=1));self.assertEqual(len(self.sent),1)
         for row in rows:row['fixed']='1.1'
-        check(NOW+dt.timedelta(hours=2));self.assertEqual(len(self.sent),2)
+        check(NOW+dt.timedelta(hours=2));self.assertEqual(len(self.sent),1)
         self.assertEqual(first['findings'][0]['dueAt'],check(NOW+dt.timedelta(hours=3))['findings'][0]['dueAt'])
 
     def test_unavailable_exploitation_feed_cannot_extend_existing_urgent_deadline(self):

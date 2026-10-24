@@ -1919,7 +1919,7 @@ older than 36 hours remain actionable. Never erase known findings because their
 replacement scan failed. A failed CISA lookup cannot extend an existing urgent
 deadline.
 
-Assess actively exploited issues and public unauthenticated RCEs immediately; patch or isolate within 24 hours. Critical findings use the same target; other high-severity findings have a 72-hour target. Review routine patches weekly and supported versions monthly. Record first seen, affected resource/package, installed and fixed versions, exposure, owner, due date, action and live verification. Rebuilding the same vulnerable package must not reset its deadline. Keep the full ledger even when email shows only the first findings. Unresolved overdue findings remain visible and get at most one daily reminder. Any exception needs evidence, compensating controls, a named owner and an expiry.
+Assess actively exploited issues and public unauthenticated RCEs immediately; patch or isolate within 24 hours. Confirmed applicable critical findings use the same target; other high-severity findings have a 72-hour target. Review routine patches weekly and supported versions monthly. Record first seen, affected resource/package, installed and fixed versions, exposure, owner, due date, action and live verification. Rebuilding the same vulnerable package must not reset its deadline. Keep the full ledger even when email shows only the first findings. Actionable overdue risks get at most one daily reminder; unreviewed scanner matches do not. Any exception needs evidence, compensating controls, a named owner and an expiry.
 
 Local checks cannot reliably report their own disappearance. Send fixed health timestamps and counts to an independently operated monitor using one ping-only credential per host. The monitor needs its own schedule, state and verified delivery path. Alert on missing publishers, stale checks, failed delivery and incomplete scans. Test a missed-run condition and monitor the external monitor's own last sweep/deployment from a separate observer. Root can forge local health, so retain independent probes and off-host evidence as well.
 
@@ -1951,12 +1951,22 @@ the current filesystem before atomically promoting it. Retain the previous
 database and run the production checker afterward. This is an operator-reviewed
 procedure; never schedule automatic acceptance.
 
-Package email summaries group matches by affected workload and distinct advisory,
-show reported package fixes separately from advisories without a reported fix,
-and put known-exploited/overdue workloads first. Preserve the full private ledger;
-counts do not establish vendor applicability, reachability or an incident. Label
-initial inventory, new advisories, changed advisories, overdue reviews and lost
-coverage distinctly. Formatting changes alone must not resend an unchanged ledger.
+Unreviewed image-package matches go into one nonempty weekly review, after Monday
+09:00 Australia/Sydney on the next watcher run. A missed run catches up later in
+the same week; successful delivery advances the week, failed delivery retries.
+Use readable service-name labels, list at most five rebuild/package candidates
+and retain the rest privately. Do not send daily overdue lists or a new email for
+routine scanner churn. Preserve original first-seen/deadline history. Migrating an
+acknowledged old digest counts as the current week's review without another mail.
+
+Known-exploited package matches, explicitly reviewed affected internet exposure,
+direct runtime/service advisories, failed checks and incomplete coverage bypass
+the weekly gate. These remain separate from unreviewed matches; an urgent alert
+does not carry the entire raw inventory again. Keep retry and bounded overdue
+reminders for actionable findings. Scanner scores and fixed-version suggestions
+still need vendor verification; neither counts nor a published fix establish
+application reachability. Formatting or deployment churn alone must not resend
+an acknowledged alert.
 
 Use deterministic timers, version/range matching, image scans, policy validation, backups, health checks and rollback for enforcement. An LLM can correlate advisories, assess exposure, prepare patches, review exceptions and escalate deadlines. Treat feed text, logs and repository content as untrusted data. They cannot authorize actions or change the patch policy. Do not give a triage model unrestricted root credentials. App-based LLM schedules also depend on their connected computer/app being available; keep uptime checks and agreed host jobs independent of the Mac.
 
