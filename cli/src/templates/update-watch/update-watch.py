@@ -24,7 +24,12 @@ published IP ranges drifting from the ones the origin firewalls allow on
 dropped. The ranges are compared with the pinned snapshot
 (update-watch-cloudflare.json) and with this host's HATCHKIT-CF chain.
 
-It only reads: docker inspect, `docker exec` of a version command when a
+The scheduled check refreshes authenticated APT indexes before inspecting
+installed Ubuntu packages against trusted security-pocket versions. It never
+installs packages or restarts services. Failed refreshes, missing sources and
+indexes older than eight hours lose coverage explicitly. `scan` only reads.
+
+Its other checks only read: docker inspect, `docker exec` of a version command when a
 tag floats, the status lines of the upgrade logs, `iptables -S HATCHKIT-CF`,
 and HTTPS GETs to api.github.com, gitlab.com and api.cloudflare.com. It never prints environment values; of an
 image's env it reads only the version keys the services file names.
@@ -705,6 +710,89 @@ def host_runtime_versions(run=None):
     return rows, skipped
 
 
+def refresh_host_package_indexes(work, run=subprocess.run, now=None):
+    """Refresh authenticated indexes only; never install, resolve or restart."""
+    error = None
+    try:
+        result = run(['apt-get', '-o', 'APT::Update::Error-Mode=any',
+                      '-o', 'DPkg::Lock::Timeout=20', '-o', 'Acquire::Retries=0',
+                      '-o', 'Acquire::http::Timeout=20', '-o', 'Acquire::https::Timeout=20',
+                      'update'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     timeout=300, env={**os.environ, 'LC_ALL':'C', 'DEBIAN_FRONTEND':'noninteractive'})
+        if result.returncode:
+            error = 'Authenticated APT refresh failed (exit %d)' % result.returncode
+    except (OSError, subprocess.SubprocessError):
+        error = 'Authenticated APT refresh could not finish'
+    state = {'checkedAt': (now or dt.datetime.now(dt.timezone.utc)).isoformat(),
+             'ok': error is None, 'error': error}
+    path = work / 'host-package-refresh.json'
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(state) + '\n')
+    temporary.replace(path)
+    return state
+
+
+def host_package_findings(now, cache=None, sources=None, refresh_path=None, distro=None, compare=None):
+    """Security-pocket versions, including fixes hidden by candidate pinning.
+
+    High is review priority, not a claimed CVE score. Actual vendor severity and
+    exploitation remain unclassified until advisory applicability is reviewed.
+    """
+    findings, skipped = [], []
+    try:
+        path = Path(refresh_path) if refresh_path else work_dir()[0] / 'host-package-refresh.json'
+        refresh = json.loads(path.read_text())
+        checked = dt.datetime.fromisoformat(refresh['checkedAt'])
+        if refresh.get('ok') is not True or refresh.get('error'):
+            skipped.append('Host package coverage incomplete: latest authenticated APT refresh failed')
+        if now - checked > dt.timedelta(hours=8) or checked > now + dt.timedelta(minutes=5):
+            skipped.append('Host package coverage incomplete: authenticated APT indexes are stale')
+    except (OSError, ValueError, KeyError, TypeError):
+        skipped.append('Host package coverage incomplete: authenticated APT refresh proof missing or invalid')
+    try:
+        distro = distro if distro is not None else dict(
+            line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
+        codename = distro.get('VERSION_CODENAME', '').strip('"')
+        if distro.get('ID', '').strip('"') != 'ubuntu' or not re.fullmatch('[a-z]+', codename):
+            raise ValueError('Unsupported distro')
+        pocket = codename + '-security'
+        if cache is None or sources is None or compare is None:
+            import apt
+            import apt_pkg
+            if cache is None:
+                cache = apt.Cache()
+            if sources is None:
+                source_list = apt_pkg.SourceList()
+                source_list.read_main_list()
+                sources = source_list.list
+            compare = compare or apt_pkg.version_compare
+        if not any(source.dist == pocket and source.is_trusted for source in sources):
+            skipped.append('Host package coverage incomplete: trusted Ubuntu security source is missing')
+        for package in cache:
+            if not package.is_installed:
+                continue
+            fixed = None
+            for version in package.versions:
+                if compare(version.version, package.installed.version) <= 0:
+                    continue
+                if any(origin.trusted and origin.origin == 'Ubuntu' and origin.archive == pocket for origin in version.origins):
+                    if fixed is None or compare(version.version, fixed) > 0:
+                        fixed = version.version
+            if fixed:
+                name = package.fullname
+                candidate = package.candidate.version if package.candidate else None
+                findings.append({'kind':'host-package', 'service':'host-os', 'name':name,
+                                 'package':name, 'id':'ubuntu-security:' + name,
+                                 'version':package.installed.version, 'fixed':fixed, 'candidate':candidate,
+                                 'severity':'high', 'vendorSeverity':'unclassified',
+                                 'blockedByPolicy':candidate is None or compare(candidate, fixed) < 0,
+                                 'summary':name + ' has a trusted Ubuntu security update pending; '
+                                            'review priority high, CVE severity unclassified'})
+    except (ImportError, OSError, ValueError, KeyError, TypeError, AttributeError, SystemError):
+        skipped.append('Host package coverage incomplete: installed/security versions could not be inspected')
+    return findings, skipped
+
+
 def image_package_findings(now, path=None):
     path = Path(path) if path is not None else work_dir()[0] / 'image-vulnerability-status.json'
     try:
@@ -733,7 +821,7 @@ def image_package_findings(now, path=None):
         return [], ['Final image vulnerability scan is missing, invalid or older than 36 hours']
 
 
-def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=None, chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False):
+def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=None, chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False, host_packages=False):
     now = now or dt.datetime.now(dt.timezone.utc)
     skipped = []
     containers, images = list_services(docker, services, skipped)
@@ -844,6 +932,10 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
         image_findings, image_skipped = image_package_findings(now)
         findings += image_findings
         skipped += image_skipped
+    if host_packages:
+        package_findings, package_skipped = host_package_findings(now)
+        findings += package_findings
+        skipped += package_skipped
     if kev:
         kev_state = None
         try:
@@ -1018,7 +1110,7 @@ def prior_notification_fingerprint(previous):
 
 
 def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_SOURCE, cloudflare=None,
-          chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False):
+          chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False, host_packages=False):
     """Mail new or changed abnormalities; healthy and unchanged runs stay silent."""
     now = now or dt.datetime.now(dt.timezone.utc)
     try:
@@ -1027,7 +1119,7 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
         previous = {}
     report, error = None, None
     try:
-        report = scan(docker, services, feeds, source, now, cloudflare, chain, runtime=runtime, host_runtime=host_runtime, image_packages=image_packages, kev=kev)
+        report = scan(docker, services, feeds, source, now, cloudflare, chain, runtime=runtime, host_runtime=host_runtime, image_packages=image_packages, kev=kev, host_packages=host_packages)
     except WatchError as failure:
         error = str(failure)
     except Exception as failure:  # never echo a message that might carry host data
@@ -1127,7 +1219,7 @@ def main(payload=None):
     cloudflare = load(payload, 'cloudflare', CLOUDFLARE_NAME)
     feeds = Feeds((payload or {}).get('feeds'))
     if args.action == 'scan':
-        report = scan(run_docker, services, feeds, cloudflare=cloudflare, runtime=True, host_runtime=True, image_packages=True, kev=True)
+        report = scan(run_docker, services, feeds, cloudflare=cloudflare, runtime=True, host_runtime=True, image_packages=True, kev=True, host_packages=True)
         report['timer'] = timer_state(work)
         print(json.dumps(report))
         return
@@ -1152,7 +1244,8 @@ def main(payload=None):
                                 'limit, or a crash). Nothing was checked this run.\n' + MAIL_FOOTER)
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
-    state, mail_error = check(run_docker, services, feeds, work, config, send_email, cloudflare=cloudflare, runtime=True, host_runtime=True, image_packages=True, kev=True)
+    refresh_host_package_indexes(work)
+    state, mail_error = check(run_docker, services, feeds, work, config, send_email, cloudflare=cloudflare, runtime=True, host_runtime=True, image_packages=True, kev=True, host_packages=True)
     print(json.dumps({'ok': state['ok'], 'findings': len(state['findings']), 'error': state['error'],
                       'mailed': state['mailed'], 'mailError': state.get('mailError')}))
     if mail_error:

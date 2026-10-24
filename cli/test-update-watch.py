@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
 
@@ -850,6 +851,72 @@ class HostRuntimeCoverage(unittest.TestCase):
         self.assertTrue(any(f.get('id') == 'GHSA-test' for f in report['findings']))
         self.assertTrue(any(f['kind'] == 'host-runtime' for f in report['findings']))
         self.assertEqual(report['services'][0]['versionSource'], 'host binary')
+
+
+class HostPackageCoverage(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / 'host-package-refresh.json'
+        self.path.write_text(json.dumps({'checkedAt':NOW.isoformat(),'ok':True,'error':None}))
+        self.source = NS(dist='noble-security',is_trusted=True)
+
+    def inspect(self, packages=(), **kwargs):
+        return uw.host_package_findings(NOW,cache=packages,sources=[self.source],refresh_path=self.path,
+            distro={'ID':'ubuntu','VERSION_CODENAME':'noble'},compare=lambda a,b:(int(a)>int(b))-(int(a)<int(b)),**kwargs)
+
+    def package(self, installed='1',candidate='3',versions=None):
+        origin=lambda archive,trusted=True: NS(origin='Ubuntu',archive=archive,trusted=trusted)
+        return NS(fullname='zlib1g:amd64',is_installed=True,installed=NS(version=installed),
+            candidate=NS(version=candidate),versions=versions or [
+                NS(version='3',origins=[origin('noble-updates')]),
+                NS(version='2',origins=[origin('noble-security')])])
+
+    def test_security_version_hidden_by_newer_updates_candidate_is_still_reported(self):
+        rows,skips=self.inspect([self.package()])
+        self.assertEqual(skips,[])
+        self.assertEqual(rows[0]['fixed'],'2')
+        self.assertEqual(rows[0]['candidate'],'3')
+        self.assertFalse(rows[0]['blockedByPolicy'])
+        self.assertEqual(rows[0]['vendorSeverity'],'unclassified')
+
+    def test_pinning_cannot_hide_an_available_security_fix(self):
+        rows,_=self.inspect([self.package(candidate='1')])
+        self.assertTrue(rows[0]['blockedByPolicy'])
+
+    def test_patched_or_untrusted_versions_do_not_create_security_findings(self):
+        self.assertEqual(self.inspect([self.package(installed='2')]),([],[]))
+        p=self.package(versions=[NS(version='2',origins=[NS(origin='Ubuntu',archive='noble-security',trusted=False)])])
+        self.assertEqual(self.inspect([p]),([],[]))
+
+    def test_missing_failed_stale_and_future_refreshes_never_show_complete_coverage(self):
+        self.path.unlink();self.assertTrue(self.inspect()[1])
+        for proof in [{'checkedAt':NOW.isoformat(),'ok':False},
+                      {'checkedAt':(NOW-dt.timedelta(hours=9)).isoformat(),'ok':True},
+                      {'checkedAt':(NOW+dt.timedelta(minutes=6)).isoformat(),'ok':True},
+                      {'checkedAt':NOW.replace(tzinfo=None).isoformat(),'ok':True}]:
+            self.path.write_text(json.dumps(proof));self.assertTrue(self.inspect()[1])
+
+    def test_disabled_or_untrusted_security_source_is_a_coverage_gap(self):
+        self.source.is_trusted=False
+        self.assertTrue(self.inspect()[1])
+        self.source.is_trusted=True;self.source.dist='noble-updates'
+        self.assertTrue(self.inspect()[1])
+
+    def test_refresh_only_updates_indexes_and_never_leaks_error_output(self):
+        calls=[]
+        def run(argv,**kwargs):
+            calls.append(argv)
+            self.assertEqual(kwargs['timeout'],300)
+            return NS(returncode=100,stderr=SECRET)
+        state=uw.refresh_host_package_indexes(Path(self.temp.name),run=run,now=NOW)
+        self.assertFalse(state['ok']);self.assertNotIn(SECRET,json.dumps(state))
+        self.assertEqual(calls[0][-1],'update')
+        self.assertIn('APT::Update::Error-Mode=any',calls[0])
+        self.assertNotIn('install',calls[0])
+        self.assertFalse(uw.refresh_host_package_indexes(Path(self.temp.name),
+            run=lambda *a,**k:(_ for _ in ()).throw(uw.subprocess.TimeoutExpired('apt-get',300)),now=NOW)['ok'])
+        self.assertTrue(uw.refresh_host_package_indexes(Path(self.temp.name),run=lambda *a,**k:NS(returncode=0),now=NOW)['ok'])
 
 
 if __name__ == '__main__':

@@ -1667,11 +1667,14 @@ constrained writer and verify that VPS credentials cannot access the destination
 Keep the copy credential outside both VPSs; exclude asset buckets. Obtain explicit
 approval naming the records and destination before transferring personal data.
 The prepared `protected-recovery` template contains the guarded generation engine,
-S3 adapter and metadata restore selector, with fixture coverage. Selection needs
-an explicit recovery cutoff, validates every object and reports native restore
-and incident cleanliness as unverified. Its scheduler, metadata loader/recovery
-credential integration, actual protected restore drill, independent alerts and
-live lock tests remain activation requirements.
+S3 adapter and bounded metadata loader/restore selector, with fixture coverage.
+Selection needs an explicit generation and recovery cutoff, validates every
+object and reports native restore and incident cleanliness as unverified. It
+rejects oversized, truncated or invalid UTF-8 metadata and shares one deadline
+across metadata loading and object verification. Its scheduler, independent
+recovery credential integration, actual protected restore drill, independent
+alerts and live lock tests remain activation requirements. Verify the execution
+plan's request budget too: the current copy ceiling exceeds Workers Free limits.
 
 Schedule isolated native restore drills weekly and an application recovery exercise at least quarterly. Drill containers must have no published ports, no production data mounts and no external network. Record each project's result, restored engine, elapsed time and application-startup result. A checksum check alone does not prove the database can be imported or the application can start.
 
@@ -2041,6 +2044,18 @@ and socket absence as applicable. Never learn a policy from the current running
 fleet automatically. Combine its freshness with the process heartbeat using the
 older timestamp; missing control checks must trigger lost coverage externally.
 Transmit fixed counts/booleans/timestamps only and preserve publisher credentials.
+
+Include pending host distribution packages in advisory coverage. Refresh APT
+indexes with authentication errors treated as failures, a bounded timeout and
+no package installation or service restart. Inspect all available trusted Ubuntu
+security-pocket versions; a newer updates candidate or a pinned candidate must
+not hide a security fix. A failed refresh, absent trusted security source or
+refresh proof older than eight hours is incomplete coverage. The watcher uses
+high review priority for these pending fixes and a 72-hour deadline; this is not
+a CVE severity claim. Correlate vendor advisories and exposure separately, and
+apply the 24-hour patch-or-isolate target when exploitation/public RCE applies.
+The read-only scan command never refreshes indexes. Preserve normal package
+phasing and resolve dependency changes in the reviewed maintenance step.
 
 The 23 October ops-vps rollout passed the real canary and native proxy restart
 with unchanged Traefik image bytes, application routes/TLS, ports and data mounts.
