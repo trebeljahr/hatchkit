@@ -1,0 +1,25 @@
+# Merge only after an isolated compatibility canary with the actual startup
+# command. Preserve the deployed user, environment, databases, ports and health.
+# Bind /var/lib/plausible to its exact existing volume. Do not allocate a fresh
+# empty volume or change its ownership. A missing external volume must fail.
+# This profile was tested with TLS terminated at the reverse proxy, UID 999,
+# and an explicit vendor startup command. Built-in HTTPS requires a new review.
+services:
+  plausible:
+    mem_limit: 1g
+    memswap_limit: 1280m
+    cpus: 1.0
+    pids_limit: 256
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777
+    volumes:
+      - hatchkit-plausible-data:/var/lib/plausible
+volumes:
+  hatchkit-plausible-data:
+    external: true
+    name: REPLACE_WITH_VERIFIED_EXISTING_VOLUME_NAME

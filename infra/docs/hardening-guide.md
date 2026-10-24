@@ -2108,6 +2108,33 @@ Replace the example selector, confirm actual mount destinations and user, merge
 the rule into the existing policy and test with the real service configuration.
 Do not overwrite other reviewed profiles or change upload ownership implicitly.
 
+For Plausible, preserve the exact application commit, locked dependencies and
+embedded frontend while rebuilding with patched Elixir/Erlang runtimes. Verify
+precompiled native artifacts against the locked package's checksums and compile
+with the network disabled. Exercise PostgreSQL and ClickHouse queries, database
+setup, MJML rendering, HTML parsing, frontend redirects and restart recovery on
+isolated synthetic data. Follow redirects only within that fixture's origin.
+
+The tested proxy-TLS deployment uses UID 999, 1 GiB memory, 1.25 GiB combined
+memory/swap, one CPU, 256 PIDs, read-only root, a 64 MiB temporary directory,
+no capabilities and `no-new-privileges`. Its unused built-in certificate tooling
+was removed only after runtime proof that built-in HTTPS and SiteEncrypt were
+disabled. A wrapper rejects either an `HTTPS_PORT` environment value or secret
+file. Keep the explicit existing startup command; enabling built-in TLS requires
+a separately tested image. The reusable `plausible-runtime.compose.yml` and
+`plausible-policy.example.json` fragments live beside the Listmonk templates.
+
+Inventory anonymous Docker volumes before redeploying. Bind the existing
+Plausible data volume explicitly as an external volume by its verified name;
+absence must fail rather than create an empty replacement. Validate the resolved
+generated app and database environment, commands, immutable image identities and
+all data volumes on their original host before starting. Rendered credentials
+stay there; only fixed proof fields and hashes pass to the controller. Preserve
+native database image naming because the controller uses it to classify
+components. If a local tag is missing, verify its exact running image identity
+before restoring that alias; never substitute an unrelated image or restart the
+database to repair a tag.
+
 Exercise the controller parser in a rolled-back transaction with jobs suppressed
 and compare component IDs, volume identities, existing environment values,
 commands, health checks, ports and routing. Permit controller metadata additions

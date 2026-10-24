@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "policies": [
+    {
+      "resource": "plausible",
+      "selector": { "name": "plausible-REPLACE_RESOURCE_UUID" },
+      "expected": {
+        "Memory": 1073741824,
+        "MemorySwap": 1342177280,
+        "NanoCpus": 1000000000,
+        "PidsLimit": 256,
+        "ReadonlyRootfs": true,
+        "uid": 999,
+        "healthy": true,
+        "noNewPrivileges": true,
+        "noHostNamespaces": true,
+        "noDirectDockerSocket": true,
+        "CapDrop": ["ALL"],
+        "CapAdd": [],
+        "mountDestinations": ["/var/lib/plausible"],
+        "Tmpfs": { "/tmp": "rw,nosuid,nodev,noexec,size=64m,mode=1777" }
+      }
+    }
+  ]
+}
