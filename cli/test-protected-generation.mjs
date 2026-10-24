@@ -73,3 +73,15 @@ test('a slow provider call cannot publish completion after the lease work deadli
  await assert.rejects(copyGeneration(f.store,policy,{id,now:()=>now}),fails('copy-deadline-exceeded'));
  assert.equal(f.dest.has('generations/'+id+'/COMPLETE.json'),false);
 });
+test('lease acquisition consumes the original work budget',async()=>{
+ const f=fixture();let now=1792756800000;
+ f.store.acquireLease=async()=>{now+=600001;return {etag:'lease',owner:id};};
+ await assert.rejects(copyGeneration(f.store,policy,{id,now:()=>now}),fails('copy-deadline-exceeded'));
+ assert.equal(f.calls.length,0);assert.equal(f.dest.size,0);
+});
+test('final promotion reserves the full single-request timeout',async()=>{
+ const f=fixture();let now=1792756800000;const original=f.store.putNew;
+ f.store.putNew=async(bucket,key,value)=>{await original(bucket,key,value);if(key.endsWith('/manifest.json'))now+=580000;};
+ await assert.rejects(copyGeneration(f.store,policy,{id,now:()=>now}),fails('copy-deadline-exceeded'));
+ assert.equal(f.dest.has('generations/'+id+'/COMPLETE.json'),false);
+});

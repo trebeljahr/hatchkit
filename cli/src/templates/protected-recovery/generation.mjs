@@ -20,6 +20,13 @@ export function validatePolicy(p) {
   }
   if(p.maxGenerationBytes>2*1024**3||p.maxStoredBytes>20*1024**3||p.maxObjects>4000||p.maxPages>20||p.maxDurationMs>10*60000) fail('budget-exceeds-reviewed-ceiling');
 }
+export function validateSourceKey(key,p) {
+  if(typeof key!=='string') fail('unexpected-source-object');
+  const [project,...tail]=key.split('/'),relative=tail.join('/');
+  if(!p.projects.includes(project)) fail('unregistered-source-project');
+  if(/^locks\/[0-9a-f]{64}$/.test(relative)) fail('source-repository-busy');
+  if(!/^(?:config|(?:keys|snapshots|index)\/[0-9a-f]{64}|data\/[0-9a-f]{2}\/[0-9a-f]{64})$/.test(relative)) fail('unexpected-source-object');
+}
 export async function inventory(store,bucket,p,source=false,deadline=()=>{}) {
   const rows=[],seen=new Set();let cursor;
   for(let page=0;page<p.maxPages;page++) {
@@ -29,12 +36,7 @@ export async function inventory(store,bucket,p,source=false,deadline=()=>{}) {
     for(const obj of result.objects) {
       if(!obj || typeof obj.key!=='string'||seen.has(obj.key)||!Number.isSafeInteger(obj.size)||obj.size<0||typeof obj.etag!=='string'||!obj.etag) fail('invalid-inventory');
       seen.add(obj.key);
-      if(source) {
-        const [project,...tail]=obj.key.split('/'),relative=tail.join('/');
-        if(!p.projects.includes(project)) fail('unregistered-source-project');
-        if(/^locks\/[0-9a-f]{64}$/.test(relative)) fail('source-repository-busy');
-        if(!/^(?:config|(?:keys|snapshots|index)\/[0-9a-f]{64}|data\/[0-9a-f]{2}\/[0-9a-f]{64})$/.test(relative)) fail('unexpected-source-object');
-      }
+      if(source) validateSourceKey(obj.key,p);
       rows.push({key:obj.key,size:obj.size,etag:obj.etag});
       if(rows.length>p.maxObjects) fail('object-budget-exceeded');
     }
@@ -44,11 +46,11 @@ export async function inventory(store,bucket,p,source=false,deadline=()=>{}) {
   }
   fail('page-budget-exceeded');
 }
-async function copyLeasedGeneration(store,p,{id,now=()=>Date.now()}={}) {
+async function copyLeasedGeneration(store,p,{id,now=()=>Date.now(),startedAt}={}) {
   validatePolicy(p);
   if(!/^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/.test(id||'')) fail('invalid-generation-id');
-  const started=now(),prefix=`generations/${id}/`,manifestKey=prefix+'manifest.json',completeKey=prefix+'COMPLETE.json';
-  const deadline=()=>{if(now()-started>p.maxDurationMs)fail('copy-deadline-exceeded');};
+  const started=startedAt,prefix=`generations/${id}/`,manifestKey=prefix+'manifest.json',completeKey=prefix+'COMPLETE.json';
+  const deadline=(reserve=0)=>{if(now()-started+reserve>p.maxDurationMs)fail('copy-deadline-exceeded');};
   const source=await inventory(store,p.sourceBucket,p,true,deadline);
   if(!source.length) fail('empty-source');
   // Require every approved project to have a complete restic repository shape.
@@ -85,16 +87,20 @@ async function copyLeasedGeneration(store,p,{id,now=()=>Date.now()}={}) {
   deadline();
   const manifestHash=await sha256(manifest);
   const proof={schema:1,id,complete:true,objects:source.length,bytes,manifestSHA256:manifestHash,completedAt:new Date(now()).toISOString(),protectedUntil:new Date(started+90*86400000).toISOString(),usableUntil:new Date(started+119*86400000).toISOString()};
-  deadline();
+  // The adapter's reviewed single-attempt timeout is 30s. Keep that much
+  // budget before the final promotion instead of starting it at the deadline.
+  deadline(30000);
   await store.putNew(p.destinationBucket,completeKey,JSON.stringify(proof));
+  deadline();
   return proof;
 }
 
 export async function copyGeneration(store,p,{id,now=()=>Date.now()}={}) {
   validatePolicy(p);
   if(!/^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/.test(id||'')) fail('invalid-generation-id');
-  const lease=await store.acquireLease(p.destinationBucket,{owner:id,expiresAt:now()+p.maxDurationMs+60000},now());
+  const startedAt=now();
+  const lease=await store.acquireLease(p.destinationBucket,{owner:id,expiresAt:startedAt+p.maxDurationMs+60000},startedAt);
   if(!lease) fail('another-generation-is-running');
-  try { return await copyLeasedGeneration(store,p,{id,now}); }
+  try { return await copyLeasedGeneration(store,p,{id,now,startedAt}); }
   finally { await store.releaseLease(p.destinationBucket,lease); }
 }

@@ -25,7 +25,10 @@ outside both VPSs. Neither source mutation nor object deletion is implemented.
 A conditional destination lease serializes generation writers, including storage
 budget accounting. Configure the S3 client with one attempt and a 30-second
 per-operation timeout; the lease expires one minute after the ten-minute maximum
-work window. Every list/copy/head and final promotion checks the work deadline.
+work window. Lease acquisition consumes the same work budget. Every
+list/copy/head and final promotion checks the work deadline; the final write
+reserves a full 30-second request timeout. The installer must enforce the adapter
+timeout before activation.
 
 Before any personal payload copy, the installer must create and read back the
 private EU destination, enable a **90-day bucket lock** for `generations/`, and
@@ -36,6 +39,16 @@ times: completion records conservatively advertise protection from generation
 start, and a 119-day usability cutoff before the earliest 120-day expiry. A
 restore selector must enforce this cutoff and validate the manifest and every
 object before handing a generation to restic.
+
+`restore-selection.mjs` implements this metadata gate with an explicit requested
+cutoff. It checks manifest hash/identity, exact approved repository shape,
+counts/bytes, every destination size/ETag, protection/expiry boundaries and a
+bounded work deadline. Selection defaults to generations still inside their
+90-day protection period; using an older but unexpired generation requires an
+explicit boolean override and remains marked unprotected. It never claims an
+incident-clean point or a successful native restore. The metadata loader,
+independent recovery credential path and actual protected restore drill still
+need integration before activation.
 
 The configuration-reviewed ceilings are 2 GiB per generation, 20 GiB total,
 4,000 listed objects, 20 pages and ten minutes. Hitting a cap stops the job and
@@ -57,5 +70,5 @@ Cloudflare references verified 23 October 2026:
 Tests:
 
 ```sh
-node --test cli/test-protected-generation.mjs cli/test-protected-s3-store.mjs
+node --test cli/test-protected-generation.mjs cli/test-protected-s3-store.mjs cli/test-protected-restore.mjs
 ```

@@ -1666,9 +1666,12 @@ a recent snapshot may depend on an old pack. Verify locks using the actual
 constrained writer and verify that VPS credentials cannot access the destination.
 Keep the copy credential outside both VPSs; exclude asset buckets. Obtain explicit
 approval naming the records and destination before transferring personal data.
-The prepared `protected-recovery` template contains the guarded generation engine
-and S3 adapter, with fixture coverage; its scheduler, protected restore selection,
-independent alerts and live lock tests remain activation requirements.
+The prepared `protected-recovery` template contains the guarded generation engine,
+S3 adapter and metadata restore selector, with fixture coverage. Selection needs
+an explicit recovery cutoff, validates every object and reports native restore
+and incident cleanliness as unverified. Its scheduler, metadata loader/recovery
+credential integration, actual protected restore drill, independent alerts and
+live lock tests remain activation requirements.
 
 Schedule isolated native restore drills weekly and an application recovery exercise at least quarterly. Drill containers must have no published ports, no production data mounts and no external network. Record each project's result, restored engine, elapsed time and application-startup result. A checksum check alone does not prove the database can be imported or the application can start.
 
