@@ -1044,6 +1044,24 @@ def weekly_review_key(now):
     return '%04d-W%02d' % (year, week)
 
 
+def acknowledged_review_week(previous, now):
+    """Count an old successful digest in its actual delivery week only."""
+    if not previous.get('notifiedFingerprint') or previous.get('mailError'):
+        return None
+    rows, skipped, error = previous.get('findings', []), previous.get('skipped', []), previous.get('error')
+    kind = 'error' if error else 'findings' if rows else 'incomplete' if skipped else None
+    if prior_notification_fingerprint(previous) != notification_fingerprint(kind, rows, error, skipped):
+        return None
+    try:
+        when = dt.datetime.fromisoformat(previous.get('lastNotifiedAt') or previous['checkedAt'])
+        if when.tzinfo is None or when > now + dt.timedelta(minutes=5):
+            return None
+        year, week, _ = when.astimezone(ZoneInfo('Australia/Sydney')).isocalendar()
+        return '%04d-W%02d' % (year, week)
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
 def weekly_package_review(findings):
     fixes, workloads, advisories, no_fix = {}, set(), set(), set()
     for finding in findings:
@@ -1260,7 +1278,7 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
     # An acknowledged old daily digest already served this week's review.
     # Upgrading the monitor must not send the same inventory again.
     if not last_week and previous.get('notificationIdentityVersion') != 3 and previous.get('checkedAt') and previous.get('notifiedFingerprint') and not previous.get('mailError'):
-        last_week = week
+        last_week = acknowledged_review_week(previous, now)
     weekly_due = bool(review and week and week != last_week and not error)
     state = {'checkedAt': now.isoformat(timespec='seconds'), 'ok': not error and not findings and not skipped,
              'error': error, 'services': [{'service': s['service'], 'version': s['version'],

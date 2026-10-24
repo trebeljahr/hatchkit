@@ -674,6 +674,18 @@ class Check(unittest.TestCase):
         self.assertEqual(uw.workload_display_names(docker),{'opaque-id':'chess-server'})
         self.assertEqual(calls[1],['inspect','--format','{{json .Name}}\t{{json (index .Config.Labels "coolify.serviceName")}}','id'])
 
+    def test_migration_counts_the_actual_delivery_week_and_never_an_unacknowledged_report(self):
+        row={'kind':'image-package','service':'image','id':'CVE-test','name':'pkg','version':'1','severity':'critical','summary':'test'}
+        previous={'checkedAt':NOW.isoformat(),'lastNotifiedAt':NOW.isoformat(),'findings':[row],'skipped':[],'error':None,
+                  'notifiedFingerprint':uw.notification_fingerprint('findings',[row],None,[])}
+        self.assertEqual(uw.acknowledged_review_week(previous,NOW+dt.timedelta(days=7)),'2026-W43')
+        early=dt.datetime(2026,10,25,21,0,tzinfo=dt.timezone.utc) # Monday 08:00 AEDT
+        previous['lastNotifiedAt']=early.isoformat()
+        self.assertIsNone(uw.weekly_review_key(early))
+        self.assertEqual(uw.acknowledged_review_week(previous,early),'2026-W44')
+        previous['findings'].append({**row,'id':'CVE-unsent'})
+        self.assertIsNone(uw.acknowledged_review_week(previous,early))
+
     def test_package_mail_groups_replicas_aliases_fixes_and_urgent_workloads(self):
         row={'kind':'image-package','service':'sha256:old','id':'GHSA-test',
              'aliases':['CVE-2026-1234'],'name':'pkg','version':'1','fixed':'1.1',
