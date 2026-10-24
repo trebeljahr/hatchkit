@@ -12,11 +12,38 @@ function fields(value,allowed) {
   if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!allowed.includes(key))) fail('unexpected-recovery-metadata');
 }
 export async function verifyRestoreSelection(store,p,{proof,manifestText,before,now=()=>Date.now(),requireCurrentlyProtected=true}={}) {
+  return verifySelection(store,p,{proof,manifestText,before,now,requireCurrentlyProtected},now());
+}
+// Explicit generation only: never silently fall back to another recovery point.
+export async function loadRestoreSelection(store,p,{id,before,now=()=>Date.now(),requireCurrentlyProtected=true}={}) {
+  validatePolicy(p);
+  if(!/^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/.test(id||'')) fail('invalid-generation-id');
+  const started=now();
+  const cutoff=timestamp(before);
+  if(typeof requireCurrentlyProtected!=='boolean') fail('invalid-recovery-policy');
+  if(!Number.isFinite(started)||cutoff>started+300000) fail('invalid-recovery-cutoff');
+  const deadline=()=>{const current=now();if(!Number.isFinite(current)||current<started||current-started>p.maxDurationMs)fail('restore-selection-deadline-exceeded');};
+  const read=async key=>{
+    deadline();let result;
+    try {result=await store.readMetadata(p.destinationBucket,`generations/${id}/${key}.json`);} catch {fail('recovery-metadata-unavailable');}
+    deadline();return result;
+  };
+  const proofText=await read('COMPLETE');
+  if(proofText===null) fail('incomplete-recovery-generation');
+  if(typeof proofText!=='string'||new TextEncoder().encode(proofText).length>4096) fail('completion-size-exceeded');
+  let proof;try {proof=JSON.parse(proofText);} catch {fail('completion-json-invalid');}
+  if(proof?.id!==id) fail('requested-generation-mismatch');
+  const manifestText=await read('manifest');
+  if(manifestText===null) fail('incomplete-recovery-generation');
+  return verifySelection(store,p,{proof,manifestText,before,now,requireCurrentlyProtected},started);
+}
+async function verifySelection(store,p,{proof,manifestText,before,now,requireCurrentlyProtected},started) {
   validatePolicy(p);
   if(typeof requireCurrentlyProtected!=='boolean') fail('invalid-recovery-policy');
-  const started=now(),cutoff=timestamp(before);
+  const cutoff=timestamp(before);
   if(!Number.isFinite(started)||cutoff>started+300000) fail('invalid-recovery-cutoff');
-  const deadline=()=>{if(now()-started>p.maxDurationMs)fail('restore-selection-deadline-exceeded');};
+  const deadline=()=>{const current=now();if(!Number.isFinite(current)||current<started||current-started>p.maxDurationMs)fail('restore-selection-deadline-exceeded');};
+  deadline();
   fields(proof,['schema','id','complete','objects','bytes','manifestSHA256','completedAt','protectedUntil','usableUntil']);
   if(proof.schema!==1||proof.complete!==true||!/^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/.test(proof.id||'')) fail('incomplete-recovery-generation');
   if(typeof manifestText!=='string'||new TextEncoder().encode(manifestText).length>2*1024**2) fail('manifest-size-exceeded');

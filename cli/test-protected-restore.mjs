@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {copyGeneration,RecoveryError,sha256} from './src/templates/protected-recovery/generation.mjs';
-import {verifyRestoreSelection} from './src/templates/protected-recovery/restore-selection.mjs';
+import {verifyRestoreSelection,loadRestoreSelection} from './src/templates/protected-recovery/restore-selection.mjs';
 
 const base=Date.parse('2026-10-23T12:00:00Z'),day=86400000,id='20261023T120000Z-0123456789abcdef',hash='a'.repeat(64);
 const policy={sourceBucket:'primary-backups',destinationBucket:'protected-backups',projects:['app'],maxGenerationBytes:1024**3,maxStoredBytes:2*1024**3,maxObjects:4000,maxPages:20,maxDurationMs:600000};
@@ -13,7 +13,8 @@ async function fixture() {
   async list(bucket){return{objects:bucket===policy.sourceBucket?source:[...destination.values()],truncated:false};},
   async copy(p){const original=source.find(x=>x.key===p.sourceKey),row={...original,key:p.destinationKey,etag:'destination-'+original.etag};destination.set(row.key,row);return{etag:row.etag};},
   async head(bucket,key){heads++;return destination.get(key);},
-  async putNew(bucket,key,value){destination.set(key,{key,size:new TextEncoder().encode(value).length,etag:'metadata',value});}};
+  async putNew(bucket,key,value){destination.set(key,{key,size:new TextEncoder().encode(value).length,etag:'metadata',value});},
+  async readMetadata(bucket,key){assert.equal(bucket,policy.destinationBucket);return destination.get(key)?.value??null;}};
  const proof=await copyGeneration(store,policy,{id,now:()=>base});heads=0;
  return{store,proof,manifestText:destination.get(`generations/${id}/manifest.json`).value,heads:()=>heads};
 }
@@ -80,4 +81,36 @@ test('slow provider calls cannot finish a metadata verification beyond its work 
  const f=await fixture();let current=base+day;const original=f.store.head;
  f.store.head=async(...args)=>{const result=await original(...args);current+=600001;return result;};
  await assert.rejects(verifyRestoreSelection(f.store,policy,{...options(f),now:()=>current}),rejected('restore-selection-deadline-exceeded'));
+});
+const loadOptions=()=>({id,before:new Date(base+3600000).toISOString(),now:()=>base+day});
+test('loader verifies only the explicitly requested generation and returns the same metadata gate',async()=>{
+ const f=await fixture(),result=await loadRestoreSelection(f.store,policy,loadOptions());
+ assert.equal(result.id,id);assert.equal(result.metadataVerified,true);assert.equal(f.heads(),5);
+ assert.equal(result.nativeRestoreVerified,false);
+});
+test('loader never selects incomplete or mismatched generations',async()=>{
+ for(const [value,code]of [[null,'incomplete-recovery-generation'],['{','completion-json-invalid'],['x'.repeat(4097),'completion-size-exceeded'],[JSON.stringify({id:'another'}),'requested-generation-mismatch']]){
+  const f=await fixture();let reads=0;f.store.readMetadata=async()=>{reads++;return value;};
+  await assert.rejects(loadRestoreSelection(f.store,policy,loadOptions()),rejected(code));
+  assert.equal(reads,1);assert.equal(f.heads(),0);
+ }
+ const f=await fixture(),original=f.store.readMetadata;
+ f.store.readMetadata=async(bucket,key)=>key.endsWith('/manifest.json')?null:original(bucket,key);
+ await assert.rejects(loadRestoreSelection(f.store,policy,loadOptions()),rejected('incomplete-recovery-generation'));
+});
+test('invalid generation names do not reach storage and upstream read errors remain generic',async()=>{
+ const f=await fixture();let reads=0;f.store.readMetadata=async()=>{reads++;throw Error('PRIVATE_SECRET');};
+ await assert.rejects(loadRestoreSelection(f.store,policy,{...loadOptions(),id:'../other'}),rejected('invalid-generation-id'));assert.equal(reads,0);
+ await assert.rejects(loadRestoreSelection(f.store,policy,loadOptions()),rejected('recovery-metadata-unavailable'));
+});
+test('metadata loading and subsequent object reads share one deadline',async()=>{
+ const f=await fixture();let current=base+day,reads=0;const original=f.store.readMetadata;
+ f.store.readMetadata=async(...args)=>{reads++;const result=await original(...args);current+=300001;return result;};
+ await assert.rejects(loadRestoreSelection(f.store,policy,{...loadOptions(),now:()=>current}),rejected('restore-selection-deadline-exceeded'));
+ assert.equal(reads,2);assert.equal(f.heads(),0);
+ const g=await fixture();current=base+day;const read=g.store.readMetadata,head=g.store.head;
+ g.store.readMetadata=async(...args)=>{const result=await read(...args);current+=200000;return result;};
+ g.store.head=async(...args)=>{const result=await head(...args);current+=200001;return result;};
+ await assert.rejects(loadRestoreSelection(g.store,policy,{...loadOptions(),now:()=>current}),rejected('restore-selection-deadline-exceeded'));
+ assert.equal(g.heads(),1);
 });

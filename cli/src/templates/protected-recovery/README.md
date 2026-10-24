@@ -46,9 +46,14 @@ counts/bytes, every destination size/ETag, protection/expiry boundaries and a
 bounded work deadline. Selection defaults to generations still inside their
 90-day protection period; using an older but unexpired generation requires an
 explicit boolean override and remains marked unprotected. It never claims an
-incident-clean point or a successful native restore. The metadata loader,
-independent recovery credential path and actual protected restore drill still
-need integration before activation.
+incident-clean point or a successful native restore. `loadRestoreSelection`
+requires an explicit generation ID and loads only its completion record and
+manifest. The S3 adapter bounds headers and streamed byte counts, rejects
+truncation and invalid UTF-8, and cancels rejected streams. Completion metadata
+is limited to 4 KiB; manifests to 2 MiB. Loading and every object HEAD share one
+work deadline. Missing or mismatched generations never fall back to a different
+recovery point. The independent recovery credential path and actual protected
+restore drill still need integration before activation.
 
 The configuration-reviewed ceilings are 2 GiB per generation, 20 GiB total,
 4,000 listed objects, 20 pages and ten minutes. Hitting a cap stops the job and
@@ -61,11 +66,20 @@ this engine alone does not establish operating protected history. Account
 administrators can change bucket locks; this protects against VPS compromise,
 not compromise of the Cloudflare account itself.
 
+Deployment must also verify the actual execution plan. Current Workers limits
+allow 50 external subrequests on Free and 10,000 by default on Paid, with a
+15-minute scheduled-invocation wall limit. The reviewed 4,000-object copy ceiling
+can require more than 8,000 copy/HEAD requests plus inventory and metadata calls;
+it is incompatible with Free. Require a verified sufficient plan and explicit
+request budget, or implement a separately tested chunked runner. Do not silently
+change the account's plan or place copy credentials on either VPS.
+
 Cloudflare references verified 23 October 2026:
 
 - [Bucket locks](https://developers.cloudflare.com/r2/buckets/bucket-locks/)
 - [S3 CopyObject conditions](https://developers.cloudflare.com/r2/api/s3/api/)
 - [Copy destination conditions](https://developers.cloudflare.com/r2/api/s3/extensions/)
+- [Workers execution limits](https://developers.cloudflare.com/workers/platform/limits/) (verified 24 October 2026)
 
 Tests:
 

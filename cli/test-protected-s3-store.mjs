@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {s3Store} from './src/templates/protected-recovery/s3-store.mjs';
+import {RecoveryError} from './src/templates/protected-recovery/generation.mjs';
 const absent={$metadata:{httpStatusCode:404}},conflict={$metadata:{httpStatusCode:412}};
 test('server-side copy is restricted to the exact source identity and destination',async()=>{
  const calls=[],store=s3Store({send:async command=>{calls.push(command);return {CopyObjectResult:{ETag:'copied'}};}});
@@ -27,4 +28,42 @@ test('expired leases require matching ETag and a race loses safely',async()=>{
 test('lease release cannot overwrite a newer owner and never deletes',async()=>{
  let input;await s3Store({send:async c=>{assert.equal(c.constructor.name,'PutObjectCommand');input=c.input;throw conflict;}}).releaseLease('destination',{owner:'old',etag:'old-etag'});
  assert.equal(input.IfMatch,'old-etag');assert.equal(input.Key,'control/copy-lease.json');
+});
+const metadataKey='generations/20261023T120000Z-0123456789abcdef/COMPLETE.json';
+const rejected=code=>error=>error instanceof RecoveryError&&error.code===code;
+function streamResult(chunks,length) {
+ return {ContentLength:length,Body:(async function*(){yield* chunks;})()};
+}
+test('metadata loader reads exact UTF-8 bytes from SDK and Web streams',async()=>{
+ const bytes=new TextEncoder().encode('{"label":"é"}');
+ for(const body of [(async function*(){yield bytes.slice(0,11);yield bytes.slice(11);})(),new ReadableStream({start(c){c.enqueue(bytes);c.close();}})]){
+  let input;const store=s3Store({send:async c=>{input=c.input;return {ContentLength:bytes.length,Body:body};}});
+  assert.equal(await store.readMetadata('protected-backups',metadataKey),'{"label":"é"}');
+  assert.deepEqual(input,{Bucket:'protected-backups',Key:metadataKey});
+ }
+});
+test('metadata reads reject traversal and repository payloads before making a request',async()=>{
+ let calls=0;const store=s3Store({send:async()=>{calls++;}});
+ for(const key of ['../COMPLETE.json',metadataKey+'/other',metadataKey.replace('COMPLETE.json','repository/app/config'),metadataKey.replace('COMPLETE','latest')]){
+  await assert.rejects(store.readMetadata('protected-backups',key),rejected('invalid-metadata-key'));
+ }
+ assert.equal(calls,0);
+});
+test('metadata headers, streamed sizes and truncated bodies are bounded independently',async()=>{
+ for(const [length,chunks]of [[4097,[]],[-1,[]],[undefined,[]],[1,[new Uint8Array(2)]],[2,[new Uint8Array(1)]],[4096,[new Uint8Array(4096),new Uint8Array(1)]]]){
+  const store=s3Store({send:async()=>streamResult(chunks,length)});
+  await assert.rejects(store.readMetadata('protected-backups',metadataKey),rejected('metadata-size-invalid'));
+ }
+});
+test('metadata streams are cancelled on overflow and invalid UTF-8 fails closed',async()=>{
+ let cancelled=false;const body=new ReadableStream({start(c){c.enqueue(new Uint8Array(3));},cancel(){cancelled=true;}});
+ const store=s3Store({send:async()=>({ContentLength:2,Body:body})});
+ await assert.rejects(store.readMetadata('protected-backups',metadataKey),rejected('metadata-size-invalid'));assert.equal(cancelled,true);
+ const invalid=s3Store({send:async()=>streamResult([new Uint8Array([0xc3])],1)});
+ await assert.rejects(invalid.readMetadata('protected-backups',metadataKey),rejected('metadata-body-invalid'));
+});
+test('missing metadata returns null and provider failures expose no provider text',async()=>{
+ assert.equal(await s3Store({send:async()=>{throw absent;}}).readMetadata('protected-backups',metadataKey),null);
+ const store=s3Store({send:async()=>{throw Error('PRIVATE_PROVIDER_CREDENTIAL');}});
+ await assert.rejects(store.readMetadata('protected-backups',metadataKey),rejected('recovery-metadata-unavailable'));
 });
