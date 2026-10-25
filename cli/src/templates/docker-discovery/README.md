@@ -119,7 +119,7 @@ a limit across the fleet after testing only one application.
 
 # Provider metadata guard
 
-Prepared source: `metadata-guard.py` owns only `HATCHKIT-METADATA` and its tagged
+`metadata-guard.py` owns only `HATCHKIT-METADATA` and its tagged
 first jump in `DOCKER-USER`. It drops Docker bridge forwarding to the exact
 provider metadata IPv4 and IPv6 addresses. Host OUTPUT, Tailscale interfaces and
 other forwarding rules are untouched. Unsupported bridge names/backend, changed
@@ -139,7 +139,7 @@ publisher's `HATCHKIT_METADATA_GUARD_REQUIRED=1` drop-in only after successful
 installation and a fresh complete report. The external process check then uses
 the oldest process, container-policy and metadata-guard timestamp. Missing or
 failed guard reporting remains visible. Preserve publisher credentials and
-manually review exact AIDE changes. No live guard is installed by these templates.
+manually review exact AIDE changes. Copying these templates does not activate the guard.
 
 Provider addresses: [Hetzner metadata](https://docs.hetzner.cloud/reference/cloud)
 and [hcnet IPv6 metadata](https://docs.hetzner.com/cloud/technical-details/hcnet/).
