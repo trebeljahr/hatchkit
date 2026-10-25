@@ -2595,3 +2595,15 @@ Record the extra image in final-image advisory coverage. A functional static
 page canary proves compatibility; it does not clear package advisories or justify
 copying an exception from a different BusyBox image. Retain original deadlines
 until the new image has its own scan and vendor applicability review.
+
+
+A capability-free root process still obeys filesystem permissions. Inspect the
+ownership and access ACLs on every mount root and traversed directory before a
+proxy rollout. A synthetic TLS canary with a root-owned fixture does not cover
+a production directory owned by another UID with mode 0700. Reproduce that
+ownership/mode in the synthetic fixture, prove access fails before the proposed
+fix, then retest real TLS and cold recovery after it. Where compatible, a named
+UID-0 read/traverse ACL on two explicit directories avoids restoring broad DAC
+capabilities or changing owner/group/other access. It grants no directory write
+permission. Verify the exact ACL after the native restart and retain its prior
+form for recovery. Check later controller operations for permission resets.
