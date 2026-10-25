@@ -2180,13 +2180,14 @@ apply the 24-hour patch-or-isolate target when exploitation/public RCE applies.
 The read-only scan command never refreshes indexes. Preserve normal package
 phasing and resolve dependency changes in the reviewed maintenance step.
 
-The 23 October ops-vps rollout passed the real canary and native proxy restart
-with unchanged Traefik image bytes, application routes/TLS, ports and data mounts.
-Its broker has an isolated internal network, authentication, redaction and tested
-128 MiB/0.5 CPU/64-PID containment. Six shared and four dedicated reviewed
-profiles feed external freshness monitoring. This does not establish socket
-restriction on the dedicated proxy, remove Sentinel's trust or cover containers
-without an explicit reviewed policy.
+Both proxy rollouts passed real canaries and native restarts with unchanged
+Traefik image bytes, application routes/TLS, ports and data mounts. Their brokers
+have isolated internal networks, authentication, redaction and tested
+128 MiB/0.5 CPU/64-PID containment. Eight shared and thirteen dedicated reviewed
+profiles feed external freshness monitoring. Profiles cover different tested
+controls; a CPU/memory-only app profile does not establish PID or permission
+containment. Sentinel and the restricted brokers still hold daemon trust, and
+containers without an explicit reviewed policy remain outside these checks.
 
 Keep repository manifest digests separate from image configuration IDs when
 pinning a proxy. Verify that the inspected manifest resolves locally to the
