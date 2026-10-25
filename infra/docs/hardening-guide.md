@@ -2078,6 +2078,24 @@ on their host. Do not turn this maintenance procedure into an unreviewed bulk jo
 
 Keep database-only networks internal and separate from public proxy networks. Permit only the application/database pairs that need access; block container access to cloud metadata and host management endpoints. Observe outbound requirements before enforcing an allowlist, including DNS, mail, storage, API callbacks and IPv6. A proxy sharing the database network weakens isolation. A read-only Docker socket mount still permits mutating API calls: remove it where possible or use an authenticated, method/path-restricted discovery API without granting container creation, exec or archive access. Document any management component that still has host-level trust.
 
+Provider metadata requires its own narrow rule before broad established-session
+or Docker egress accepts. The prepared `metadata-guard.py` template adds only an
+owned, tagged `DOCKER-USER` jump and exact-address drops for `docker0`/`br-*`
+forwarding. It preserves host metadata access and other rules. Reject unexpected
+ownership, hook ordering, bridge names or backend changes. Prove TCP-only
+reachability before/after, exact owned rollback/reapply, app DNS/outbound TLS,
+routes and IPv4/IPv6 origin controls before enabling it on another host.
+
+Persist the rule through Docker lifecycle and separately check it on a timer.
+Include its oldest status timestamp in the independent heartbeat; a fresh
+publisher must not hide a missing guard. Keep credentials unchanged and manually
+review authored integrity changes. Protect both address families, but do not
+claim an IPv6 datapath test when applications have no IPv6 route. Hetzner's
+[hcnet metadata documentation](https://docs.hetzner.com/cloud/technical-details/hcnet/)
+lists `169.254.169.254` and `fe80::a9fe:a9fe`. Applying these drops does not require
+switching the provider network stack. Broader outbound and database isolation
+remain separate controls.
+
 For Traefik's non-Swarm Docker provider, the `docker-discovery` template restricts
 requests and redacts environment, commands, mounts, health logs and unrelated
 labels. Put it on a dedicated internal network with Traefik only, require a

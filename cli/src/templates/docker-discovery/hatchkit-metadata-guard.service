@@ -1,0 +1,20 @@
+[Unit]
+Description=Block Docker bridge access to provider metadata
+Requires=docker.service
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/metadata-guard.py apply
+Environment=PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python
+User=root
+UMask=0077
+TimeoutStartSec=120s
+NoNewPrivileges=true
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=docker.service

@@ -1,0 +1,16 @@
+[Unit]
+Description=Check provider metadata forwarding protection
+After=docker.service hatchkit-metadata-guard.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/metadata-guard.py check
+Environment=PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python
+User=root
+UMask=0077
+CPUQuota=25%
+MemoryMax=128M
+TimeoutStartSec=120s
+NoNewPrivileges=true
+ProtectHome=read-only
+PrivateTmp=true

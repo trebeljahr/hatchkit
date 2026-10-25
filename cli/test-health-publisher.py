@@ -3,6 +3,24 @@ from unittest.mock import patch
 p=pathlib.Path(__file__).parent/'src/templates/security-controller/publish-health.py'
 spec=importlib.util.spec_from_file_location('pub',p);pub=importlib.util.module_from_spec(spec);spec.loader.exec_module(pub)
 class PublisherBoundary(unittest.TestCase):
+ def test_required_metadata_guard_cannot_disappear_or_leak_detail(self):
+  rows={'host-integrity-quick-status.json':{'checkedAt':'2026-10-25T02:00:00Z','ok':True},
+        'container-policy-status.json':{'checkedAt':'2026-10-25T01:59:00Z','ok':True,'complete':True},
+        'metadata-guard-status.json':{'checkedAt':'2026-10-25T01:58:00Z','ok':True,'complete':True,'private':'DO_NOT_EXPORT'}}
+  original=pathlib.Path.read_text
+  def read(path,*a,**kw):
+   if str(path)=='/etc/hatchkit-backups/config.json':return json.dumps({'projects':[]})
+   return original(path,*a,**kw)
+  with patch.dict(pub.os.environ,{'HATCHKIT_CONTAINER_POLICY_REQUIRED':'1','HATCHKIT_METADATA_GUARD_REQUIRED':'1'}), \
+       patch.object(pub,'read',side_effect=lambda name:rows.get(name,{})),patch.object(pathlib.Path,'read_text',read):
+   good=pub.metadata()['checks']['process']
+   self.assertTrue(good['ok']);self.assertEqual(good['checkedAt'],'2026-10-25T01:58:00+00:00')
+   self.assertNotIn('DO_NOT_EXPORT',json.dumps(good))
+   rows['metadata-guard-status.json'].update(ok=False,findings=[{'resource':'DO_NOT_EXPORT'}])
+   self.assertFalse(pub.metadata()['checks']['process']['ok'])
+   del rows['metadata-guard-status.json']
+   missing=pub.metadata()['checks']['process']
+   self.assertFalse(missing['complete']);self.assertIsNone(missing['checkedAt'])
  def test_payload_contains_only_fixed_metadata_and_detects_missing_project(self):
   with tempfile.TemporaryDirectory()as folder:
    root=pathlib.Path(folder);data={'projects':[{'name':'one'},{'name':'two'}]}

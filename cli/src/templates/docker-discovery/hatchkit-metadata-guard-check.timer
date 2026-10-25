@@ -1,0 +1,11 @@
+[Unit]
+Description=Check provider metadata protection every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=15s
+Unit=hatchkit-metadata-guard-check.service
+
+[Install]
+WantedBy=timers.target

@@ -117,5 +117,33 @@ check each running replica. This profile makes no PID, filesystem, capability,
 user or no-new-privileges claim; those need separate tested controls. Never copy
 a limit across the fleet after testing only one application.
 
+# Provider metadata guard
+
+Prepared source: `metadata-guard.py` owns only `HATCHKIT-METADATA` and its tagged
+first jump in `DOCKER-USER`. It drops Docker bridge forwarding to the exact
+provider metadata IPv4 and IPv6 addresses. Host OUTPUT, Tailscale interfaces and
+other forwarding rules are untouched. Unsupported bridge names/backend, changed
+hook order, modified owned rules or unexpected references require review. Apply
+and rollback use `iptables-restore --noflush`; rollback removes only exact owned
+rules and reports protection absent even when the rollback itself succeeded.
+
+Before installation, test current host/app TCP reachability without fetching
+metadata. Prove apply/rollback/reapply on one host, retained host metadata access,
+app DNS and certificate-validated outbound TLS, unchanged public routes and
+public-origin IPv4/IPv6 filtering. Check both rule families. If containers have
+no IPv6 path, state that limit rather than claiming an IPv6 connection test.
+
+The apply unit follows Docker startup/restart; the separate timer checks every
+five minutes without silently accepting or repairing changed rules. Enable the
+publisher's `HATCHKIT_METADATA_GUARD_REQUIRED=1` drop-in only after successful
+installation and a fresh complete report. The external process check then uses
+the oldest process, container-policy and metadata-guard timestamp. Missing or
+failed guard reporting remains visible. Preserve publisher credentials and
+manually review exact AIDE changes. No live guard is installed by these templates.
+
+Provider addresses: [Hetzner metadata](https://docs.hetzner.cloud/reference/cloud)
+and [hcnet IPv6 metadata](https://docs.hetzner.com/cloud/technical-details/hcnet/).
+Rule ordering: [Docker iptables](https://docs.docker.com/engine/network/firewall-iptables/).
+
 Provider request sources: [Docker provider](https://github.com/traefik/traefik/blob/v3.7.16/pkg/provider/docker/pdocker.go)
 and [shared discovery](https://github.com/traefik/traefik/blob/v3.7.16/pkg/provider/docker/shared.go).

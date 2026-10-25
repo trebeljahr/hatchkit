@@ -36,6 +36,7 @@ for (const file of [
   "test-image-vulnerabilities.py",
   "test-health-publisher.py",
   "test-file-integrity.py",
+  "src/templates/docker-discovery/test-metadata-guard.py",
 ]) {
   const python = spawnSync("python3", [file], { stdio: "inherit" });
   assert.equal(python.status, 0, `${file} failed`);
