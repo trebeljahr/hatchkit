@@ -127,6 +127,22 @@ Prove authenticated application traffic, data writes, realtime and restart
 recovery on synthetic data before production. Do not add a permission claim to
 drift policy until both native generation/deployment and live controls pass.
 
+Preserve an image app's canonical tracking tag while selecting the exact observed
+repository manifest for its one maintenance deployment. Inspect the installed
+native entry point and normal admission rules; do not bypass concurrency limits.
+Persist the tested options and queue admission atomically, dispatch one job after
+commit, and prove the transaction rolls back before a live request. Record its
+planned UUID first and inspect ambiguous outcomes before any retry. Keep a fresh
+database snapshot and image/runtime recovery evidence on the original host.
+Reject unknown image/data identities before recovery; never automatically restore
+old database contents as part of reverting container configuration.
+
+Upgrade checker and policy together only after live controls pass. Preserve all
+other reviewed profiles, use schema 2, test the complete current policy against
+the strict checker, then review the exact authored files against the trusted AIDE
+baseline. Upgrade and review scripts written for one host are scoped examples, not an
+automatic baseline-learning service. Existing monitor credentials stay unchanged.
+
 # Provider metadata guard
 
 `metadata-guard.py` owns only `HATCHKIT-METADATA` and its tagged

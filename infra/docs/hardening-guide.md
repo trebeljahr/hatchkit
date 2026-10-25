@@ -2091,6 +2091,26 @@ kernel cgroups, original data files/volumes, read-only integrity/query checks
 and unchanged runtime credentials. Each app profile needs its own functional
 canary and native deployment proof.
 
+For an image-based app, pin the observed repository manifest for the hardening
+deployment while preserving its canonical tracking tag for future releases.
+The inspected native rollback flag selects that immutable image; it does not
+restore a database or volume. Review the exact installed implementation first.
+Require normal idle-queue admission, lock application/server rows, save only the
+tested option field, and defer the single native job until the outer transaction
+commits. Prove admission rollback before the live request. Record the planned
+deployment UUID before submission; inspect ambiguous outcomes instead of retrying.
+Capture a fresh online SQLite snapshot, exact runtime/canonical configuration and
+an image recovery anchor on the original host. Preserve failed containers during
+recovery and reject unknown image/data identities before any write. Keep original
+data in place; a configuration rollback must not automatically restore old data.
+
+Compare all original runtime secrets exactly. Permit only explicitly verified
+native deployment metadata differences: source/container identifiers and public
+default values derived from the controller's canonical model. Compare physical
+application/settings rows too; explain managed hashes, timestamps and status
+separately. Never export rendered configuration, database snapshots or private
+diagnostics through the operator machine.
+
 Unknown drift-policy fields must fail incomplete rather than silently pass.
 Use config schema 2 with newer controls so a stale schema-1-only checker cannot
 pretend to enforce them. Keep existing profiles and review checker/policy updates
