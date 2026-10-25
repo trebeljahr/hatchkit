@@ -137,6 +137,16 @@ database snapshot and image/runtime recovery evidence on the original host.
 Reject unknown image/data identities before recovery; never automatically restore
 old database contents as part of reverting container configuration.
 
+Game probes need per-app fixtures: a game on SQLite and Redis, or one on a fresh
+PostgreSQL/Redis stack with its installed WebSocket codecs. Keep current
+protocol/forfeit semantics, exercise persisted results after restart, bound
+client handshakes and retain private diagnostics on timeout. Remove only labelled
+fixtures and verify original production identities on every path. An isolated
+canary or generation probe is not proof of live enforcement. Activate an app's
+stronger drift profile only after a native deployment with the original
+image/data and kernel controls. Apply that same canary, native deployment and
+live verification boundary to each app.
+
 Upgrade checker and policy together only after live controls pass. Preserve all
 other reviewed profiles, use schema 2, test the complete current policy against
 the strict checker, then review the exact authored files against the trusted AIDE

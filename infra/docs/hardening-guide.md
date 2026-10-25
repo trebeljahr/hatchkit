@@ -2091,6 +2091,20 @@ kernel cgroups, original data files/volumes, read-only integrity/query checks
 and unchanged runtime credentials. Each app profile needs its own functional
 canary and native deployment proof.
 
+A PostgreSQL/Redis app's canary uses the same tested permission profile and
+exercises its authentication, writes, live WebSocket sessions, Redis and restart
+persistence, with synthetic data on an internal network and fixtures removed
+afterwards. Prove native generation and admission rollback and capture an
+original-host database dump and image anchor first. Activate a stronger drift
+profile only after a native deployment verifies the same image, original
+database identities, kernel controls and durable options, with the canonical
+`live` tracking tag intact. These checks do not establish a restored backup.
+
+Keep synthetic clients bounded and match the actual application protocol. Capture
+timeout diagnostics privately, close only owned clients, and verify cleanup and
+unchanged production identities even on failure. Do not export a timeout's full
+command or privileged log. Never bypass a failed admission or freshness guard.
+
 For an image-based app, pin the observed repository manifest for the hardening
 deployment while preserving its canonical tracking tag for future releases.
 The inspected native rollback flag selects that immutable image; it does not
@@ -2110,6 +2124,15 @@ default values derived from the controller's canonical model. Compare physical
 application/settings rows too; explain managed hashes, timestamps and status
 separately. Never export rendered configuration, database snapshots or private
 diagnostics through the operator machine.
+
+Review package locations before treating scanner matches as runtime reachability.
+An image can contain a separate Undici copy under npm while its
+Node runtime reports its own built-in version, or keep frontend build
+packages in its final pnpm store. Keep raw matches/deadlines until separately
+reviewed or removed by a tested rebuild. Prefer fresh production dependency stages
+and omit unused build/package-manager tooling. If startup currently calls npx,
+bundle the required locked tool first; deleting it blindly breaks startup.
+Rescan exact final image bytes and verify native rollout before closing findings.
 
 Unknown drift-policy fields must fail incomplete rather than silently pass.
 Use config schema 2 with newer controls so a stale schema-1-only checker cannot
