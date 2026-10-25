@@ -73,8 +73,9 @@ export function s3Store(client) {
       let current;
       try {
         const result=await client.send(new GetObjectCommand({Bucket:bucket,Key:leaseKey}));
-        if(!Number.isSafeInteger(result.ContentLength)||result.ContentLength>4096)throw Error('invalid-lease-size');
-        current={...JSON.parse(await result.Body.transformToString()),etag:result.ETag};
+        const text=await boundedText(result,4096);
+        let parsed;try {parsed=JSON.parse(text);}catch {fail('lease-body-invalid');}
+        current={...parsed,etag:result.ETag};
         if(!Number.isFinite(current.expiresAt)||!current.etag)throw Error('invalid-lease');
         if(current.expiresAt>now)return null;
       } catch(error) {if(!absent(error))throw error;}

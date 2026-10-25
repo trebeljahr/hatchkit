@@ -18,11 +18,11 @@ test('new lease uses atomic absence precondition',async()=>{
  assert.equal(calls[1].input.IfNoneMatch,'*');
 });
 test('an active lease prevents a second writer',async()=>{
- let writes=0;const store=s3Store({send:async c=>{if(c.constructor.name==='GetObjectCommand')return {ETag:'current',ContentLength:30,Body:{transformToString:async()=>JSON.stringify({owner:'one',expiresAt:20})}};writes++;}});
+ let writes=0;const store=s3Store({send:async c=>{if(c.constructor.name==='GetObjectCommand')return {ETag:'current',...leaseResult({owner:'one',expiresAt:20})};writes++;}});
  assert.equal(await store.acquireLease('destination',{owner:'two',expiresAt:30},10),null);assert.equal(writes,0);
 });
 test('expired leases require matching ETag and a race loses safely',async()=>{
- let input;const store=s3Store({send:async c=>{if(c.constructor.name==='GetObjectCommand')return {ETag:'old',ContentLength:30,Body:{transformToString:async()=>JSON.stringify({owner:'old',expiresAt:0})}};input=c.input;throw conflict;}});
+ let input;const store=s3Store({send:async c=>{if(c.constructor.name==='GetObjectCommand')return {ETag:'old',...leaseResult({owner:'old',expiresAt:0})};input=c.input;throw conflict;}});
  assert.equal(await store.acquireLease('destination',{owner:'new',expiresAt:20},10),null);assert.equal(input.IfMatch,'old');
 });
 test('lease release cannot overwrite a newer owner and never deletes',async()=>{
@@ -66,4 +66,21 @@ test('missing metadata returns null and provider failures expose no provider tex
  assert.equal(await s3Store({send:async()=>{throw absent;}}).readMetadata('protected-backups',metadataKey),null);
  const store=s3Store({send:async()=>{throw Error('PRIVATE_PROVIDER_CREDENTIAL');}});
  await assert.rejects(store.readMetadata('protected-backups',metadataKey),rejected('recovery-metadata-unavailable'));
+});
+
+function leaseResult(value) {
+ const bytes=new TextEncoder().encode(JSON.stringify(value));return streamResult([bytes],bytes.length);
+}
+test('lease parsing bounds streamed bytes independently of claimed length and never writes on malformed input',async()=>{
+ for(const result of [streamResult([],4097),streamResult([],-1),streamResult([new Uint8Array(2)],1),streamResult([new Uint8Array(1)],2),streamResult([new Uint8Array([0xc3])],1),streamResult([new TextEncoder().encode('PRIVATE_LEASE_PAYLOAD')],21)]) {
+  let writes=0;const store=s3Store({send:async command=>{if(command.constructor.name==='GetObjectCommand')return {ETag:'old',...result};writes++;}});
+  await assert.rejects(store.acquireLease('destination',{owner:'new',expiresAt:20},10),error=>error instanceof RecoveryError&&!error.message.includes('PRIVATE_LEASE_PAYLOAD'));
+  assert.equal(writes,0);
+ }
+});
+test('an overflowing lease stream is cancelled without acquiring or releasing another writer',async()=>{
+ let cancelled=false,writes=0;const body=new ReadableStream({start(c){c.enqueue(new Uint8Array(3));},cancel(){cancelled=true;}});
+ const store=s3Store({send:async command=>{if(command.constructor.name==='GetObjectCommand')return {ETag:'old',ContentLength:2,Body:body};writes++;}});
+ await assert.rejects(store.acquireLease('destination',{owner:'new',expiresAt:20},10),rejected('metadata-size-invalid'));
+ assert.equal(cancelled,true);assert.equal(writes,0);
 });

@@ -50,7 +50,9 @@ incident-clean point or a successful native restore. `loadRestoreSelection`
 requires an explicit generation ID and loads only its completion record and
 manifest. The S3 adapter bounds headers and streamed byte counts, rejects
 truncation and invalid UTF-8, and cancels rejected streams. Completion metadata
-is limited to 4 KiB; manifests to 2 MiB. Loading and every object HEAD share one
+is limited to 4 KiB; manifests to 2 MiB. Lease reads use the same strict stream
+bounds and UTF-8 validation, with a 4 KiB ceiling. Invalid or oversized lease
+responses never acquire or release another writer; rejected streams are cancelled. Loading and every object HEAD share one
 work deadline. Missing or mismatched generations never fall back to a different
 recovery point. The independent recovery credential path and actual protected
 restore drill still need integration before activation.
