@@ -1,0 +1,10 @@
+{
+  "resource": "example-app",
+  "selector": {"prefix": "replace-with-application-uuid-"},
+  "expected": {
+    "Memory": 1073741824,
+    "MemorySwap": 2147483648,
+    "NanoCpus": 1000000000,
+    "healthy": true
+  }
+}

@@ -2060,6 +2060,22 @@ contents with the live hashes before converting only those mounts to supported
 short-form `source:target:ro`. Preserve managed-file ownership and contents, and
 verify the generated deployment before calling the policy durable.
 
+Expand application CPU/memory controls in small named batches. For each app,
+capture multiple memory/process samples and a fresh CPU interval, require tested
+headroom, preserve container/image/start/restart identity, and verify health
+before and after the update. Persist only fields that the installed controller
+supports. Verify native policy values and add explicit replica-aware drift rules.
+CPU/memory persistence does not establish PID or permission containment.
+
+Prove rollback against synthetic data on the same host before production changes.
+Docker ignores zero memory/NanoCPU values in an update: returning to unlimited
+settings may require exact original-config recreation. Preserve image, command,
+environment, data mounts and health checks, retain a failed production container,
+and prove fixture cleanup without touching production. Accept only specifically
+reviewed serialization differences; changed mount identity or security settings
+must fail recovery checks. Keep measured receipts and original snapshots private
+on their host. Do not turn this maintenance procedure into an unreviewed bulk job.
+
 Keep database-only networks internal and separate from public proxy networks. Permit only the application/database pairs that need access; block container access to cloud metadata and host management endpoints. Observe outbound requirements before enforcing an allowlist, including DNS, mail, storage, API callbacks and IPv6. A proxy sharing the database network weakens isolation. A read-only Docker socket mount still permits mutating API calls: remove it where possible or use an authenticated, method/path-restricted discovery API without granting container creation, exec or archive access. Document any management component that still has host-level trust.
 
 For Traefik's non-Swarm Docker provider, the `docker-discovery` template restricts

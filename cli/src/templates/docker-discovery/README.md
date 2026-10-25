@@ -110,5 +110,12 @@ findings stay visible locally without exporting resource names or secrets.
 New controls must be tested and explicitly added to the policy. This check does
 not prove isolation for containers that have no reviewed policy yet.
 
+`app-resources-policy.example.json` is a partial CPU/memory drift profile. Replace
+the selector and use only limits justified by measured headroom and a tested undo
+path. Persist the same settings through the native deployment configuration and
+check each running replica. This profile makes no PID, filesystem, capability,
+user or no-new-privileges claim; those need separate tested controls. Never copy
+a limit across the fleet after testing only one application.
+
 Provider request sources: [Docker provider](https://github.com/traefik/traefik/blob/v3.7.16/pkg/provider/docker/pdocker.go)
 and [shared discovery](https://github.com/traefik/traefik/blob/v3.7.16/pkg/provider/docker/shared.go).
