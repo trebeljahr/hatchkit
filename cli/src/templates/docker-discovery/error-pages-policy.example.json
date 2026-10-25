@@ -1,9 +1,11 @@
 {
-  "schema": 1,
+  "schema": 2,
   "policies": [
     {
       "resource": "proxy-error-pages",
-      "selector": { "name": "coolify-proxy-error-pages" },
+      "selector": {
+        "name": "coolify-proxy-error-pages"
+      },
       "expected": {
         "Memory": 134217728,
         "MemorySwap": 268435456,
@@ -13,8 +15,21 @@
         "noPublishedPorts": true,
         "noHostNamespaces": true,
         "noDirectDockerSocket": true,
-        "networks": ["coolify"],
-        "mountDestinations": ["/www"]
+        "networks": [
+          "coolify"
+        ],
+        "mountDestinations": [
+          "/www"
+        ],
+        "ReadonlyRootfs": true,
+        "noNewPrivileges": true,
+        "CapDrop": [
+          "ALL"
+        ],
+        "CapAdd": [],
+        "readOnlyMountDestinations": [
+          "/www"
+        ]
       }
     }
   ]

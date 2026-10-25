@@ -2262,11 +2262,13 @@ rejecting unrelated container changes. Verify its image, command, read-only
 `/www` mount, no public ports/socket and actual static response before bounding
 it. The tested resource profile is 128 MiB memory, 256 MiB combined memory/swap,
 0.25 CPU and 64 PIDs; `error-pages-policy.example.json` records these checks.
-This profile retains its root user and does not establish read-only root or
-`no-new-privileges`. Docker retains resource updates across restarts, and the
-inspected native helper starts an existing container. Deleting/recreating it
-can restore upstream defaults; keep drift alerts and review that lifecycle in
-the controller compatibility work.
+The separately tested permission extension adds read-only root, no capabilities
+and no-new-privileges while retaining the root user. The example includes these
+controls and an explicit read-only HTML-bind requirement; use it only after a
+same-host compatibility canary. Docker retains resource updates across restarts,
+and native setup starts an existing helper. Deleting/recreating it can restore
+upstream defaults; keep drift alerts and review that lifecycle in controller
+compatibility work.
 
 Close incident credentials at their issuer: removing an environment variable does not revoke an OAuth client secret, mail API key or controller token. Identify the exact credential and dependent clients, create/test the replacement, then revoke the old credential and verify rejection. Keep provider account audit evidence and original incident artifacts. Never print credential values into the patch ledger.
 
