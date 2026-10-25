@@ -12,7 +12,7 @@ CONFIG = Path('/etc/hatchkit-security/container-policy.json')
 STATUS = Path('/var/lib/hatchkit-backups/container-policy-status.json')
 EXPECTED_FIELDS = {'Memory','MemorySwap','NanoCpus','PidsLimit','ReadonlyRootfs','noNewPrivileges',
                    'uid','imageId','healthy','CapAdd','CapDrop','noHostNamespaces','noPublishedPorts',
-                   'networks','mountDestinations','Tmpfs','noDirectDockerSocket','dockerEndpoint'}
+                   'networks','mountDestinations','readOnlyMountDestinations','Tmpfs','noDirectDockerSocket','dockerEndpoint'}
 
 
 def kernel_status(pid):
@@ -63,6 +63,10 @@ def evaluate(containers, policies, proc=kernel_status):
     for policy in policies:
         if not isinstance(policy.get('expected'),dict) or set(policy['expected'])-EXPECTED_FIELDS:
             raise ValueError('Unsupported reviewed control field')
+        readonly = policy['expected'].get('readOnlyMountDestinations', [])
+        if (not isinstance(readonly,list) or any(not isinstance(path,str) or not path.startswith('/') for path in readonly)
+                or len(set(readonly))!=len(readonly)):
+            raise ValueError('Invalid reviewed read-only mount list')
         selector = policy['selector']
         if set(selector) == {'name'}:
             selected = [d for d in containers if d['Name'].lstrip('/') == selector['name']]
@@ -101,6 +105,9 @@ def evaluate(containers, policies, proc=kernel_status):
                 require(set(d['NetworkSettings']['Networks']) == set(expected['networks']), 'isolatedNetworks')
             if 'mountDestinations' in expected:
                 require({m['Destination'] for m in d['Mounts']} == set(expected['mountDestinations']), 'mounts')
+            if 'readOnlyMountDestinations' in expected:
+                readonly={m['Destination'] for m in d['Mounts'] if m.get('RW') is False}
+                require(set(expected['readOnlyMountDestinations']) <= readonly, 'readOnlyMounts')
             if 'Tmpfs' in expected:
                 actual = {path: tmpfs_options(value) for path, value in (host.get('Tmpfs') or {}).items()}
                 wanted = {path: tmpfs_options(value) for path, value in expected['Tmpfs'].items()}

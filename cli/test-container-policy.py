@@ -6,6 +6,16 @@ def fixture():
  return {'Name':'/proxy','Image':'sha256:reviewed','State':{'Running':True,'Pid':123,'Health':{'Status':'healthy'}},'HostConfig':{'Memory':128,'ReadonlyRootfs':True,'SecurityOpt':['no-new-privileges:true'],'CapDrop':['ALL'],'CapAdd':None,'PortBindings':{},'Privileged':False},'Mounts':[], 'Config':{'Cmd':['--providers.docker.endpoint=tcp://discovery:2375'],'Env':['PRIVATE=must-not-leak']},'NetworkSettings':{'Networks':{'internal':{}}}}
 def policy():return {'resource':'proxy','selector':{'name':'proxy'},'expected':{'Memory':128,'ReadonlyRootfs':True,'noNewPrivileges':True,'uid':65532,'imageId':'sha256:reviewed','healthy':True,'CapDrop':['ALL'],'CapAdd':[],'noPublishedPorts':True,'noHostNamespaces':True,'networks':['internal'],'noDirectDockerSocket':True,'dockerEndpoint':'tcp://discovery:2375'}}
 class Policy(unittest.TestCase):
+ def test_readonly_mounts_must_really_be_readonly(self):
+  d=fixture();d['Mounts']=[{'Type':'bind','Source':'/synthetic','Destination':'/www','RW':False}]
+  rule=policy();rule['expected']['readOnlyMountDestinations']=['/www']
+  check=lambda:p.evaluate([d],[rule],lambda pid:{'uid':65532,'nnp':1})
+  self.assertEqual(check(),[])
+  d['Mounts'][0]['RW']=True;self.assertIn('readOnlyMounts',[x['field']for x in check()])
+  del d['Mounts'][0]['RW'];self.assertIn('readOnlyMounts',[x['field']for x in check()])
+  for invalid in ['/www',['/www','/www'],['relative'],[None]]:
+   rule['expected']['readOnlyMountDestinations']=invalid
+   with self.assertRaises(ValueError):p.evaluate([], [rule])
  def test_unknown_security_fields_fail_instead_of_silently_passing(self):
   for containers in [[fixture()],[]]:
    rule=policy();rule['expected']['PidsLimits']=256

@@ -2562,3 +2562,34 @@ Writable bind mounts remain writable under a read-only container root. Narrow
 proxy configuration and certificate write access separately, with a tested
 renewal/recovery path. Preserving a compatible existing data mount is not proof
 that this remaining host-filesystem boundary is closed.
+
+
+#### Native static error-page helper
+
+A native proxy start can create `coolify-proxy-error-pages` outside Compose.
+Inspect the installed controller's `setupProxyErrorPageContainer` method before
+allowing this side effect. Admit only its exact reviewed image, static HTTP
+command, isolated `coolify` network and read-only `/www` bind. Require an
+administrator-owned HTML-only directory without CGI, executable files or HTTP
+configuration overrides. A renamed image is not sufficient evidence.
+
+The tested shared-host profile uses 128 MiB memory, 256 MiB combined memory/swap,
+0.25 CPU, 64 PIDs, read-only root, no capabilities and no-new-privileges. Test
+HTTP on actual port 80 and restart using synthetic HTML, then test the real
+proxy-to-helper route. Preserve the original helper until recovery is checked;
+disable its restart policy while it is stopped. Verify unrelated workloads do
+not restart. Review each host's exact image independently.
+
+Normal native setup starts an existing helper and preserves these controls.
+Deletion/recreation can restore the controller's unsafe defaults. Call the real
+native setup once after hardening and verify unchanged container identity,
+start/restart counters, static content and kernel controls. Do not claim
+controller-wide enforcement. Drift monitoring must require both the reviewed
+image and the HTML bind's actual read-only flag; a read-only container root
+alone does not protect a writable bind. `readOnlyMountDestinations` expresses
+that separate requirement and rejects missing or writable mount metadata.
+
+Record the extra image in final-image advisory coverage. A functional static
+page canary proves compatibility; it does not clear package advisories or justify
+copying an exception from a different BusyBox image. Retain original deadlines
+until the new image has its own scan and vendor applicability review.
