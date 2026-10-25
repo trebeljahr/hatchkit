@@ -2509,3 +2509,31 @@ Bookmark these — they're consistently high-quality for Linux sysadmin topics:
 | [Linux Audit](https://linux-audit.com/) | Focused specifically on Linux security auditing and hardening. |
 | [Tailscale Blog](https://tailscale.com/blog) | Exceptionally well-written technical posts on networking, NAT, DNS, and VPN architecture. |
 | [Cloudflare Learning Center](https://www.cloudflare.com/learning/) | Clear, visual explanations of networking and security concepts (DDoS, DNS, TLS, etc.). Great for building mental models. |
+
+### Proxy access to databases when the native parser joins shared networks
+
+Inspect the installed generator before relying on a network split. The current
+native service parser adds its resource network back to each component; simply
+adding an internal backend network does not remove that shared path. A compatible
+host guard can deny direct proxy-to-database traffic while the full split is
+prepared. Explicitly select database names; never infer a permit policy from the
+current fleet.
+
+The tested guard hooks each actual proxy host-veth ingress with its own nftables
+netdev table and drops IP traffic to the selected database addresses. Test on an
+internal synthetic network, including undo/reapply and proxy replacement. Verify
+application connectivity and real routes after applying to production. Match the
+kernel ingress device so packet source-address spoofing cannot bypass the direct
+access rule. Do not claim this prevents Layer 2 ARP spoofing or substitutes for
+removing unnecessary raw-socket capabilities.
+
+Same-bridge traffic can bypass iptables forwarding when bridge netfilter is not
+enabled. Test the real path; do not enable a global bridge filtering switch just
+to make an untested rule appear effective. Verify nft's device binding in native
+output when an older JSON renderer omits it. Kernel deletion of a lost veth's
+chains is an exact lifecycle case, not permission to accept other firewall drift.
+A five-second poll plus command latency leaves a convergence window. Missing
+containers, failed reconciliation and stale checks remain externally visible.
+Retain original-host recovery evidence and review authored source/config/units
+against the trusted AIDE database before separate promotion. Never export runtime
+credentials or rendered deployment configuration for this procedure.

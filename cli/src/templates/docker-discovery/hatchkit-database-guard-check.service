@@ -1,0 +1,16 @@
+[Unit]
+Description=Check reverse proxy to database protection
+After=docker.service hatchkit-database-guard.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/database-guard.py check
+Environment=PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python
+User=root
+UMask=0077
+TimeoutStartSec=90s
+CPUQuota=25%
+MemoryMax=128M
+NoNewPrivileges=true
+ProtectHome=read-only
+PrivateTmp=true

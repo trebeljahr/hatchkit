@@ -183,3 +183,42 @@ Rule ordering: [Docker iptables](https://docs.docker.com/engine/network/firewall
 
 Provider request sources: [Docker provider](https://github.com/traefik/traefik/blob/v3.7.16/pkg/provider/docker/pdocker.go)
 and [shared discovery](https://github.com/traefik/traefik/blob/v3.7.16/pkg/provider/docker/shared.go).
+
+# Proxy to database guard
+
+`database-guard.py` is a narrow additional boundary for explicitly named database
+containers on a host where the native controller reattaches its shared service
+network. It places DROP rules on the reverse proxy's actual host veth ingress
+interfaces, covering direct IP traffic to those databases before bridging or
+routing. It changes only its own `netdev hatchkit_db_guard` nftables table;
+existing origin, Docker and metadata rules remain untouched. Namespace-local
+interface names or packet source addresses are not trusted identities.
+
+Do not assume iptables forwarding rules cover same-bridge traffic: the reviewed
+host did not have bridge netfilter enabled. No bridge sysctl/module was changed.
+With nft 1.0.9, JSON omits the ingress device; verify the exact device independently
+in bounded native output. A rule that looks right without a proven hook is not
+verified enforcement.
+
+A five-second poll resolves current containers/interfaces. Changes converge after
+that poll and command latency; this is not zero-gap isolation. Missing containers
+or unexplained firewall changes fail incomplete. Linux removes ingress chains
+when their veth disappears. Accept only that exact subtraction when the observed
+Docker identity/topology changed and the old host devices are independently
+absent; keep every other reviewed rule exact. Never learn an unexplained policy.
+
+The synthetic internal-network canary proves before/apply/undo/reapply behavior,
+application-path preservation and replacement-proxy reconciliation without
+production records, credentials or mounts. Real deployment additionally needs
+TCP-only proxy-denial/application-connection checks for every named database,
+real TLS routes, original-container checks, independent report coupling and a
+separate exact AIDE review. Template files alone activate nothing. Adapt `database-guard.example.json` to
+explicit existing names before installation.
+
+This boundary does not split the actual Layer 2 networks, remove the proxy's raw
+socket capability, prevent ARP spoofing, restrict general outbound traffic or
+isolate app-to-host management access. Keep those risks visible and continue
+capability/network hardening. A real Docker/host restart needs its own verification;
+the replacement-fixture test does not establish it. The optional publisher flag
+`HATCHKIT_DATABASE_GUARD_REQUIRED=1` makes missing/failed guard reporting incomplete
+without transmitting database names, addresses or application records.

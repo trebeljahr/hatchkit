@@ -67,6 +67,8 @@ def metadata():
   checks['process']=with_container_controls(checks['process'],read('container-policy-status.json'))
  if os.environ.get('HATCHKIT_METADATA_GUARD_REQUIRED')=='1':
   checks['process']=with_container_controls(checks['process'],read('metadata-guard-status.json'))
+ if os.environ.get('HATCHKIT_DATABASE_GUARD_REQUIRED')=='1':
+  checks['process']=with_container_controls(checks['process'],read('database-guard-status.json'))
  advisory=read('update-watch-status.json')
  # The host watcher/triage owns vulnerability notifications. This independent
  # monitor owns coverage and failed delivery, not a second copy of its ledger.

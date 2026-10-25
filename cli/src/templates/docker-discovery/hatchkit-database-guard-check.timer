@@ -1,0 +1,11 @@
+[Unit]
+Description=Check proxy to database guard every five minutes
+
+[Timer]
+OnBootSec=3m
+OnUnitActiveSec=5m
+Persistent=true
+Unit=hatchkit-database-guard-check.service
+
+[Install]
+WantedBy=timers.target
