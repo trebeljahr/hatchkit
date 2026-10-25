@@ -11,6 +11,11 @@ for(const [check,age] of Object.entries(CHECKS)) {
 }
 assert.throws(()=>sanitize({...healthy,checks:{...healthy.checks,files:{ok:true,complete:true,checkedAt:new Date(now+300001).toISOString()}}},now),/future/);
 const incomplete=structuredClone(clean);incomplete.checks.images.complete=false;assert.match(issuesFor('host',incomplete,now)[0],/incomplete/);
+const changedFiles=structuredClone(clean);changedFiles.checks.files.ok=false;
+assert.match(issuesFor('host',changedFiles,now)[0],/file integrity reported changes or failed/);
+assert(!issuesFor('host',changedFiles,now)[0].includes('0 finding'));
+const changedProcesses=structuredClone(clean);changedProcesses.checks.process.ok=false;changedProcesses.checks.process.findings=2;
+assert.match(issuesFor('host',changedProcesses,now)[0],/process needs attention \(2 finding/);
 const initializing=structuredClone(clean);
 initializing.checks.images={checkedAt:new Date(now).toISOString(),ok:false,complete:false,findings:0,phase:'initializing',progressAt:new Date(now).toISOString(),startedAt:new Date(now).toISOString()};
 assert.deepEqual(issuesFor('host',initializing,now),[]);

@@ -1908,6 +1908,25 @@ the weekly review. Scanner counts are a triage queue, not a human task: establis
 vendor applicability and exposure and prepare/test a concrete fix before asking
 the operator for a decision.
 
+Investigate alert evidence before suppressing it. AIDE reports changes or a
+failed check, not a process finding count; zero process-style findings must not
+make a failed file check appear clean. Preserve exact maintenance manifests and
+review each changed path before a separate baseline promotion. Keep prior trusted
+databases. An interrupted daily scan is a real coverage gap even when the quick
+check stayed healthy; distinguish SIGTERM from a proved timeout or OOM.
+
+Very young `runc:[2:INIT]` processes can expose `/runc` during container exec.
+Re-observe that exact transition once after 50 ms for the whole process table.
+This is not an allowance: persistent, older or differently named `/runc`
+processes remain findings. Preserve executable/identity race checks and test both
+legitimate exec completion and a persistent forgery.
+
+For an online SQLite maintenance snapshot, leave the source journal unchanged.
+Convert only the newly created snapshot to DELETE journal mode, run integrity
+checks, close it and require no WAL/SHM sidecars before copying it out. Refuse a
+pre-existing snapshot or sidecar; never delete unknown files or allowlist the
+maintenance name. Test the actual helper on isolated synthetic WAL data.
+
 Compare running versions with vendor advisories, repository GHSAs and the CISA known-exploited catalog. An empty product advisory feed does not establish dependency security. Check vendor bulletins that are not published as GHSAs, supported-release lifecycles and distribution backports. Preserve the upstream package/version evidence when assessing a scanner match; a scanner severity alone does not prove an exposed attack path.
 
 If CISA's canonical download is unavailable, use its own

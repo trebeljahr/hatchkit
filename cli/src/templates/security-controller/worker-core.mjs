@@ -44,6 +44,9 @@ export function issuesFor(host, heartbeat, now=Date.now()) {
     if (name === 'images' && (c?.phase === 'failed' || (['initializing','refreshing'].includes(c?.phase) && !freshProgress(c,now)))) issues.push(`${host}: images scan failed or stalled`);
     else if (!c || !c.checkedAt || now-Date.parse(c.checkedAt) > maximum*1000) issues.push(`${host}: ${name} check missing or overdue`);
     else if (!c.complete) issues.push(`${host}: ${name} check incomplete`);
+    else if (!c.ok && !c.findings) issues.push(name === 'files'
+      ? `${host}: file integrity reported changes or failed; inspect its local status`
+      : `${host}: ${name} check unsuccessful; inspect its local status`);
     else if (!c.ok) issues.push(`${host}: ${name} needs attention (${c.findings} finding(s))`);
   }
   return issues;

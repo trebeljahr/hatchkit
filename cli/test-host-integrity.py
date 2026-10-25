@@ -393,6 +393,35 @@ class Detectors(unittest.TestCase):
         self.assertEqual([(f['detector'], f['process'], f['pids'], f['exe']) for f in findings],
                          [('unexpected-process', 'runc:[2:INIT]', [2635850], '/usr/bin/echo')])
 
+    def test_young_runc_bind_path_is_reobserved_after_exec(self):
+        cid=self.fx.container('postgres-fixture','postgres:16',300,argv0=('postgres',))
+        self.fx.process(300,'postgres','/usr/local/bin/postgres',cid)
+        self.fx.process(301,'runc:[2:INIT]','/runc',cid,age=.2)
+        def finish_exec(seconds):
+            self.assertEqual(seconds,hi.RUNC_SETTLE_SECONDS)
+            base=self.fx.proc/'301';(base/'comm').write_text('pg_isready\n')
+            (base/'exe').unlink();os.symlink('/usr/local/bin/pg_isready',base/'exe')
+        self.fx.ticks.append(finish_exec)
+        rows=hi.read_processes(self.fx.host())
+        self.assertEqual([(p['comm'],p['exe'])for p in rows if p['pid']==301],[('pg_isready','/usr/local/bin/pg_isready')])
+        self.assertEqual(self.fx.now,hi.RUNC_SETTLE_SECONDS)
+
+    def test_persistent_runc_bind_name_is_not_allowlisted(self):
+        cid=self.fx.container('postgres-fixture','postgres:16',300,argv0=('postgres',))
+        for pid in [300,301,302]:self.fx.process(pid,'runc:[2:INIT]','/runc',cid,age=.2)
+        rows=hi.read_processes(self.fx.host())
+        found,_=hi.unexpected_processes(rows,self.fx.containers,{},{cid:set()},{cid:['/']})
+        self.assertEqual([(f['process'],f['pids'])for f in found],[('runc:[2:INIT]',[300,301,302])])
+        self.assertEqual(self.fx.now,hi.RUNC_SETTLE_SECONDS)
+
+    def test_old_runc_bind_name_is_reported_without_a_settle_wait(self):
+        cid=self.fx.container('postgres-fixture','postgres:16',300,argv0=('postgres',))
+        self.fx.process(300,'runc:[2:INIT]','/runc',cid,age=900)
+        rows=hi.read_processes(self.fx.host())
+        found,_=hi.unexpected_processes(rows,self.fx.containers,{},{cid:set()},{cid:['/']})
+        self.assertEqual([f['process']for f in found],['runc:[2:INIT]'])
+        self.assertEqual(self.fx.now,0)
+
     def test_derived_image_identity_preserves_narrow_process_checks(self):
         cases = [('clickhouse/clickhouse-server:24.12-alpine', 'clickhouse-serv', '/usr/bin/clickhouse'),
                  ('glitchtip/glitchtip:6.2.6', 'granian', '/usr/local/bin/python3.14')]

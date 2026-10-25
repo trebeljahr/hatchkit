@@ -148,6 +148,7 @@ DELETED = ' (deleted)'
 # a process under that name that lives longer is reported.
 RUNC_CLONE = re.compile(r'^/memfd:runc_cloned')
 RUNC_MAX_AGE = 60
+RUNC_SETTLE_SECONDS = 0.05
 DOCKER_INIT = '/sbin/docker-init'  # Docker bind-mounts its init here for --init
 
 
@@ -280,6 +281,12 @@ def read_process(host, entry, uptime):
 def read_processes(host):
     uptime = read_uptime(host)
     first = [read_process(host, entry, uptime) for entry in host.proc.iterdir() if entry.name.isdigit()]
+    # Newer runc can expose /runc during exec, rather than its memfd pathname.
+    # Re-observe that short transition once for the whole table. This grants
+    # no allowance: a persistent or renamed /runc process is still checked.
+    if any(p and p['comm']=='runc:[2:INIT]' and p['exe']=='/runc'
+           and p.get('age') is not None and 0<=p['age']<1 for p in first):
+        host.sleep(RUNC_SETTLE_SECONDS)
     # execve sets the new binary a moment before the new name, so both reads
     # of the binary can fall inside that moment. Once the whole table is read,
     # milliseconds later, each pair is read again; one that changed is read
@@ -1064,7 +1071,8 @@ def main():
     if args.action == 'failed':
         message_id = send_email(mail_settings(config), '[Hatchkit] Host integrity check did not finish — ' + hostname,
                                 'systemd stopped the ' + ('quick' if args.quick else 'daily') + ' host integrity check before it finished (a timeout, the '
-                                'memory limit, or a crash). Nothing was checked this run.\n' + MAIL_FOOTER)
+                                'memory limit, a crash, or termination). No completed result was produced.\n' +
+                                ('The quick check reports separately from this daily scan.\n' if not args.quick else '') + MAIL_FOOTER)
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
     state, mail_error = check(Host(), work, config, send_email,
