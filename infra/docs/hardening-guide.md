@@ -2073,6 +2073,14 @@ preserve PID, read-only, tmpfs and no-new-privileges flags while still failing t
 reject invalid values; enforce a narrow valid input set and inspect actual
 generated Compose plus kernel state. A helper-only parse is insufficient.
 
+For a native app-generation probe, use an uncommitted clone with jobs/events
+suppressed and a helper that has no network, daemon socket or host-data mounts.
+Compare complete base/candidate Compose with only the explicitly tested control
+fields removed from the difference. Filter ORM-computed attributes against the
+physical schema before cloning, and compare protected real records from physical
+tables. Roll back synthetic rows and remove the helper and its exact new empty
+configuration directory. Never call a full deployment merely to test parsing.
+
 Qualify each app image with an isolated production-mode canary, for example
 UID 1000, read-only root, cap-drop ALL, no-new-privileges, a PID cap, capped
 memory, memory/swap and CPU, and a noexec/nosuid/nodev temporary directory.
