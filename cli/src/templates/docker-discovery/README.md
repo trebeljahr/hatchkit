@@ -78,6 +78,9 @@ parse the private recovery Compose on the controller host and prove an explicit
 pull skips it. Never copy that private YAML to an operator machine or another
 application host. Recovery preparation must not restart services. Validate
 companion images separately when a proxy definition contains multiple services.
+Legacy receipts without a controller image require an explicit review of the
+current exact image before recovery preparation. Record that review separately;
+do not invent historical identity or override a recorded controller mismatch.
 
 Normal saved-configuration restarts retain this setup. **Force-regenerating the
 proxy defaults can drop the broker/network and restore direct socket access.**
