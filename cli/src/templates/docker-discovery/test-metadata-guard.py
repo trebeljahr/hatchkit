@@ -42,6 +42,15 @@ class MetadataBoundary(unittest.TestCase):
             self.assertTrue(state['first'])
             self.assertIsNone(guard.transaction(state,destination,'apply'))
 
+    def test_kernel_option_order_keeps_exact_address_interface_and_action(self):
+        for destination in guard.FAMILIES.values():
+            canonical=table(destination,True)
+            for interface in ['docker0','br+']:
+                canonical=canonical.replace('-i '+interface+' -d '+destination,'-d '+destination+' -i '+interface)
+            self.assertTrue(guard.inspect_table(canonical,destination)['first'])
+            for changed in [canonical.replace(destination,'192.0.2.0/24'),canonical.replace('-i br+','-i eth0'),canonical.replace('-j DROP','-j ACCEPT',1),canonical.replace('-i br+','! -i br+')]:
+                with self.assertRaises(AssertionError):guard.inspect_table(changed,destination)
+
     def test_reorder_moves_only_our_exact_tagged_jump(self):
         destination=next(iter(guard.FAMILIES.values()))
         content=guard.transaction(guard.inspect_table(table(destination,True,False),destination),destination,'apply')

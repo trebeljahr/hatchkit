@@ -23,6 +23,16 @@ def expected_rules(destination):
     return [['-i',interface,'-d',destination,'-j','DROP'] for interface in ['docker0','br+']] + [['-j','RETURN']]
 
 
+def normalized_rule(rule):
+    # iptables -S prints destination before interface. Accept only permutation
+    # of these exact three pairs; extra/duplicate options and negation stay invalid.
+    if len(rule)==6 and len(set(rule[::2]))==3 and set(rule[::2])=={'-i','-d','-j'}:
+        values=dict(zip(rule[::2],rule[1::2]))
+        if values['-j']=='DROP':
+            return ['-i',values['-i'],'-d',values['-d'],'-j','DROP']
+    return rule
+
+
 def inspect_table(text, destination):
     assert len(text) < 4*1024**2, 'Firewall snapshot exceeds review bound'
     rows=[shlex.split(line) for line in text.splitlines() if line.strip()]
@@ -36,7 +46,7 @@ def inspect_table(text, destination):
     assert all(r==['-A','DOCKER-USER',*ANCHOR] for r in references), 'Unexpected reference to owned chain'
     assert len(references)<=1, 'Duplicate owned jump requires review'
     assert not owned or exists, 'Owned rules without chain'
-    assert not exists or owned==expected_rules(destination), 'Owned chain content changed; do not overwrite'
+    assert not exists or [normalized_rule(r)for r in owned]==expected_rules(destination), 'Owned chain content changed; do not overwrite'
     assert exists or not references, 'Jump without owned chain'
     return {'exists':exists,'anchored':bool(references),'first':bool(parent and parent[0]==ANCHOR)}
 
