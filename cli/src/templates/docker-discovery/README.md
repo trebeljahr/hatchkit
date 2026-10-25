@@ -67,8 +67,17 @@ resolves to the running image ID. A manifest digest and image configuration ID
 can differ. Do not construct a repository digest by prefixing an image ID.
 Dedicated game health checks must use their real public RPC prefixes; an
 unrouted container-only health path is not evidence of a proxy failure.
-Rollback restores the exact private canonical configuration through the same
-native actions; inspect concurrent changes before invoking it.
+Rollback restores the private original configuration with a verified runtime
+image pin through the same native actions; inspect concurrent changes first.
+
+Pin recovery to the **observed original runtime image**, even when an older
+saved Compose tag lagged behind that runtime. Preserve the original canonical
+bytes separately; prepare a recovery variant that changes only the image pin
+and sets `pull_policy: never`. Verify the manifest resolves on the target host,
+parse the private recovery Compose on the controller host and prove an explicit
+pull skips it. Never copy that private YAML to an operator machine or another
+application host. Recovery preparation must not restart services. Validate
+companion images separately when a proxy definition contains multiple services.
 
 Normal saved-configuration restarts retain this setup. **Force-regenerating the
 proxy defaults can drop the broker/network and restore direct socket access.**

@@ -2112,6 +2112,14 @@ route, including required RPC prefixes; an unrouted container health path must
 not trigger a proxy restart. Existing Python or Node applications can provide
 the negative network-access probe without installing another runtime in them.
 
+Compare saved proxy tags with the actual original runtime during recovery
+preparation. A stale saved tag must not downgrade a rollback. Retain the original
+canonical bytes, then pin the recovery variant to the observed immutable image
+with `pull_policy: never`. Verify target resolution, private Compose parsing and
+explicit pull skipping without starting the service. Private recovery YAML stays
+on its controller host. Recovery remains usable after scan/canary expiry, while
+concurrent canonical or controller changes still require review.
+
 Inspect native restart side effects as well as Compose services. The installed
 controller can create `coolify-proxy-error-pages` outside Compose for static
 error/maintenance pages. Account for this exact component explicitly and keep
