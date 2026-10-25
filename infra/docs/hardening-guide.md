@@ -2120,6 +2120,15 @@ explicit pull skipping without starting the service. Private recovery YAML stays
 on its controller host. Recovery remains usable after scan/canary expiry, while
 concurrent canonical or controller changes still require review.
 
+Retain private transaction records on the original controller host outside its
+container, with mode 0600 and immutable hash-addressed versions. Container-local
+files can disappear on replacement. If an old record is missing, require the
+original backup bytes to match the recorded pre-change hash, prove the current
+canonical hash and exact runtime images unchanged, and label the reconstruction.
+Do not invent missing historical timestamps or transfer private configuration
+through an operator machine. Reconstructing a record must not start services or
+change live canonical configuration.
+
 Inspect native restart side effects as well as Compose services. The installed
 controller can create `coolify-proxy-error-pages` outside Compose for static
 error/maintenance pages. Account for this exact component explicitly and keep

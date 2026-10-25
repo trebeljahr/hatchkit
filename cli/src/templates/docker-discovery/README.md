@@ -81,6 +81,13 @@ companion images separately when a proxy definition contains multiple services.
 Legacy receipts without a controller image require an explicit review of the
 current exact image before recovery preparation. Record that review separately;
 do not invent historical identity or override a recorded controller mismatch.
+Keep hash-verified, mode-0600 transaction copies outside the controller container
+on its original host. Container-local storage alone can disappear during a
+controller replacement. Retain the original and candidate hashes, immutable image
+identities and private recovery configuration; never export these through the
+operator machine. Reconstruct a missing record only from hash-matched original
+backup bytes and unchanged canonical/runtime identities, and label reconstruction
+explicitly. A reconstruction must not change live configuration or start services.
 
 Normal saved-configuration restarts retain this setup. **Force-regenerating the
 proxy defaults can drop the broker/network and restore direct socket access.**
