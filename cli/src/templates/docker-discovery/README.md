@@ -201,7 +201,8 @@ in bounded native output. A rule that looks right without a proven hook is not
 verified enforcement.
 
 A five-second poll resolves current containers/interfaces. Changes converge after
-that poll and command latency; this is not zero-gap isolation. Missing containers
+that poll and command latency, with a 30-second service restart backoff after a
+failed cycle; this is not zero-gap isolation. Missing containers
 or unexplained firewall changes fail incomplete. Linux removes ingress chains
 when their veth disappears. Accept only that exact subtraction when the observed
 Docker identity/topology changed and the old host devices are independently
@@ -222,3 +223,29 @@ capability/network hardening. A real Docker/host restart needs its own verificat
 the replacement-fixture test does not establish it. The optional publisher flag
 `HATCHKIT_DATABASE_GUARD_REQUIRED=1` makes missing/failed guard reporting incomplete
 without transmitting database names, addresses or application records.
+
+# Proxy permission profile
+
+`proxy-permissions.example.yml` is a fragment for an existing proxy service, not
+a standalone Compose deployment. Measure current demand and test its exact image
+before merging these keys. A real-host canary should exercise the restricted
+Traefik on real ports 80 and 443, using a fresh synthetic certificate and verified
+TLS, routing/start/die events, idle discovery and cold-start recovery. It should check
+kernel effective/bounding capabilities and no-new-privileges, remove its synthetic
+key/fixtures and preserve production container/image/start/restart identity.
+
+The native controller helper compares the complete parsed configuration outside
+these fields, preserves discovery credentials, images, routes and mounts, and
+retains original configuration privately. It pins the controller image and native
+action hash, records submission intent before dispatch, and refuses duplicate
+application or recovery while its native activity is unfinished. Validate Compose,
+keep a current original-host snapshot/image anchor and verify actual runtime,
+health, TLS identities, companion controls and all existing drift policies after
+the native deployment. A canary or prepared candidate is not proof of live controls.
+
+Read-only root does not make existing writable binds read-only. The original
+proxy data/configuration bind remains a separate permissions review; preserve
+certificate state and test renewal before narrowing its writable locations.
+Do not restore old data when reverting configuration. Do not regenerate proxy
+defaults, change the controller/updater or replace discovery credentials as part
+of applying this fragment.

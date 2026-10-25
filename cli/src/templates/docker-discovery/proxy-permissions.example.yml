@@ -1,0 +1,13 @@
+# Per-service fragment; merge into the existing proxy only after its canary.
+# Preserve image, ports, providers, discovery credentials and data mounts.
+mem_limit: 512m
+memswap_limit: 768m
+cpus: 1
+pids_limit: 128
+read_only: true
+cap_drop:
+  - ALL
+security_opt:
+  - no-new-privileges:true
+tmpfs:
+  - /tmp:rw,nosuid,nodev,noexec,size=16m

@@ -2532,8 +2532,33 @@ enabled. Test the real path; do not enable a global bridge filtering switch just
 to make an untested rule appear effective. Verify nft's device binding in native
 output when an older JSON renderer omits it. Kernel deletion of a lost veth's
 chains is an exact lifecycle case, not permission to accept other firewall drift.
-A five-second poll plus command latency leaves a convergence window. Missing
+A five-second poll plus command latency, and a 30-second restart backoff after a
+failed cycle, leave a convergence window. Missing
 containers, failed reconciliation and stale checks remain externally visible.
 Retain original-host recovery evidence and review authored source/config/units
 against the trusted AIDE database before separate promotion. Never export runtime
 credentials or rendered deployment configuration for this procedure.
+
+### Native proxy permission rollout
+
+Use the exact running image for a synthetic proxy canary. Test real ports 80/443,
+certificate-verified TLS with a synthetic CA/certificate, routing, discovery
+start/die events, idle streams and cold recovery. Prove zero effective/bounding
+capabilities and kernel no-new-privileges. The tested 512 MiB memory, 768 MiB
+combined memory/swap, one CPU, 128 PIDs, read-only root and restricted 16 MiB tmpfs
+are a starting profile that still requires current same-host sizing. A short
+maintenance sample does not replace monitoring future demand and latency.
+
+Prepare the entire native candidate and preserve every unrelated configuration
+field. Validate the generated Compose without starting services. Keep the
+controller image/native action identity, submission intent and private original
+configuration; inspect ambiguous outcomes instead of dispatching twice. Finish
+the owned activity before recovery. Verify original image/data/mounts, credentials,
+commands, routing labels, TLS identities, companion permissions and unrelated
+application identities after the native restart. Use the current certificate/data
+state for recovery; a configuration rollback must not restore an old database.
+
+Writable bind mounts remain writable under a read-only container root. Narrow
+proxy configuration and certificate write access separately, with a tested
+renewal/recovery path. Preserving a compatible existing data mount is not proof
+that this remaining host-filesystem boundary is closed.
