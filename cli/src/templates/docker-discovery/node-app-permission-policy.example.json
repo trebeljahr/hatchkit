@@ -1,0 +1,19 @@
+{
+  "resource": "example-node-app",
+  "selector": {"prefix": "replace-with-application-uuid-"},
+  "expected": {
+    "Memory": 1073741824,
+    "MemorySwap": 2147483648,
+    "NanoCpus": 1000000000,
+    "PidsLimit": 256,
+    "ReadonlyRootfs": true,
+    "noNewPrivileges": true,
+    "uid": 1000,
+    "CapDrop": ["ALL"],
+    "CapAdd": [],
+    "healthy": true,
+    "noHostNamespaces": true,
+    "noDirectDockerSocket": true,
+    "Tmpfs": {"/tmp": "rw,nosuid,nodev,noexec,size=64m,mode=1777"}
+  }
+}

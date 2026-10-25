@@ -6,6 +6,11 @@ def fixture():
  return {'Name':'/proxy','Image':'sha256:reviewed','State':{'Running':True,'Pid':123,'Health':{'Status':'healthy'}},'HostConfig':{'Memory':128,'ReadonlyRootfs':True,'SecurityOpt':['no-new-privileges:true'],'CapDrop':['ALL'],'CapAdd':None,'PortBindings':{},'Privileged':False},'Mounts':[], 'Config':{'Cmd':['--providers.docker.endpoint=tcp://discovery:2375'],'Env':['PRIVATE=must-not-leak']},'NetworkSettings':{'Networks':{'internal':{}}}}
 def policy():return {'resource':'proxy','selector':{'name':'proxy'},'expected':{'Memory':128,'ReadonlyRootfs':True,'noNewPrivileges':True,'uid':65532,'imageId':'sha256:reviewed','healthy':True,'CapDrop':['ALL'],'CapAdd':[],'noPublishedPorts':True,'noHostNamespaces':True,'networks':['internal'],'noDirectDockerSocket':True,'dockerEndpoint':'tcp://discovery:2375'}}
 class Policy(unittest.TestCase):
+ def test_unknown_security_fields_fail_instead_of_silently_passing(self):
+  for containers in [[fixture()],[]]:
+   rule=policy();rule['expected']['PidsLimits']=256
+   with self.assertRaisesRegex(ValueError,'Unsupported reviewed control'):
+    p.evaluate(containers,[rule],lambda pid:{'uid':65532,'nnp':1})
  def test_discovery_pair_checks_authentication_without_reporting_values(self):
   token='a'*43;a=fixture();b=fixture();a['Name']='/client';b['Name']='/broker'
   a['Config']['Cmd']=['--providers.docker.username=discovery','--providers.docker.password='+token]

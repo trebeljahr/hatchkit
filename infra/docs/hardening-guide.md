@@ -2067,6 +2067,27 @@ before and after the update. Persist only fields that the installed controller
 supports. Verify native policy values and add explicit replica-aware drift rules.
 CPU/memory persistence does not establish PID or permission containment.
 
+Recheck controller capabilities after upstream upgrades. A prior parser defect
+may be fixed without a custom controller. The current valid-option fixture can
+preserve PID, read-only, tmpfs and no-new-privileges flags while still failing to
+reject invalid values; enforce a narrow valid input set and inspect actual
+generated Compose plus kernel state. A helper-only parse is insufficient.
+
+Qualify each app image with an isolated production-mode canary, for example
+UID 1000, read-only root, cap-drop ALL, no-new-privileges, a PID cap, capped
+memory, memory/swap and CPU, and a noexec/nosuid/nodev temporary directory.
+Exercise the app's real flows (registration, writes, WebSocket updates,
+persistent sessions/data after restart) and denied root writes on synthetic
+data. A native same-image deployment then verifies those live permissions,
+kernel cgroups, original data files/volumes, read-only integrity/query checks
+and unchanged runtime credentials. Each app profile needs its own functional
+canary and native deployment proof.
+
+Unknown drift-policy fields must fail incomplete rather than silently pass.
+Use config schema 2 with newer controls so a stale schema-1-only checker cannot
+pretend to enforce them. Keep existing profiles and review checker/policy updates
+against the trusted integrity baseline before acceptance.
+
 Prove rollback against synthetic data on the same host before production changes.
 Docker ignores zero memory/NanoCPU values in an update: returning to unlimited
 settings may require exact original-config recreation. Preserve image, command,

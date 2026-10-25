@@ -10,6 +10,9 @@ import subprocess
 
 CONFIG = Path('/etc/hatchkit-security/container-policy.json')
 STATUS = Path('/var/lib/hatchkit-backups/container-policy-status.json')
+EXPECTED_FIELDS = {'Memory','MemorySwap','NanoCpus','PidsLimit','ReadonlyRootfs','noNewPrivileges',
+                   'uid','imageId','healthy','CapAdd','CapDrop','noHostNamespaces','noPublishedPorts',
+                   'networks','mountDestinations','Tmpfs','noDirectDockerSocket','dockerEndpoint'}
 
 
 def kernel_status(pid):
@@ -58,6 +61,8 @@ def discovery_pair(containers, pair):
 def evaluate(containers, policies, proc=kernel_status):
     findings = []
     for policy in policies:
+        if not isinstance(policy.get('expected'),dict) or set(policy['expected'])-EXPECTED_FIELDS:
+            raise ValueError('Unsupported reviewed control field')
         selector = policy['selector']
         if set(selector) == {'name'}:
             selected = [d for d in containers if d['Name'].lstrip('/') == selector['name']]
@@ -115,7 +120,7 @@ def main():
     report = {'checkedAt': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'), 'ok': False, 'complete': False, 'findings': []}
     try:
         config = json.loads(CONFIG.read_text())
-        assert config['schema'] == 1 and 0 < len(config['policies']) <= 100
+        assert config['schema'] in (1,2) and 0 < len(config['policies']) <= 100
         ids = subprocess.check_output(['docker', 'ps', '-q'], text=True, timeout=15).split()
         containers = json.loads(subprocess.check_output(['docker', 'inspect', *ids], timeout=30)) if ids else []
         report['findings'] = evaluate(containers, config['policies'])

@@ -117,6 +117,16 @@ check each running replica. This profile makes no PID, filesystem, capability,
 user or no-new-privileges claim; those need separate tested controls. Never copy
 a limit across the fleet after testing only one application.
 
+`node-app-permission-policy.example.json` is a stronger **per-app tested** example.
+It requires a checker with strict field/Tmpfs support; set the enclosing config
+to schema 2 so older schema-1-only checkers fail incomplete instead of ignoring
+new fields. Replace the selector, preserve the existing policy set and adapt the
+UID, writable data mounts and temporary space to the actual application. Check
+kernel UID, capabilities, no-new-privileges, cgroup limits and a denied root write.
+Prove authenticated application traffic, data writes, realtime and restart
+recovery on synthetic data before production. Do not add a permission claim to
+drift policy until both native generation/deployment and live controls pass.
+
 # Provider metadata guard
 
 `metadata-guard.py` owns only `HATCHKIT-METADATA` and its tagged
