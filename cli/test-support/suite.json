@@ -19,6 +19,7 @@
   "test-identifiers.ts",
   "test-feature-contract.ts",
   "test-scaffold.ts",
+  "test-runtime-startup.ts",
   "test-feature-matrix.ts",
   "test-update-flags.ts",
   "test-desktop-shell.ts",

@@ -2138,6 +2138,17 @@ console.log("\n── build pipeline: engines.node detection + created/overwritt
   checks.push(["deploy.yml (s3: false): no S3_* / AWS_* env", !/^\s+(S3_|AWS_)/m.test(noS3)]);
   checks.push(["deploy.yml (s3: false): E2E run kept", noS3.includes("npx playwright test")]);
 
+  scaffoldBuildPipeline({projectDir: tmp, projectName: "test-app", ghOwner: "owner",
+    entrypoint: "dist/index.js", port: 3000, surfaces: "fullstack", defaultBranch: "main", force: true});
+  const serverImage = readFileSync(join(tmp, "Dockerfile"), "utf-8");
+  const startup = JSON.parse(serverImage.split("\n").find((line) => line.startsWith("CMD "))!.slice(4)) as string[];
+  checks.push(["server startup uses only its bundled dotenvx and explicit production file",
+    startup[2]?.startsWith("exec ./node_modules/.bin/dotenvx run -f .env.production -- node ") === true]);
+  checks.push(["server build/runtime do not fetch an unlocked dotenvx tool",
+    !/\b(?:npx|pnpm dlx)\b/.test(serverImage.split("\n").filter((line) => !/^\s*(?:#|\/\/)/.test(line)).join("\n")) && serverImage.includes("test -x /prod/node_modules/.bin/dotenvx")]);
+  checks.push(["server build decrypts inside the server package with its locked tool",
+    serverImage.includes("pnpm --filter @test-app/server exec dotenvx run -f .env.production -- pnpm run build")]);
+
   let ok = true;
   for (const [n, c] of checks) {
     console.log(`  ${c ? "✓" : "✗"} ${n}`);

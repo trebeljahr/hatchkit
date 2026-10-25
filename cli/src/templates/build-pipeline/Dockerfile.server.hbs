@@ -60,13 +60,15 @@ RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION
     }
 RUN pnpm --filter @{{name}}/shared run build
 RUN --mount=type=secret,id=dotenvx_private_key,env=DOTENV_PRIVATE_KEY_PRODUCTION \
-    pnpm dlx @dotenvx/dotenvx run -- pnpm --filter @{{name}}/server run build
+    pnpm --filter @{{name}}/server exec dotenvx run -f .env.production -- pnpm run build
 # pnpm deploy bundles prod deps without symlinks into a self-contained
 # directory at /prod — copies the package's files (including dist) +
 # inlined node_modules for every prod dep including workspace deps.
 # --legacy required on pnpm v10+ which otherwise refuses with
 # ERR_PNPM_DEPLOY_NONINJECTED_WORKSPACE.
 RUN pnpm --filter @{{name}}/server --prod --legacy deploy /prod
+# A missing runtime tool must fail the build, before a deployment starts.
+RUN test -x /prod/node_modules/.bin/dotenvx || { echo "ERROR: @dotenvx/dotenvx must be a locked production dependency of packages/server." >&2; exit 1; }
 
 # ── Stage 3: Runtime ─────────────────────────────────────────────────
 FROM node:${NODE_VERSION}-alpine AS runner
@@ -116,6 +118,6 @@ ENTRYPOINT ["/usr/local/bin/drain-entrypoint"]
 EXPOSE {{port}}
 # `dotenvx run` reads .env.production (encrypted, committed) and
 # decrypts in-process using DOTENV_PRIVATE_KEY_PRODUCTION before
-# spawning the actual server. corepack isn't enabled in this stage,
-# so we fetch dotenvx via npx instead of pnpm dlx.
-CMD ["sh", "-c", "npx --yes @dotenvx/dotenvx run -- node --require /usr/local/lib/drain.cjs {{entrypoint}}"]
+# spawning the actual server. Use the locked binary copied with /prod;
+# startup requires no package-registry access or package-manager download.
+CMD ["sh", "-c", "exec ./node_modules/.bin/dotenvx run -f .env.production -- node --require /usr/local/lib/drain.cjs {{entrypoint}}"]

@@ -2635,3 +2635,29 @@ with exact metadata equivalence and unchanged credential/unit metadata. Review
 the authored source and parent timestamps against trusted AIDE hashes before
 separate baseline promotion. Diagnostic Python imports must keep bytecode in
 `/var/cache/hatchkit-security/python`, outside monitored source directories.
+
+
+### Lock startup tools into the image
+
+A patched Node executable does not update npm's bundled dependencies or an
+application's separate Undici copy. Inspect actual package paths and the built-in
+`process.versions.undici` separately. A newer npm release can still carry a
+vulnerable dependency; do not treat the latest CLI version as proof of remediation.
+For the October Undici content-encoding denial of service, upstream patched
+6.29.1, 7.30.1 and 8.12.2; select the compatible branch for each actual package.
+[Upstream advisory](https://github.com/nodejs/undici/security/advisories/GHSA-xjj6-f33q-929c).
+
+Generic server templates now run the locked production dependency's local
+`dotenvx` binary with explicit `.env.production`, at build and runtime. They do
+not download a CLI through `npx` or `pnpm dlx` at startup. Require
+`@dotenvx/dotenvx` in the server package's production dependencies and its frozen
+lockfile; fail the build if the deployed production bundle lacks its executable.
+Keep the server's own working directory for build-time decryption. Existing
+operator-provided environment values retain precedence. These template changes
+require rebuilding an application before affecting its running container.
+
+The legacy standalone Node template defaults to 24.22.1 instead of Node 20.
+Revisit that pinned default when vendor security floors change. Update and scan
+both build and runtime stages. Keep unused package-manager/development tooling
+out of a runtime only after proving the app, maintenance tools and deployment
+path do not require it; preserve a working rollback and inspect the final image.
