@@ -2607,3 +2607,31 @@ UID-0 read/traverse ACL on two explicit directories avoids restoring broad DAC
 capabilities or changing owner/group/other access. It grants no directory write
 permission. Verify the exact ACL after the native restart and retain its prior
 form for recovery. Check later controller operations for permission resets.
+
+
+### Diagnose independent coverage alerts
+
+A successful publisher service means its HTTP request completed or was deferred
+by rate limiting. Check the actual health metadata before claiming every check
+is healthy. The aggregated process check includes the quick process snapshot
+and each explicitly required container/network guard; an incomplete aggregate
+does not identify its failing component by itself.
+
+Keep root-private local delivery receipts with the exact fixed health metadata
+and the separately summarized required components. Preserve only timestamps,
+booleans, counts, bounded error types and fixed coverage-reason codes. Exclude
+container names, commands, file content, application records and credentials.
+The receipt history keeps 48 recent attempts and separately retains 16 recent
+attention samples through later healthy runs, under a 1 MiB bound. Record intent
+before sending and distinguish accepted, rate-limited and failed delivery.
+Serialize writers, atomically replace mode-0600 history, and fail visibly on
+malformed or oversized history. Do not silently reset evidence.
+
+`/var/lib/hatchkit-backups/health-publisher-history.json` supports attribution of
+future incomplete alerts; it cannot reconstruct missing historical snapshots.
+It does not change remote alert rules, establish a maintenance exemption or
+clear vulnerability findings. Use the normal heartbeat after a code-only update,
+with exact metadata equivalence and unchanged credential/unit metadata. Review
+the authored source and parent timestamps against trusted AIDE hashes before
+separate baseline promotion. Diagnostic Python imports must keep bytecode in
+`/var/cache/hatchkit-security/python`, outside monitored source directories.

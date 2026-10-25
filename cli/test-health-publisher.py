@@ -1,4 +1,4 @@
-import importlib.util,json,pathlib,tempfile,unittest
+import importlib.util,json,pathlib,tempfile,unittest,concurrent.futures,urllib.error
 from unittest.mock import patch
 p=pathlib.Path(__file__).parent/'src/templates/security-controller/publish-health.py'
 spec=importlib.util.spec_from_file_location('pub',p);pub=importlib.util.module_from_spec(spec);spec.loader.exec_module(pub)
@@ -91,5 +91,68 @@ class PublisherBoundary(unittest.TestCase):
   failed=pub.with_container_controls(process,control)
   self.assertFalse(failed['ok']);self.assertEqual(failed['findings'],1);self.assertNotIn('PRIVATE_SECRET',json.dumps(failed))
   self.assertFalse(pub.with_container_controls(process,control|{'complete':False})['complete'])
+
+ def test_diagnostic_components_identify_missing_guard_without_private_details(self):
+  rows={'host-integrity-quick-status.json':{'checkedAt':'2026-10-25T02:00:00Z','ok':True,'skipped':['PRIVATE_CONTAINER: docker diff failed; writable layer not checked.']},'metadata-guard-status.json':{'checkedAt':'2026-10-25T01:58:00Z','ok':False,'complete':False,'error':'CalledProcessError','private':'PRIVATE_DETAIL'}}
+  original=pathlib.Path.read_text
+  def read(path,*a,**kw):
+   if str(path)=='/etc/hatchkit-backups/config.json':return json.dumps({'projects':[]})
+   return original(path,*a,**kw)
+  diagnostics={}
+  with patch.dict(pub.os.environ,{'HATCHKIT_METADATA_GUARD_REQUIRED':'1'}),patch.object(pub,'read',side_effect=lambda n:rows.get(n,{})),patch.object(pathlib.Path,'read_text',read):payload=pub.metadata(diagnostics)
+  self.assertFalse(diagnostics['processSnapshot']['complete']);self.assertEqual(diagnostics['processSnapshot']['coverageFailures'],['writable-layer']);self.assertNotIn('PRIVATE_CONTAINER',json.dumps(diagnostics));self.assertFalse(diagnostics['metadataGuard']['complete'])
+  self.assertEqual(diagnostics['metadataGuard']['errorType'],'CalledProcessError')
+  self.assertNotIn('PRIVATE_DETAIL',json.dumps(diagnostics));self.assertNotIn('components',payload)
+ def test_receipts_preserve_exact_failed_component_and_bound_history(self):
+  with tempfile.TemporaryDirectory()as folder,patch.object(pub,'WORK',pathlib.Path(folder)):
+   payload={'schema':1,'checks':{'process':{'complete':False}}};details={'containerPolicy':{'complete':False,'errorType':'CalledProcessError'}}
+   for i in range(50):
+    pub.record_receipt(str(i),payload,details,'attempted');pub.record_receipt(str(i),payload,details,'accepted')
+   path=pub.WORK/'health-publisher-history.json';r=json.loads(path.read_text())
+   self.assertEqual(len(r['attempts']),48);self.assertEqual(r['attempts'][0]['id'],'2');self.assertEqual(path.stat().st_mode&0o777,0o600)
+   self.assertEqual(r['attempts'][-1]['components'],details);self.assertEqual(r['attempts'][-1]['delivery'],'accepted')
+   self.assertFalse(r['attempts'][-1]['health']['checks']['process']['complete']);self.assertEqual(len(r['attention']),16)
+   for i in range(50,100):
+    pub.record_receipt(str(i),{'schema':1,'checks':{}},{},'attempted');pub.record_receipt(str(i),{'schema':1,'checks':{}},{},'accepted')
+   final=json.loads(path.read_text());self.assertEqual(final['attention'],r['attention']);self.assertEqual(len(final['attempts']),48)
+ def test_receipt_writers_do_not_lose_concurrent_attempts(self):
+  with tempfile.TemporaryDirectory()as folder,patch.object(pub,'WORK',pathlib.Path(folder)):
+   def record(i):
+    pub.record_receipt(str(i),{'schema':1,'checks':{}},{},'attempted');pub.record_receipt(str(i),{'schema':1,'checks':{}},{},'accepted')
+   with concurrent.futures.ThreadPoolExecutor(max_workers=8)as pool:list(pool.map(record,range(16)))
+   rows=json.loads((pub.WORK/'health-publisher-history.json').read_text())['attempts']
+   self.assertEqual({r['id']for r in rows},{str(i)for i in range(16)});self.assertTrue(all(r['delivery']=='accepted'for r in rows))
+ def test_invalid_or_oversized_history_is_preserved_and_fails_closed(self):
+  with tempfile.TemporaryDirectory()as folder,patch.object(pub,'WORK',pathlib.Path(folder)):
+   p=pub.WORK/'health-publisher-history.json'
+   for value in ['broken',json.dumps({'schema':2,'attempts':[]}), 'x'*(1024**2+1)]:
+    p.write_text(value)
+    with self.assertRaises(ValueError):pub.record_receipt('one',{'schema':1,'checks':{}},{},'attempted')
+    self.assertEqual(p.read_text(),value)
+ def test_delivery_receipts_distinguish_acceptance_rate_limit_and_failure_without_credentials(self):
+  for outcome in ['accepted','rate-limited','failed']:
+   with self.subTest(outcome=outcome),tempfile.TemporaryDirectory()as folder,patch.object(pub,'WORK',pathlib.Path(folder)):
+    cfg={'url':'https://security-monitor.example.workers.dev/ping/ops-vps','token':'A'*43}
+    original=pathlib.Path.read_text
+    def read(path,*a,**kw):
+     if str(path)=='/etc/hatchkit-security/publisher.json':return json.dumps(cfg)
+     return original(path,*a,**kw)
+    class Response:
+     status=200
+     def __enter__(self):return self
+     def __exit__(self,*args):pass
+     def read(self,*args):return b'{"accepted":true}'
+    class Opener:
+     def open(self,*args,**kw):
+      if outcome=='rate-limited':raise urllib.error.HTTPError(cfg['url'],429,'fixture',{},None)
+      if outcome=='failed':raise urllib.error.URLError('PRIVATE_PROVIDER_DETAIL')
+      return Response()
+    with patch.object(pathlib.Path,'read_text',read),patch.object(pub.socket,'gethostname',return_value='ops-vps'),patch.object(pub,'metadata',return_value={'schema':1,'checks':{}}),patch.object(pub.urllib.request,'build_opener',return_value=Opener()):
+     if outcome=='failed':
+      with self.assertRaises(urllib.error.URLError):pub.main()
+     else:pub.main()
+    text=(pub.WORK/'health-publisher-history.json').read_text();r=json.loads(text)['attempts'][-1]
+    self.assertEqual(r['delivery'],outcome)
+    for private in [cfg['token'],'PRIVATE_PROVIDER_DETAIL','Authorization',cfg['url']]:self.assertNotIn(private,text)
 
 if __name__=='__main__':unittest.main()
