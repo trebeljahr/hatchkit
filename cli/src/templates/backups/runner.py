@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import uuid
+import xml.etree.ElementTree as ET
 
 
 class BackupError(RuntimeError):
@@ -175,6 +176,17 @@ def docker_shell(container, script, output=None, timeout=1800):
     return run(['docker', 'exec', container['Id'], 'sh', '-ec', script], output=output, timeout=timeout)
 
 
+def clickhouse_query(container, query):
+    # Keep runtime credentials out of shell and clickhouse-client argv. The
+    # original-host inspector supplies XML through stdin to a private file.
+    env = dict(value.split('=', 1) for value in container['Config'].get('Env', []) if '=' in value)
+    config = ET.Element('config')
+    ET.SubElement(config, 'user').text = env.get('CLICKHOUSE_USER') or 'default'
+    ET.SubElement(config, 'password').text = env.get('CLICKHOUSE_PASSWORD') or ''
+    script = 'umask 077; config="$(mktemp)"; trap \'rm -f "$config"\' EXIT HUP INT TERM; cat > "$config"; clickhouse-client --config-file "$config" --query ' + shell_quote(query)
+    return run(['docker', 'exec', '-i', container['Id'], 'sh', '-ec', script], input=ET.tostring(config))
+
+
 MONGO_AUTH_JS = r'''const admin = db.getSiblingDB("admin");
 const username = process.env.MONGO_INITDB_ROOT_USERNAME;
 const password = process.env.MONGO_INITDB_ROOT_PASSWORD;
@@ -251,9 +263,8 @@ process.exit(result.status??1);'''
         filename = f'hatchkit-{uuid.uuid4().hex}.zip'
         backup_path = f'backups/{filename}'
         query = f"BACKUP ALL TO File('{backup_path}')"
-        auth = 'set --; if [ -n "${CLICKHOUSE_USER:-}" ]; then set -- --user "$CLICKHOUSE_USER" --password "${CLICKHOUSE_PASSWORD:-}"; fi; '
         try:
-            docker_shell(container, auth + 'clickhouse-client "$@" --query ' + shell_quote(query))
+            clickhouse_query(container, query)
             # Relative File paths resolve below ClickHouse's backup directory.
             paths = ['/var/lib/clickhouse/backups/' + backup_path, '/var/lib/clickhouse/' + backup_path, '/' + backup_path]
             for path in paths:

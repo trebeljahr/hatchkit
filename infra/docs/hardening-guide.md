@@ -2826,6 +2826,22 @@ remove its fixtures and leave the existing production firewall unchanged. Live i
 topology checks, retain exact original files, prepare owned-table rollback, test
 real app/database paths and backups, and review the precise integrity diff.
 
+The dated `install-database-egress.py` admits only the exact bundle, prior
+publisher/base guard bytes and reviewed baseline. Feature and network receipts
+must be less than 20 minutes old and bind the actual guard source hashes. Its
+live fixture has no published port, host bind or credentials. All seven reviewed
+app/database TCP paths must pass; all five database paths to the unrelated
+fixture must fail after activation. The fixture handles ordinary socket resets
+so short TCP probes cannot terminate it. Failed attempts and cleanup receipts
+remain on the original host.
+
+Recovery stops only the new units, verifies the current table against recorded
+owned rules (including exact device-loss subtraction), removes that table and
+restores only the original publisher/authored paths. It must refuse unexplained
+firewall or source drift. It never accepts an AIDE baseline. The separate scoped
+review checks publisher SHA-256 and SHA-512 against the trusted baseline, exact
+new payloads and enable links, and only explained parent-directory metadata.
+
 When activated, require its status in the existing external heartbeat with
 `HATCHKIT_DATABASE_EGRESS_REQUIRED=1`. Missing, failed or stopped reporting must
 make the combined process check incomplete/unhealthy; retain the oldest component
@@ -2836,3 +2852,11 @@ An actual fresh-data shutdown/recovery test has passed for Kuma, including the
 app-running/database-down case. The private host parent remains 0700; an explicit
 0755 container bind root lets MariaDB's node UID traverse it despite umask 0077.
 Keep that distinction in disposable fixtures and retain failed-attempt evidence.
+
+ClickHouse backup credentials must enter the container through stdin into an
+XML-escaped, mode-0600 temporary client configuration, removed by an exit trap.
+Never expand runtime passwords into shell or client process arguments. The
+registered native-capture validation can run entirely on the original VPS when
+external upload is not authorized. Preserve registration scope: an unregistered
+cache is not silently added to rolling backups. SQL/ZIP capture checks establish
+backup compatibility; they do not replace the separate restore drills.

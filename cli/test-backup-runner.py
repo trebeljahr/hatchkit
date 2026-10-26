@@ -19,6 +19,21 @@ register_spec.loader.exec_module(register)
 
 
 class BackupSafety(unittest.TestCase):
+    def test_clickhouse_credentials_enter_stdin_and_are_xml_escaped(self):
+        secret = 'synthetic-<&"-password'
+        container = {'Id': 'fixture', 'Config': {'Env': ['CLICKHOUSE_USER=reviewer', 'CLICKHOUSE_PASSWORD=' + secret]}}
+        with patch.object(runner, 'run') as command:
+            runner.clickhouse_query(container, 'SELECT 1')
+        args, kwargs = command.call_args
+        self.assertEqual(args[0][:4], ['docker', 'exec', '-i', 'fixture'])
+        self.assertNotIn(secret, json.dumps(args))
+        self.assertNotIn('--password', json.dumps(args))
+        self.assertIn('umask 077', args[0][-1])
+        self.assertIn('trap', args[0][-1])
+        config = runner.ET.fromstring(kwargs['input'])
+        self.assertEqual(config.findtext('password'), secret)
+        self.assertEqual(config.findtext('user'), 'reviewer')
+
     def test_mongo_secrets_only_enter_child_stdin(self):
         container = {'Id': 'synthetic-mongo', 'Image': 'sha256:fixture', 'Config': {'Image': 'mongo:7'}}
         with tempfile.TemporaryDirectory() as temp, patch.object(runner, 'run') as command:
