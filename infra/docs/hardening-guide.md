@@ -2698,6 +2698,12 @@ For an embedded database, PID-1 exit alone is insufficient evidence of a clean
 database shutdown. Use its synchronous administrative shutdown and confirm the
 database process exited. A recovery handler must also handle a still-running app
 whose database is down; merely calling `docker start` cannot recover that state.
+Freeze only that container's restart policy during the capture so a database
+client error cannot restart its writer while files are copied. Recover the exact
+original policy even on interruption, and retain stopped-state diagnostics.
+Node's exit status after intentional SQL shutdown does not replace database
+shutdown proof. Verify the entire capture/recovery procedure on disposable data
+before using it against production.
 
 Run the physical copy with no network or published ports and explicit resource
 limits. Verify the original database can read it, then start the candidate on
