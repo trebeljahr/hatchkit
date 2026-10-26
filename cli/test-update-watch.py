@@ -1149,6 +1149,18 @@ class GithubFeedCache(unittest.TestCase):
         self.assertEqual(uw.Feeds(get=self.reader(get=get)).json(self.URL,pages=True),[{'page':1},{'page':2}])
         self.assertEqual(self.calls,[self.URL,following])
 
+    def test_read_only_scan_creates_no_files_and_still_backs_off_in_memory(self):
+        until=self.now+dt.timedelta(minutes=40)
+        def limited(url):self.calls.append(url);raise uw.FeedRateLimit(until)
+        reader=self.reader(get=limited,readonly=True)
+        for url in [self.URL,self.URL+'&page=2']:
+            with self.assertRaises(uw.FeedRateLimit):reader(url)
+        self.assertEqual(len(self.calls),1);self.assertFalse(reader.directory.exists())
+        self.reader()(self.URL)
+        existing=self.path(self.reader());original=existing.read_bytes()
+        self.reader(readonly=True,fresh=True)(self.URL)
+        self.assertEqual(existing.read_bytes(),original)
+
 
 if __name__ == '__main__':
     unittest.main()

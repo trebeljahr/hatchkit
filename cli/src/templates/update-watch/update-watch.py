@@ -297,12 +297,19 @@ class GithubFeedReader:
     MAX_BYTES = 1024**2
     MAX_ENTRIES = 64
 
-    def __init__(self, work, get=http_get, clock=None, fresh=False):
+    def __init__(self, work, get=http_get, clock=None, fresh=False, readonly=False):
         self.directory = Path(work) / 'github-feeds'
-        self.directory.mkdir(mode=0o700, exist_ok=True)
-        s = self.directory.lstat()
-        if not stat.S_ISDIR(s.st_mode) or s.st_uid != os.geteuid() or stat.S_IMODE(s.st_mode) != 0o700:
-            raise FeedError('Unsafe GitHub feed cache directory')
+        self.readonly = readonly
+        self.blocked_until = None
+        if not readonly:
+            self.directory.mkdir(mode=0o700, exist_ok=True)
+        try:
+            s = self.directory.lstat()
+            if not stat.S_ISDIR(s.st_mode) or s.st_uid != os.geteuid() or stat.S_IMODE(s.st_mode) != 0o700:
+                raise FeedError('Unsafe GitHub feed cache directory')
+        except FileNotFoundError:
+            if not readonly:
+                raise
         self.get, self.clock, self.fresh = get, clock or (lambda:dt.datetime.now(dt.timezone.utc)), fresh
         self.retrieved = []
         self.hits = self.network_reads = 0
@@ -322,6 +329,8 @@ class GithubFeedReader:
             return None
 
     def write(self, path, record):
+        if self.readonly:
+            return
         data = json.dumps(record, ensure_ascii=False).encode()
         if len(data) > self.MAX_BYTES:
             return
@@ -358,6 +367,8 @@ class GithubFeedReader:
             except (KeyError, TypeError, ValueError):
                 pass
         block_path = self.directory / 'primary-rate-limit.json'
+        if self.blocked_until is not None and now < self.blocked_until:
+            raise FeedRateLimit(self.blocked_until)
         blocked = self.read(block_path)
         if blocked:
             try:
@@ -374,6 +385,7 @@ class GithubFeedReader:
             data, link = self.get(url)
         except FeedRateLimit as error:
             if now < error.retry_at <= now + dt.timedelta(hours=2):
+                self.blocked_until = error.retry_at
                 self.write(block_path, {'schema':1,'observedAt':now.isoformat(),'until':error.retry_at.isoformat()})
             raise
         if not isinstance(data, (dict,list)) or not isinstance(link,str):
@@ -1665,6 +1677,7 @@ def main(payload=None):
     cloudflare = load(payload, 'cloudflare', CLOUDFLARE_NAME)
     feeds = Feeds((payload or {}).get('feeds'))
     if args.action == 'scan':
+        feeds = Feeds((payload or {}).get('feeds'), get=GithubFeedReader(work, fresh=args.fresh_feeds, readonly=True))
         report = scan(run_docker, services, feeds, cloudflare=cloudflare, runtime=True, host_runtime=True, image_packages=True, kev=True, host_packages=True)
         report['timer'] = timer_state(work)
         print(json.dumps(report))
