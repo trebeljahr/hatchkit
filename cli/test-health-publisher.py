@@ -3,6 +3,21 @@ from unittest.mock import patch
 p=pathlib.Path(__file__).parent/'src/templates/security-controller/publish-health.py'
 spec=importlib.util.spec_from_file_location('pub',p);pub=importlib.util.module_from_spec(spec);spec.loader.exec_module(pub)
 class PublisherBoundary(unittest.TestCase):
+ def test_required_database_egress_cannot_disappear_or_export_private_destinations(self):
+  rows={'host-integrity-quick-status.json':{'checkedAt':'2026-10-26T02:00:00Z','ok':True},
+        'database-egress-status.json':{'checkedAt':'2026-10-26T01:58:00Z','ok':True,'complete':True,'destinations':['DO_NOT_EXPORT']}}
+  original=pathlib.Path.read_text
+  def read(path,*a,**kw):
+   if str(path)=='/etc/hatchkit-backups/config.json':return json.dumps({'projects':[]})
+   return original(path,*a,**kw)
+  with patch.dict(pub.os.environ,{'HATCHKIT_DATABASE_EGRESS_REQUIRED':'1'}),patch.object(pub,'read',side_effect=lambda name:rows.get(name,{})),patch.object(pathlib.Path,'read_text',read):
+   diagnostics={};good=pub.metadata(diagnostics)['checks']['process']
+   self.assertTrue(good['ok']);self.assertEqual(good['checkedAt'],'2026-10-26T01:58:00+00:00')
+   self.assertNotIn('DO_NOT_EXPORT',json.dumps(diagnostics))
+   rows['database-egress-status.json']['complete']=False
+   self.assertFalse(pub.metadata()['checks']['process']['ok'])
+   del rows['database-egress-status.json']
+   missing=pub.metadata()['checks']['process'];self.assertFalse(missing['complete']);self.assertIsNone(missing['checkedAt'])
  def test_required_metadata_guard_cannot_disappear_or_leak_detail(self):
   rows={'host-integrity-quick-status.json':{'checkedAt':'2026-10-25T02:00:00Z','ok':True},
         'container-policy-status.json':{'checkedAt':'2026-10-25T01:59:00Z','ok':True,'complete':True},

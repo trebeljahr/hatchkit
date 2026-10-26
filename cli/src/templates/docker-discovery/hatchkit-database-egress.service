@@ -1,0 +1,23 @@
+[Unit]
+Description=Restrict reviewed database IP destinations
+Requires=docker.service
+After=docker.service hatchkit-database-guard.service
+PartOf=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/database-egress.py watch
+Environment=PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python
+User=root
+UMask=0077
+Restart=on-failure
+RestartSec=30s
+CPUQuota=25%
+MemoryMax=128M
+TasksMax=64
+NoNewPrivileges=true
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=docker.service

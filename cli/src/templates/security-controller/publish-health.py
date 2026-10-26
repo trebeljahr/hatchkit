@@ -106,7 +106,7 @@ def metadata(diagnostics=None):
   ('full','host-integrity-status.json',()),('advisory','update-watch-status.json',()),
   ('files','file-integrity-status.json',())]}
  if diagnostics is not None:diagnostics['processSnapshot']={**checks['process'],**process_diagnostics}
- for flag,name,key in [('HATCHKIT_CONTAINER_POLICY_REQUIRED','container-policy-status.json','containerPolicy'),('HATCHKIT_METADATA_GUARD_REQUIRED','metadata-guard-status.json','metadataGuard'),('HATCHKIT_DATABASE_GUARD_REQUIRED','database-guard-status.json','databaseGuard')]:
+ for flag,name,key in [('HATCHKIT_CONTAINER_POLICY_REQUIRED','container-policy-status.json','containerPolicy'),('HATCHKIT_METADATA_GUARD_REQUIRED','metadata-guard-status.json','metadataGuard'),('HATCHKIT_DATABASE_GUARD_REQUIRED','database-guard-status.json','databaseGuard'),('HATCHKIT_DATABASE_EGRESS_REQUIRED','database-egress-status.json','databaseEgress')]:
   if os.environ.get(flag)=='1':
    row=read(name)
    if diagnostics is not None:diagnostics[key]=control_summary(row)

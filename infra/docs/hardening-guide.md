@@ -2799,6 +2799,39 @@ actual live profiles pass, and separately review their exact integrity diff.
 New app Compose templates set `pids_limit: 512` for the app/server/client services.
 This bounds process/thread exhaustion; memory, CPU, privileges, writable paths
 and network boundaries still need their own tested profiles.
+
+### Review database egress before enforcing destination limits
+
+Inspect actual replication, foreign servers, remote storage, distributed tables,
+dictionary definitions and loaded modules before denying database destinations.
+Counts alone do not establish an outbound requirement: ClickHouse dictionaries
+can query the same local server, and Valkey 9.1 includes a built-in Lua module.
+Bind any exception review to exact definitions, versions and image bytes. Keep
+query details and credentials on the original host; read catalog metadata rather
+than application records. A host observer can inspect the server behind Tini
+without adding ptrace privileges to the container.
+
+The prepared `database-egress.py` template permits only explicitly named app
+peer IPv4 destinations on each database's host veth. It preserves ARP and drops
+other destinations and protocols, including IPv6. This is destination control;
+it does not establish Layer 2 separation or stateful transport filtering. Review
+dual-stack database needs separately before enabling them. Missing peers lose
+their permission and make coverage incomplete until rediscovered. Reconciliation
+runs every five seconds; unexpected failures use the service's restart backoff.
+Do not claim atomic isolation during topology changes.
+
+Before live use, prove allowed and denied endpoints on an isolated network,
+including missing peers and database replacement. The canary must
+remove its fixtures and leave the existing production firewall unchanged. Live installation is a separate step: refresh feature and
+topology checks, retain exact original files, prepare owned-table rollback, test
+real app/database paths and backups, and review the precise integrity diff.
+
+When activated, require its status in the existing external heartbeat with
+`HATCHKIT_DATABASE_EGRESS_REQUIRED=1`. Missing, failed or stopped reporting must
+make the combined process check incomplete/unhealthy; retain the oldest component
+timestamp. Export fixed health metadata only, never destination lists or raw
+diagnostics. The source template is prepared; it is not activated on a host merely
+because it exists in a scaffold.
 An actual fresh-data shutdown/recovery test has passed for Kuma, including the
 app-running/database-down case. The private host parent remains 0700; an explicit
 0755 container bind root lets MariaDB's node UID traverse it despite umask 0077.

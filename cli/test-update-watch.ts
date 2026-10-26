@@ -35,6 +35,8 @@ for (const file of [
   "test-image-assessments.py",
   "test-image-vulnerabilities.py",
   "test-health-publisher.py",
+  "test-database-guard.py",
+  "test-database-egress.py",
   "test-file-integrity.py",
   "src/templates/docker-discovery/test-metadata-guard.py",
 ]) {

@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "databases": [
+    { "container": "postgres-example-project", "clients": ["app-example-project"] }
+  ]
+}

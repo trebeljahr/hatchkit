@@ -1,0 +1,11 @@
+[Unit]
+Description=Check database destination protection every minute
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Unit=hatchkit-database-egress-check.service
+
+[Install]
+WantedBy=timers.target
