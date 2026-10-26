@@ -2704,6 +2704,14 @@ original policy even on interruption, and retain stopped-state diagnostics.
 Node's exit status after intentional SQL shutdown does not replace database
 shutdown proof. Verify the entire capture/recovery procedure on disposable data
 before using it against production.
+Keep an unused candidate image referenced until validation and deployment finish;
+routine image cleanup can remove it while canaries are being prepared. An
+unstarted, offline `/bin/true` container with a read-only root, no capabilities
+and small resource limits can hold that immutable ID. Verify the anchor and image
+again before changing deployment configuration. Preserve failed attempt evidence;
+if rebuilding is necessary, rescan the new final ID and reuse a still-valid data
+snapshot rather than stopping production merely to repeat a failed image lookup.
+An image anchor is not deletion-protected backup history.
 
 Run the physical copy with no network or published ports and explicit resource
 limits. Verify the original database can read it, then start the candidate on
