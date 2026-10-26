@@ -293,3 +293,10 @@ Any email-verification opt-out belongs only to the disconnected fixture; preserv
 the full production environment and authentication policy during deployment.
 Capture only registered Mongo sources on the original host. A gzip integrity
 check proves a capture is readable, not a restore drill or an authorized upload.
+
+An app using Mongo transactions needs a fresh synthetic replica-set primary in
+the fixture. One reviewed case exercises authenticated projects,
+timer start/stop, WebSocket access and state/session persistence after restart.
+That coverage does not imply invoice, avatar or external-provider flow testing.
+Preserve its actual 512-PID profile and registered production database identity;
+never reuse real Mongo credentials or initialization files to make a fixture pass.

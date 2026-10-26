@@ -2933,3 +2933,14 @@ and check them again. Verify installed bytes against the signed package before
 reviewing the exact integrity diff; never accept an entire current filesystem.
 Refresh the watcher and require coverage of every actual running image ID before
 recording completion. A resolved host package does not close image-package findings.
+
+For an app on a Mongo replica set, the exact-image permission canary uses a fresh synthetic Mongo
+replica set, not a production URI or copied database configuration. It exercises
+signed-session signup, profile/project writes, timer start/stop, authenticated
+WebSocket subscription and persistence across restart. Preserve its existing
+512-PID limit and original Mongo identity. The tested image performs runtime
+storage through its database; its source filesystem writers are build/export
+tools and tests. File generation, uploads and external delivery are not
+claimed by this canary. Keep the same immutable image and production environment
+through native permission rollout, then verify public TLS readiness, qualified
+drift rules and the exact AIDE diff before recording completion.
