@@ -268,3 +268,12 @@ snapshot and source-bound generator/admission proofs before replacing anything.
 Verify original volume/device/inode and database identity, credentials and other
 workloads, then add only the qualified drift expectations and review their exact
 integrity diff. Recovery restores configuration; it must not restore older data.
+
+`next-app-permissions.example.yml` includes a separate capped cache for the
+reviewed UID-1000 Next standalone layout. An exact-image canary for such an app also
+tests original startup/asset publishing, retained asset bytes and range requests,
+mixed-release RSC rejection and cold restart. It seeds only synthetic prior
+metadata and public exports carried in the image. Its dotenvx command reads a
+synthetic environment file; no production key or store is used. Cache permission
+does not qualify arbitrary ISR or upload paths, and the external newsletter
+delivery flow is not claimed by the disconnected canary.

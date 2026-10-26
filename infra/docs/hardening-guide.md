@@ -2871,3 +2871,14 @@ deployment records a tracking tag other than `live`, preserve that exact tag
 while selecting current immutable image bytes. Do not change release channels
 to satisfy a generic guard. The template fragment remains opt-in and needs each
 app's own functional/writable-path proof, especially Next.js caches and assets.
+
+For a reviewed Next standalone image, `/app/.next/cache` is a separate 128 MiB
+UID-1000 noexec/nosuid/nodev tmpfs; `/tmp` remains capped at 64 MiB. Existing
+persistent asset exports stay on their original writable volume. The disconnected
+canary exercises the real entrypoint and dotenvx command with synthetic runtime
+values and public image exports. It tests pages, publication, retained static
+bytes/ranges, mixed-release RSC rejection and restart identity. This proves that
+specific layout, not every Next app's ISR or upload behavior. Preserve exact
+asset-store inode/manifest/head and runtime credentials through native rollout.
+Snapshot recovery stays on the original host; configuration rollback must not
+replace the store with an older snapshot.
