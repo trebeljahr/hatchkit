@@ -2900,3 +2900,18 @@ unchanged runtime/settings, can be redone: retain all original
 intent/probe/submission evidence, then make a fresh rolled-back admission and an
 immediate native submission. Do not weaken the exact-hash guard. Never discard an unknown intent or retry
 when a queue exists, a release changed or any unexplained configuration differs.
+
+Mongo-only tRPC permission checks must cover authenticated state persistence.
+Each canary writes and reads its app's own records and persists a profile
+across restart.
+These exact-image canaries use fresh Mongo volumes, an internal-only network,
+synthetic auth values and a read-only synthetic environment file masking the
+image's production file. This prevents a file-overloading loader from pulling in
+production connections. Verification opt-out is confined to the fixture; native
+deployment preserves production credentials and auth settings byte for byte.
+External email and provider delivery are outside these disconnected tests.
+Preserve 512 PIDs, capped memory/CPU, immutable image bytes, recorded tracking tag
+and original backend identities. Take registered local native Mongo captures,
+then prove native generation and admission before each serial replacement.
+The matching Node Compose and drift-policy templates both default to 512 PIDs;
+retain a separately measured lower limit where it has already been qualified.

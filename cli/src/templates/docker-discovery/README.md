@@ -260,8 +260,8 @@ persistence where used, plus the kernel capability bounding set, no-new-privileg
 and denied root writes. Next.js caches and release-asset bootstraps require their
 own writable-path review; one Node app's canary does not qualify another app.
 
-Fresh app defaults use 512 PIDs. The policy JSON's 256-PID example reflects a
-separately measured profile, not a requirement to reduce every app to that value.
+Fresh app defaults and the matching policy example use 512 PIDs. Preserve an
+existing separately measured 256-PID profile rather than changing it implicitly.
 Preserve the existing recorded tracking tag and select the exact immutable image
 for a permissions-only native deployment. Keep an online original-host recovery
 snapshot and source-bound generator/admission proofs before replacing anything.
@@ -284,3 +284,12 @@ authenticated game/WebSocket behavior, native preview rendering and persistence
 across restart with the 512-PID profile. Verify original backend identities/mounts
 and real readiness after deployment. Preserve unknown native submission intent
 until queue, runtime and settings inspection resolves it; never blindly retry.
+
+For Mongo-only tRPC apps, exercise authenticated profile writes and their actual
+business records across restart. Each canary covers the records its app stores and
+profile persistence, not external provider flows. Mask an encrypted environment file with
+a fresh synthetic file when the production loader can override process values.
+Any email-verification opt-out belongs only to the disconnected fixture; preserve
+the full production environment and authentication policy during deployment.
+Capture only registered Mongo sources on the original host. A gzip integrity
+check proves a capture is readable, not a restore drill or an authorized upload.
