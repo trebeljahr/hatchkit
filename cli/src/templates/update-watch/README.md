@@ -39,3 +39,14 @@ Fixture checks:
 PYTHONDONTWRITEBYTECODE=1 python3 cli/test-image-assessments.py
 PYTHONDONTWRITEBYTECODE=1 python3 cli/test-update-watch.py
 ```
+
+A pending trusted APT update is an actionable maintenance item, even when a
+runtime's embedded copy was already patched. Review the current vendor notice:
+the APT review priority is not a CVE severity assessment. Public code execution
+uses the 24-hour patch-or-isolate target. Pin the reviewed package set, retain
+authenticated recovery artifacts, patch hosts serially, restart identified
+consumers and verify the actual running image inventory separately. Refresh this
+watcher after successful validation so resolved host findings clear without
+resetting continuing image/advisory deadlines. Keep LLM review paused when the
+operator has paused it; deterministic checks and external freshness alerts remain
+independent of that reviewer.

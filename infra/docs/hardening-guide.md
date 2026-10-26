@@ -2915,3 +2915,21 @@ and original backend identities. Take registered local native Mongo captures,
 then prove native generation and admission before each serial replacement.
 The matching Node Compose and drift-policy templates both default to 512 PIDs;
 retain a separately measured lower limit where it has already been qualified.
+
+New host security notices still require action after the original runtime patch.
+Ubuntu [USN-8956-1](https://ubuntu.com/security/notices/USN-8956-1), published
+26 October, supplied the separate system Brotli fix `libbrotli1 1.1.0-2ubuntu0.1`
+for Noble. The watcher caught that pending package on every host. Its generic APT
+review priority does not establish vendor severity; review the vendor notice
+immediately and apply the 24-hour patch-or-isolate target when it identifies public
+code execution. Updating Node's embedded decoder does not update the host library
+or every copy in application images.
+
+The host workflow pins one exact package, requires a removal-free simulation,
+trusted Ubuntu security origins and a retained authenticated original package.
+Patch one host, verify container/data/start identities, firewall, tailnet and
+kernel controls, then proceed to the next. Restart identified library consumers
+and check them again. Verify installed bytes against the signed package before
+reviewing the exact integrity diff; never accept an entire current filesystem.
+Refresh the watcher and require coverage of every actual running image ID before
+recording completion. A resolved host package does not close image-package findings.
