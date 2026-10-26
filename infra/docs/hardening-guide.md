@@ -2730,9 +2730,25 @@ does not prove that path. This test does not authorize a database major downgrad
 or automatic restoration of old production data. Retain private diagnostics
 before removing owned fixtures; remove disposable records on the original host.
 
-The prepared Kuma physical canary is in the dated maintenance directory. Its
-copy-failure, forced-stop and original-container recovery fixtures pass locally;
-actual host execution must pass before recording a successful upgrade test.
+Run a physical canary before a native database replacement, as for Uptime Kuma.
+The controller and service may be on different hosts: keep private canonical
+YAML on the controller and private data/runtime snapshots on the service host.
+Only hashes, immutable IDs and result metadata need to cross that boundary.
+After a successful physical test, take a fresh normal registered backup, stop
+SQL synchronously and deploy only that component through its native path.
+Verify exact image bytes, original data volume, runtime controls, restart policy,
+networks, ports, existing environment values, database binding and application
+functions. Current Coolify versions can add their four default location metadata
+variables during parsing. Require an exact match to the controller's own default
+values; never use that behavior to permit arbitrary environment drift.
+
+Prepare rollback before replacing production. A database image rollback needs a
+fresh SQL-clean stopped-candidate proof, exact volume identity and a tested
+compatible old image. Restore only the qualified canonical configuration and
+reuse the current data; do not silently roll production data back to a snapshot.
+Keep original-image and candidate anchors until postchecks finish. Re-run the
+normal image scan and watcher afterward; continuing advisory/package clocks must
+keep their original deadlines across package-version changes.
 An actual fresh-data shutdown/recovery test has passed for Kuma, including the
 app-running/database-down case. The private host parent remains 0700; an explicit
 0755 container bind root lets MariaDB's node UID traverse it despite umask 0077.
