@@ -2661,3 +2661,30 @@ Revisit that pinned default when vendor security floors change. Update and scan
 both build and runtime stages. Keep unused package-manager/development tooling
 out of a runtime only after proving the app, maintenance tools and deployment
 path do not require it; preserve a working rollback and inspect the final image.
+
+### Test the actual database backend before image replacement
+
+A healthy web page or an empty SQLite fixture does not validate an application
+using embedded MariaDB. Confirm the deployed backend and runtime version. A
+logical import into a fresh database proves recovery, but does not test the old
+system tables that an image replacement will encounter.
+
+For a same-branch MariaDB patch, first verify the normal registered backup. If
+a physical test copy is needed, stop only that application cleanly, copy its
+data on the original host, and restart the original immutable container ID in a
+failure-safe recovery path. Keep the outage bounded and verify its original
+image, configuration, volume and health. Never copy a running raw InnoDB
+directory and call it a consistent snapshot.
+
+Run the physical copy with no network or published ports and explicit resource
+limits. Verify the original database can read it, then start the candidate on
+that same copy, check tables and real numeric checksums, restart it and exercise
+the app's required browser engine. If image rollback is part of the recovery
+plan, test the old image against the upgraded copy itself. An untouched old copy
+does not prove that path. This test does not authorize a database major downgrade
+or automatic restoration of old production data. Retain private diagnostics
+before removing owned fixtures; remove disposable records on the original host.
+
+The prepared Kuma physical canary is in the dated maintenance directory. Its
+copy-failure, forced-stop and original-container recovery fixtures pass locally;
+actual host execution must pass before recording a successful upgrade test.
