@@ -2238,6 +2238,17 @@ older timestamp; missing control checks must trigger lost coverage externally.
 Transmit fixed counts/booleans/timestamps only and preserve publisher credentials.
 
 Include pending host distribution packages in advisory coverage. Refresh APT
+metadata with TLS/signature checks intact. On refresh failure, retain at most
+64 KiB of diagnostic output in the host's root-private
+`host-package-refresh.private.log` (0600). Reports may include only an allowlisted
+failure category and fixed repair hint: certificate verification, signing,
+DNS, connection, lock contention, timeout, execution or unknown. Repository URLs
+and raw output can contain credentials; never copy them into email or heartbeat
+payloads. A successful later refresh clears the active failure category while
+leaving the last private failure diagnostic available for review. This does not
+make an incomplete advisory check healthy or reset a finding deadline.
+
+Refresh APT
 indexes with authentication errors treated as failures, a bounded timeout and
 no package installation or service restart. Inspect all available trusted Ubuntu
 security-pocket versions; a newer updates candidate or a pinned candidate must

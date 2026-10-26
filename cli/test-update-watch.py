@@ -1037,6 +1037,51 @@ class HostPackageCoverage(unittest.TestCase):
             run=lambda *a,**k:(_ for _ in ()).throw(uw.subprocess.TimeoutExpired('apt-get',300)),now=NOW)['ok'])
         self.assertTrue(uw.refresh_host_package_indexes(Path(self.temp.name),run=lambda *a,**k:NS(returncode=0),now=NOW)['ok'])
 
+    def test_apt_failure_keeps_bounded_private_tail_and_safe_action(self):
+        work=Path(self.temp.name)
+        def run(argv,**kwargs):
+            kwargs['stdout'].write(b'x'*100000+b'\nCertificate verification failed: '+SECRET.encode())
+            self.assertEqual(kwargs['stderr'],uw.subprocess.STDOUT)
+            return NS(returncode=100)
+        state=uw.refresh_host_package_indexes(work,run=run,now=NOW)
+        private=work/'host-package-refresh.private.log'
+        self.assertEqual(state['failureCategory'],'certificate-verification')
+        self.assertIn('keep TLS verification enabled',state['action'])
+        self.assertNotIn(SECRET,json.dumps(state))
+        self.assertEqual(private.stat().st_size,65536)
+        self.assertEqual(private.stat().st_mode & 0o777,0o600)
+        self.assertTrue(state['diagnostic']['truncated'])
+        self.assertIn(SECRET.encode(),private.read_bytes())
+        self.assertEqual(list(work.glob('.apt-refresh-diagnostic-*')),[])
+        good=uw.refresh_host_package_indexes(work,run=lambda *a,**k:NS(returncode=0),now=NOW)
+        self.assertTrue(good['ok']);self.assertNotIn('failureCategory',good)
+
+    def test_apt_diagnostic_replaces_symlink_without_writing_its_target(self):
+        work=Path(self.temp.name);target=work/'synthetic-secret';target.write_text(SECRET)
+        (work/'host-package-refresh.private.log').symlink_to(target)
+        def run(argv,**kwargs):
+            kwargs['stdout'].write(b'Temporary failure resolving repository')
+            raise uw.subprocess.TimeoutExpired('apt-get',300)
+        state=uw.refresh_host_package_indexes(work,run=run,now=NOW)
+        self.assertEqual(state['failureCategory'],'name-resolution')
+        self.assertFalse((work/'host-package-refresh.private.log').is_symlink())
+        self.assertEqual(target.read_text(),SECRET)
+
+    def test_apt_categories_and_state_never_copy_untrusted_output_into_mail(self):
+        cases=[(b'NO_PUBKEY private-key-label','repository-authentication'),
+               (b'Could not connect to private-url','network-connection'),
+               (b'Could not get lock /private/path','lock-contention'),
+               (SECRET.encode(),'unknown')]
+        for output,expected in cases:
+            self.assertEqual(uw.apt_failure_category(output),expected)
+        self.path.write_text(json.dumps({'checkedAt':NOW.isoformat(),'ok':False,
+            'failureCategory':'untrusted-private-category','action':SECRET}))
+        self.assertNotIn(SECRET,json.dumps(self.inspect()[1]))
+        self.path.write_text(json.dumps({'checkedAt':NOW.isoformat(),'ok':False,
+            'failureCategory':'certificate-verification','action':SECRET}))
+        message=json.dumps(self.inspect()[1])
+        self.assertIn('keep TLS verification enabled',message);self.assertNotIn(SECRET,message)
+
 
 if __name__ == '__main__':
     unittest.main()

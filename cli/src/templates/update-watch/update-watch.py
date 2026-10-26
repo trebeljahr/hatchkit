@@ -54,6 +54,7 @@ import ssl
 import stat
 import subprocess
 import sys
+import tempfile
 import urllib.error
 from urllib.parse import quote, urlsplit
 import urllib.request
@@ -713,21 +714,82 @@ def host_runtime_versions(run=None):
     return rows, skipped
 
 
+APT_DIAGNOSTIC_LIMIT = 65536
+APT_FAILURE_HINTS = {
+    'certificate-verification': 'Check the configured repository certificate and host clock; keep TLS verification enabled.',
+    'repository-authentication': 'Review repository signing keys and signed source configuration; keep signature verification enabled.',
+    'name-resolution': 'Check host DNS and repository name resolution.',
+    'network-connection': 'Check repository availability and the host network path.',
+    'lock-contention': 'Inspect the active package-manager job before retrying; do not delete live locks.',
+    'timeout': 'Inspect the package refresh timeout and network path.',
+    'execution': 'Inspect the package-manager executable and host permissions.',
+    'unknown': 'Inspect the root-private APT diagnostic on this host.',
+}
+
+
+def apt_failure_category(output, fallback='unknown'):
+    text = output.decode('utf-8', errors='replace').lower()
+    if any(x in text for x in ['certificate verification failed', 'certificate has expired',
+                               'certificate is not trusted', 'certificate chain uses expired']):
+        return 'certificate-verification'
+    if any(x in text for x in ['no_pubkey', 'expkeysig', 'badsig', 'is not signed',
+                               'signatures couldn\'t be verified', 'invalid signature']):
+        return 'repository-authentication'
+    if any(x in text for x in ['temporary failure resolving', 'could not resolve', 'couldn\'t resolve']):
+        return 'name-resolution'
+    if any(x in text for x in ['could not get lock', 'unable to acquire', 'is held by process']):
+        return 'lock-contention'
+    if any(x in text for x in ['could not connect', 'connection refused', 'network is unreachable', 'connection failed']):
+        return 'network-connection'
+    return fallback
+
+
+def retain_apt_diagnostic(work, output):
+    """Atomic 0600 tail; private repository URLs/output never enter mail/state."""
+    output.seek(0, os.SEEK_END)
+    size = output.tell()
+    output.seek(max(0, size - APT_DIAGNOSTIC_LIMIT))
+    tail = output.read(APT_DIAGNOSTIC_LIMIT)
+    fd, temporary = tempfile.mkstemp(prefix='.apt-refresh-diagnostic-', dir=work)
+    try:
+        with os.fdopen(fd, 'wb') as file:
+            file.write(tail)
+            file.flush()
+            os.fsync(file.fileno())
+        Path(temporary).replace(work / 'host-package-refresh.private.log')
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return tail, {'retainedBytes':len(tail), 'truncated':size > len(tail)}
+
+
 def refresh_host_package_indexes(work, run=subprocess.run, now=None):
     """Refresh authenticated indexes only; never install, resolve or restart."""
     error = None
-    try:
-        result = run(['apt-get', '-o', 'APT::Update::Error-Mode=any',
+    category = None
+    diagnostic = None
+    with tempfile.TemporaryFile(dir=work) as output:
+        try:
+            result = run(['apt-get', '-o', 'APT::Update::Error-Mode=any',
                       '-o', 'DPkg::Lock::Timeout=20', '-o', 'Acquire::Retries=0',
                       '-o', 'Acquire::http::Timeout=20', '-o', 'Acquire::https::Timeout=20',
-                      'update'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                      'update'], stdout=output, stderr=subprocess.STDOUT,
                      timeout=300, env={**os.environ, 'LC_ALL':'C', 'DEBIAN_FRONTEND':'noninteractive'})
-        if result.returncode:
-            error = 'Authenticated APT refresh failed (exit %d)' % result.returncode
-    except (OSError, subprocess.SubprocessError):
-        error = 'Authenticated APT refresh could not finish'
+            if result.returncode:
+                error = 'Authenticated APT refresh failed (exit %d)' % result.returncode
+                category = 'unknown'
+        except subprocess.TimeoutExpired:
+            error = 'Authenticated APT refresh could not finish'
+            category = 'timeout'
+        except (OSError, subprocess.SubprocessError):
+            error = 'Authenticated APT refresh could not finish'
+            category = 'execution'
+        if error:
+            tail, diagnostic = retain_apt_diagnostic(work, output)
+            category = apt_failure_category(tail, category)
     state = {'checkedAt': (now or dt.datetime.now(dt.timezone.utc)).isoformat(),
              'ok': error is None, 'error': error}
+    if error:
+        state.update(failureCategory=category, action=APT_FAILURE_HINTS[category], diagnostic=diagnostic)
     path = work / 'host-package-refresh.json'
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(state) + '\n')
@@ -748,6 +810,9 @@ def host_package_findings(now, cache=None, sources=None, refresh_path=None, dist
         checked = dt.datetime.fromisoformat(refresh['checkedAt'])
         if refresh.get('ok') is not True or refresh.get('error'):
             skipped.append('Host package coverage incomplete: latest authenticated APT refresh failed')
+            category = refresh.get('failureCategory')
+            if category in APT_FAILURE_HINTS:
+                skipped.append('APT failure category: ' + category + '. ' + APT_FAILURE_HINTS[category])
         if now - checked > dt.timedelta(hours=8) or checked > now + dt.timedelta(minutes=5):
             skipped.append('Host package coverage incomplete: authenticated APT indexes are stale')
     except (OSError, ValueError, KeyError, TypeError):
