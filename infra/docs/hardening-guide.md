@@ -2675,6 +2675,10 @@ data on the original host, and restart the original immutable container ID in a
 failure-safe recovery path. Keep the outage bounded and verify its original
 image, configuration, volume and health. Never copy a running raw InnoDB
 directory and call it a consistent snapshot.
+For an embedded database, PID-1 exit alone is insufficient evidence of a clean
+database shutdown. Use its synchronous administrative shutdown and confirm the
+database process exited. A recovery handler must also handle a still-running app
+whose database is down; merely calling `docker start` cannot recover that state.
 
 Run the physical copy with no network or published ports and explicit resource
 limits. Verify the original database can read it, then start the candidate on
@@ -2688,3 +2692,7 @@ before removing owned fixtures; remove disposable records on the original host.
 The prepared Kuma physical canary is in the dated maintenance directory. Its
 copy-failure, forced-stop and original-container recovery fixtures pass locally;
 actual host execution must pass before recording a successful upgrade test.
+An actual fresh-data shutdown/recovery test has passed for Kuma, including the
+app-running/database-down case. The private host parent remains 0700; an explicit
+0755 container bind root lets MariaDB's node UID traverse it despite umask 0077.
+Keep that distinction in disposable fixtures and retain failed-attempt evidence.
