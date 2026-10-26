@@ -419,6 +419,25 @@ applications, tailnet access and firewall recover. This matches the Ansible
 default. Refresh signed APT metadata before reviewing an update: a cached package
 list can miss a newly published security revision. Keep native phased deferrals.
 
+An expired package-mirror TLS certificate is a coverage failure even when old
+indexes remain usable. Check the actual failing hostname, certificate dates,
+synchronized host clock and `_apt` access to the CA bundle. Successful service
+exit alone does not mean every advisory check completed; inspect its skipped
+checks and authenticated-refresh receipt. Keep the external incomplete-coverage
+alert active until a normal watcher run succeeds.
+
+For Ubuntu 24.04 on amd64/i386, Canonical's HTTPS archive and security endpoints
+are `https://archive.ubuntu.com/ubuntu/` and
+`https://security.ubuntu.com/ubuntu/`. Other supported architectures use
+`https://ports.ubuntu.com/ubuntu-ports/`. The bootstrap templates select these
+explicitly through cloud-init's primary/security mirror configuration. Preserve
+the original suites, components and Ubuntu archive signing key. Validate fresh
+signed indexes with isolated source/list/cache paths before replacing only the
+reviewed endpoint strings. Never work around expiry by disabling TLS, signature
+or valid-until checks. Retain the old source bytes and review the exact AIDE
+file/parent changes separately.
+[Cloud-init APT configuration](https://docs.cloud-init.io/en/latest/reference/yaml_examples/apt.html).
+
 For a reviewed manual batch, pin the exact versions and refuse additions or
 removals unless separately reviewed. Retain authenticated package artifacts and
 original configuration on the original host. Require fresh verified backups,

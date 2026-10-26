@@ -1,4 +1,18 @@
 #cloud-config
+# Use Canonical's HTTPS endpoints rather than an image-provider mirror.
+apt:
+  preserve_sources_list: false
+  primary:
+    - arches: [amd64, i386]
+      uri: https://archive.ubuntu.com/ubuntu/
+    - arches: [default]
+      uri: https://ports.ubuntu.com/ubuntu-ports/
+  security:
+    - arches: [amd64, i386]
+      uri: https://security.ubuntu.com/ubuntu/
+    - arches: [default]
+      uri: https://ports.ubuntu.com/ubuntu-ports/
+
 package_update: true
 package_upgrade: true
 packages:
