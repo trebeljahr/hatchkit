@@ -1283,13 +1283,15 @@ def write_status(work, state):
 
 
 def finding_identity(finding):
-    """Rebuilding an image or changing a rolling container name never resets its deadline."""
+    """An affected package upgrade, image rebuild or rename never resets its clock."""
     service = finding.get('service')
     if finding.get('kind') == 'image-package':
-        # One host-level clock per vulnerable package/version. Adding/removing a
-        # replica, changing an image ID or renaming a workload cannot restart it.
+        # One host-level clock per advisory/package. A new version that still
+        # matches that advisory has not remediated it.
         service = 'host-image-packages'
     key = {k: finding.get(k) for k in ('kind', 'id', 'name', 'version')}
+    if finding.get('kind') == 'image-package':
+        key.pop('version')
     key['service'] = service
     if not finding.get('id'):
         key['summary'] = finding.get('summary')
@@ -1374,7 +1376,19 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
         if started:
             identity = finding_identity(old)
             first_seen[identity] = min(first_seen.get(identity, started), started)
-    old_findings = {finding_identity(f): f for f in previous.get('findings', [])}
+    old_findings = {}
+    for old in previous.get('findings', []):
+        identity = finding_identity(old)
+        merged = dict(old)
+        prior = old_findings.get(identity, {})
+        # Earlier identities included the package version. When they converge,
+        # preserve every exploited classification and the earliest deadline.
+        if prior.get('knownExploited'):
+            merged['knownExploited'] = True
+        if prior.get('dueAt'):
+            merged['dueAt'] = min(dt.datetime.fromisoformat(prior['dueAt']),
+                                 dt.datetime.fromisoformat(old.get('dueAt', prior['dueAt']))).isoformat(timespec='seconds')
+        old_findings[identity] = merged
     for finding in findings:
         identity = finding_identity(finding)
         old = old_findings.get(identity, {})

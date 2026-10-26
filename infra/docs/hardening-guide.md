@@ -2009,6 +2009,14 @@ and retain the rest privately. Do not send daily overdue lists or a new email fo
 routine scanner churn. Preserve original first-seen/deadline history. Migrating an
 acknowledged old digest counts as the current week's review without another mail.
 
+For image-package findings, the deadline follows the advisory and package on the
+host, independent of image ID, container name and affected package version.
+Updating to another version that still matches the same advisory is not
+remediation. Keep separate raw version rows, but carry the earliest first-seen
+time/deadline and any known-exploited classification when old per-version clocks
+merge. A package update must not buy another patch window. Applicability reviews
+remain bound to their exact reviewed version/image and execution predicate.
+
 Known-exploited package matches, explicitly reviewed affected internet exposure,
 direct runtime/service advisories, failed checks and incomplete coverage bypass
 the weekly gate. These remain separate from unreviewed matches; an urgent alert

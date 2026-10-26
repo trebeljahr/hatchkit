@@ -5,6 +5,13 @@ The optional `/etc/hatchkit-security/image-assessments.json` is root-owned mode
 feed text cannot create or extend one. Raw findings, severities, first-seen
 timestamps and deadlines remain in the private ledger.
 
+Image-package deadlines follow one host-level advisory/package identity across
+affected versions, images and rolling container names. Raw version rows remain
+separate. Migration from older per-version identities keeps the earliest clock
+and deadline and combines any known-exploited classification, regardless of row
+order. An upgrade that remains affected does not restart its patch window or
+carry a version-bound applicability assessment to the new version.
+
 The supported `busybox-static-httpd-awk-ash-v1` predicate covers only
 CVE-2026-38753, CVE-2026-38754 and CVE-2026-38755. Bind a review to the exact
 container name, immutable image ID, `busybox` package/version and advisory IDs.

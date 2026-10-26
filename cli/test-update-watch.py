@@ -626,6 +626,36 @@ class Check(unittest.TestCase):
         check(NOW+dt.timedelta(days=7,hours=4));self.assertEqual(len(self.sent),2)
         rows.clear();check(NOW+dt.timedelta(days=14));self.assertEqual(len(self.sent),2)
 
+    def test_still_affected_package_upgrade_keeps_clock_and_weekly_gate(self):
+        row={'kind':'image-package','service':'old-image','id':'CVE-2026-test','name':'mariadb-server',
+             'version':'10.11.14','severity':'high','containers':['kuma'],'summary':'scanner match'}
+        def check(when):
+            with patch.object(uw,'scan',side_effect=lambda *a,**k:{'services':[],'findings':[dict(row)],'skipped':[]}):
+                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
+        first=check(NOW);sent=len(self.sent)
+        row.update(version='10.11.19',service='new-image')
+        later=check(NOW+dt.timedelta(hours=73))
+        self.assertEqual(later['findings'][0]['version'],'10.11.19')
+        self.assertEqual(later['findings'][0]['firstSeenAt'],first['findings'][0]['firstSeenAt'])
+        self.assertEqual(later['findings'][0]['dueAt'],first['findings'][0]['dueAt'])
+        self.assertTrue(later['findings'][0]['overdue']);self.assertEqual(len(self.sent),sent)
+
+    def test_version_identity_migration_merges_exploitation_and_earliest_deadline(self):
+        base={'kind':'image-package','service':'image','id':'CVE-2026-test','name':'pkg',
+              'severity':'high','summary':'scanner match'}
+        older={**base,'version':'1','knownExploited':True,'firstSeenAt':(NOW-dt.timedelta(hours=80)).isoformat(),
+               'dueAt':(NOW-dt.timedelta(hours=56)).isoformat()}
+        newer={**base,'version':'2','firstSeenAt':(NOW-dt.timedelta(hours=10)).isoformat(),
+               'dueAt':(NOW+dt.timedelta(hours=62)).isoformat()}
+        for order in [[older,newer],[newer,older]]:
+            self.work.joinpath(uw.STATUS_NAME).write_text(json.dumps({'findings':order,'findingFirstSeen':{}}))
+            with patch.object(uw,'scan',return_value={'services':[],'findings':[{**base,'version':'3'}],'skipped':[]}):
+                current,_=uw.check(None,[],None,self.work,self.config,self.send,NOW)
+            found=current['findings'][0]
+            self.assertTrue(found['knownExploited']);self.assertTrue(found['overdue'])
+            self.assertEqual(dt.datetime.fromisoformat(found['firstSeenAt']),NOW-dt.timedelta(hours=80))
+            self.assertLessEqual(dt.datetime.fromisoformat(found['dueAt']),dt.datetime.fromisoformat(older['dueAt']))
+
     def test_exploitation_and_lost_coverage_bypass_weekly_gate_without_repeating_raw_inventory(self):
         row={'kind':'image-package','service':'image','id':'CVE-2026-test','name':'pkg','version':'1',
              'severity':'critical','containers':['app'],'summary':'scanner match'}
