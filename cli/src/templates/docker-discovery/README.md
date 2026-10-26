@@ -300,3 +300,12 @@ timer start/stop, WebSocket access and state/session persistence after restart.
 That coverage does not imply invoice, avatar or external-provider flow testing.
 Preserve its actual 512-PID profile and registered production database identity;
 never reuse real Mongo credentials or initialization files to make a fixture pass.
+
+For a PostgreSQL accounts API, test its real startup migrations and verification
+requirement with fresh synthetic data and a disconnected TLS mail fixture. One reviewed
+case includes rejected unverified sign-in, fake-link verification,
+verified login, credits/session persistence after restart and the disabled paid
+provider boundary. Trust only the fixture CA inside the fixture; retain normal
+TLS verification. Explicitly chmod a non-root bind directory after a private
+umask-masked mkdir while keeping its host parent 0700. Preserve existing native
+capability/PID options and qualify only source-proven restart bookkeeping resets.

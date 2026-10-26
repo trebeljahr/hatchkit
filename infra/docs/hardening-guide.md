@@ -2944,3 +2944,19 @@ tools and tests. File generation, uploads and external delivery are not
 claimed by this canary. Keep the same immutable image and production environment
 through native permission rollout, then verify public TLS readiness, qualified
 drift rules and the exact AIDE diff before recording completion.
+
+A PostgreSQL accounts service needs its own PostgreSQL and email-verification
+fixture. Use the exact images, a fresh database and internal-only synthetic TLS
+mail. Keep verification required, reject unverified sign-in, then verify the fake
+link, sign in and check synthetic account credits/session persistence after an
+app restart. Exercise real startup migrations and preserve any disabled paid-provider
+boundary. The fixture CA belongs only to that container; never disable production
+TLS checks or copy its credentials. Under umask 0077, explicitly set a synthetic
+bind directory's traversal mode after mkdir; keep the host evidence parent 0700.
+
+The native generator must preserve the app's existing capability drop and PID
+limit. A successful deployment can reset old crash bookkeeping. Qualify the exact
+observed reset against the pinned deployment-job source and unchanged writable
+layer; do not allow arbitrary restart metadata or restart-limit changes. Retain
+the first rejected verification and all earlier failed fixture evidence. Original
+registered PostgreSQL SQL captures stay on the host and are not a new restore drill.
