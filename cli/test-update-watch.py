@@ -474,6 +474,13 @@ class HttpFeeds(unittest.TestCase):
 
 
 class Check(unittest.TestCase):
+    def test_persisted_state_keeps_feed_retrieval_proof_without_sending_mail(self):
+        receipt={'maximumCacheAgeSeconds':3600,'cacheHits':12,'networkReads':0,'oldestRetrievedAt':NOW.isoformat()}
+        with patch.object(uw,'scan',return_value={'services':[],'findings':[],'skipped':[],'githubFeeds':receipt}):
+            state,_=uw.check(None,[],None,self.work,self.config,self.send,NOW)
+        self.assertEqual(state['githubFeeds'],receipt)
+        self.assertEqual(json.loads((self.work/uw.STATUS_NAME).read_text())['githubFeeds'],receipt)
+        self.assertEqual(self.sent,[])
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.work = Path(self.tmp.name)

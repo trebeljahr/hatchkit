@@ -1619,6 +1619,8 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
              'findingFirstSeen': first_seen}
     if kev:
         state['kev'] = (report or {}).get('kev')
+    if report and 'githubFeeds' in report:
+        state['githubFeeds'] = report['githubFeeds']
     mail_error = None
     urgent_last = previous.get('lastImmediateNotifiedAt', previous.get('lastNotifiedAt'))
     overdue_reminder = any(f.get('overdue') for f in immediate) and (
