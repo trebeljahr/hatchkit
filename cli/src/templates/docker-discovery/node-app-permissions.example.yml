@@ -1,0 +1,14 @@
+# Merge only into a reviewed existing service after its exact-image canary.
+# Preserve its image, environment, networks, healthcheck and persistent mounts.
+# Ensure every required persistent write already has an explicit data mount.
+services:
+  app:
+    mem_limit: 1g
+    memswap_limit: 2g
+    cpus: 1
+    pids_limit: 512
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777

@@ -249,3 +249,22 @@ certificate state and test renewal before narrowing its writable locations.
 Do not restore old data when reverting configuration. Do not regenerate proxy
 defaults, change the controller/updater or replace discovery credentials as part
 of applying this fragment.
+
+# Node app permission profile
+
+`node-app-permissions.example.yml` is a fragment for an existing service. It
+does not activate a deployment. Test the exact image with fresh synthetic data,
+its existing non-root user, no external network/credentials and only explicit
+writable data mounts. Exercise real functions, SQLite write/integrity and restart
+persistence where used, plus the kernel capability bounding set, no-new-privileges
+and denied root writes. Next.js caches and release-asset bootstraps require their
+own writable-path review; one Node app's canary does not qualify another app.
+
+Fresh app defaults use 512 PIDs. The policy JSON's 256-PID example reflects a
+separately measured profile, not a requirement to reduce every app to that value.
+Preserve the existing recorded tracking tag and select the exact immutable image
+for a permissions-only native deployment. Keep an online original-host recovery
+snapshot and source-bound generator/admission proofs before replacing anything.
+Verify original volume/device/inode and database identity, credentials and other
+workloads, then add only the qualified drift expectations and review their exact
+integrity diff. Recovery restores configuration; it must not restore older data.

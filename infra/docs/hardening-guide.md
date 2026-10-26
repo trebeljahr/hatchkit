@@ -2860,3 +2860,14 @@ registered native-capture validation can run entirely on the original VPS when
 external upload is not authorized. Preserve registration scope: an unregistered
 cache is not silently added to rolling backups. SQL/ZIP capture checks establish
 backup compatibility; they do not replace the separate restore drills.
+
+An exact-image canary for an app with a SQLite volume can qualify a read-only
+root, empty capability bounding set, no-new-privileges and a capped noexec
+`/tmp`, with the existing SQLite volume writable. Check API readiness, the app's
+own functions, SQLite integrity and synthetic restart persistence. Production
+verification must preserve the original volume/device/inode and database identity;
+never use an older database restore to undo a permissions change. If a native
+deployment records a tracking tag other than `live`, preserve that exact tag
+while selecting current immutable image bytes. Do not change release channels
+to satisfy a generic guard. The template fragment remains opt-in and needs each
+app's own functional/writable-path proof, especially Next.js caches and assets.
