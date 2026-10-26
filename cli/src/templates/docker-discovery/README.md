@@ -277,3 +277,10 @@ metadata and public exports carried in the image. Its dotenvx command reads a
 synthetic environment file; no production key or store is used. Cache permission
 does not qualify arbitrary ISR or upload paths, and the external newsletter
 delivery flow is not claimed by the disconnected canary.
+
+A Mongo/Redis app needs isolated backing services in its permission canary, not
+production URLs or copied credentials. A game's exact-image test should include synthetic
+authenticated game/WebSocket behavior, native preview rendering and persistence
+across restart with the 512-PID profile. Verify original backend identities/mounts
+and real readiness after deployment. Preserve unknown native submission intent
+until queue, runtime and settings inspection resolves it; never blindly retry.

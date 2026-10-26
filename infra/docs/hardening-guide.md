@@ -2882,3 +2882,21 @@ specific layout, not every Next app's ISR or upload behavior. Preserve exact
 asset-store inode/manifest/head and runtime credentials through native rollout.
 Snapshot recovery stays on the original host; configuration rollback must not
 replace the store with an older snapshot.
+
+A Mongo/Redis game's permission canary runs its exact application, MongoDB and Redis images on
+an isolated internal network with fresh synthetic data. It exercises guest
+authentication, game creation, authenticated WebSocket snapshots, native preview
+rendering and game/session persistence across an app restart. Keep its measured
+512-PID limit rather than reusing another app's 256-PID profile. Read-only root,
+empty capability bounding set and no-new-privileges are separate kernel checks.
+The original-host preflight captures only the already-registered Mongo source
+through the existing native backup function, validates gzip integrity and starts
+no upload; it does not claim a new restore drill.
+
+A failed native submission is ambiguous until audited. Inspect its exact queue,
+current canonical fields, runtime/configuration and settings before any retry.
+A stale admission that differs only in `updated_at`, with zero queued jobs and
+unchanged runtime/settings, can be redone: retain all original
+intent/probe/submission evidence, then make a fresh rolled-back admission and an
+immediate native submission. Do not weaken the exact-hash guard. Never discard an unknown intent or retry
+when a queue exists, a release changed or any unexplained configuration differs.
