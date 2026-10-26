@@ -1083,5 +1083,72 @@ class HostPackageCoverage(unittest.TestCase):
         self.assertIn('keep TLS verification enabled',message);self.assertNotIn(SECRET,message)
 
 
+class GithubFeedCache(unittest.TestCase):
+    URL='https://api.github.com/repos/example/service/security-advisories?per_page=100&state=published'
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.work=Path(self.temp.name);self.now=NOW;self.calls=[]
+    def get(self,url):
+        self.calls.append(url);return [{'ghsa_id':'GHSA-fixture'}],''
+    def reader(self,**kwargs):
+        return uw.GithubFeedReader(self.work,get=kwargs.pop('get',self.get),clock=lambda:self.now,**kwargs)
+    def path(self,reader):
+        return reader.directory/(uw.hashlib.sha256(self.URL.encode()).hexdigest()+'.feed.json')
+    def test_cache_survives_processes_without_renewing_retrieval_time(self):
+        first=self.reader();self.assertEqual(first(self.URL)[0][0]['ghsa_id'],'GHSA-fixture')
+        self.now+=dt.timedelta(minutes=59)
+        second=self.reader();second(self.URL)
+        self.assertEqual(len(self.calls),1);self.assertEqual(second.hits,1)
+        self.assertEqual(second.receipt()['oldestRetrievedAt'],NOW.isoformat())
+        self.assertEqual(self.path(first).stat().st_mode&0o777,0o600)
+        self.now+=dt.timedelta(minutes=1)
+        def failed(url):raise uw.FeedError('fixture outage')
+        with self.assertRaises(uw.FeedError):self.reader(get=failed)(self.URL)
+        self.assertEqual(json.loads(self.path(first).read_text())['retrievedAt'],NOW.isoformat())
+    def test_primary_backoff_survives_processes_and_fresh_cannot_bypass_it(self):
+        until=self.now+dt.timedelta(minutes=40)
+        def limited(url):self.calls.append(url);raise uw.FeedRateLimit(until)
+        with self.assertRaises(uw.FeedRateLimit):self.reader(get=limited)(self.URL)
+        with self.assertRaises(uw.FeedRateLimit):self.reader(fresh=True)(self.URL)
+        self.assertEqual(len(self.calls),1)
+        self.now=until
+        self.reader()(self.URL);self.assertEqual(len(self.calls),2)
+    def test_fresh_bypasses_success_cache_and_unchanged_calls_do_not(self):
+        self.reader()(self.URL);self.reader()(self.URL)
+        self.assertEqual(len(self.calls),1)
+        self.now+=dt.timedelta(minutes=1)
+        self.reader(fresh=True)(self.URL)
+        self.assertEqual(len(self.calls),2)
+    def test_future_wrong_url_and_unsafe_file_are_not_trusted(self):
+        reader=self.reader();reader(self.URL);path=self.path(reader)
+        original=json.loads(path.read_text())
+        for change in [{'retrievedAt':(NOW+dt.timedelta(seconds=1)).isoformat()},{'url':'https://api.github.com/repos/other/service/releases/latest'},{'retrievedAt':NOW.replace(tzinfo=None).isoformat()}]:
+            path.write_text(json.dumps({**original,**change}));path.chmod(0o600)
+            self.reader()(self.URL)
+        path.chmod(0o644);self.reader()(self.URL)
+        self.assertEqual(len(self.calls),5)
+        secret=self.work/'synthetic-secret';secret.write_text(SECRET)
+        path.unlink();path.symlink_to(secret);self.reader()(self.URL)
+        self.assertEqual(secret.read_text(),SECRET);self.assertFalse(path.is_symlink())
+    def test_cache_is_bounded_and_other_hosts_are_not_cached(self):
+        reader=self.reader();reader.MAX_ENTRIES=2
+        for n in range(3):reader(self.URL+'&page='+str(n))
+        self.assertEqual(len(list(reader.directory.glob('*.feed.json'))),2)
+        reader.MAX_BYTES=100
+        reader(self.URL+'&page=large')
+        self.assertEqual(len(list(reader.directory.glob('*.feed.json'))),2)
+        reader('https://example.test/public-feed');reader('https://example.test/public-feed')
+        self.assertEqual(len(self.calls),6)
+    def test_paginated_feeds_keep_individual_provenance_and_link(self):
+        following=self.URL+'&page=2'
+        def get(url):
+            self.calls.append(url)
+            return ([{'page':1}],'<'+following+'>; rel="next"')if url==self.URL else([{'page':2}],'')
+        feeds=uw.Feeds(get=self.reader(get=get))
+        self.assertEqual(feeds.json(self.URL,pages=True),[{'page':1},{'page':2}])
+        self.assertEqual(uw.Feeds(get=self.reader(get=get)).json(self.URL,pages=True),[{'page':1},{'page':2}])
+        self.assertEqual(self.calls,[self.URL,following])
+
+
 if __name__ == '__main__':
     unittest.main()

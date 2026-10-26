@@ -2257,6 +2257,17 @@ refresh proof older than eight hours is incomplete coverage. The watcher uses
 high review priority for these pending fixes and a 72-hour deadline; this is not
 a CVE severity claim. Correlate vendor advisories and exposure separately, and
 apply the 24-hour patch-or-isolate target when exploitation/public RCE applies.
+The four-hour host timer stays unchanged. Repeated scheduled/manual checks reuse
+successful public GitHub responses for at most one hour, retaining their actual
+retrieval timestamps in report metadata. Cache use never renews those timestamps;
+expired, future-dated, malformed or unsafe files force a new read. Failed reads
+never become successful cache entries. Keep no more than 64 response files of
+1 MiB each in the root-private cache. `update-watch.py check --fresh-feeds` skips
+positive cache reads for a specific new disclosure, while still respecting an
+API-reported primary rate-limit reset. Persist that backoff across process runs;
+do not repeatedly probe other repositories after the address reaches its quota.
+Missing or expired feed data remains incomplete coverage until a real successful
+read. The cache adds no credential or alternate network identity.
 The read-only scan command never refreshes indexes. Preserve normal package
 phasing and resolve dependency changes in the reviewed maintenance step.
 

@@ -36,7 +36,7 @@ image's env it reads only the version keys the services file names.
 
   scan    print the report as JSON
   check   scan, mail findings through the backup-alert SMTP and record the
-          result (what the daily timer runs)
+          result (what the scheduled timer runs)
   failed  mail that a check did not finish (systemd OnFailure)
   test    send a test mail
 """
@@ -261,6 +261,13 @@ def fixed_in(version, advisory, service):
 
 # --- feeds --------------------------------------------------------------------
 
+class FeedRateLimit(FeedError):
+    def __init__(self, retry_at):
+        self.retry_at = retry_at
+        super().__init__('GitHub API rate limit reached for this address; it resets at '
+                         + retry_at.strftime('%H:%M UTC'))
+
+
 def http_get(url):
     request = urllib.request.Request(url, headers={
         'Accept': 'application/vnd.github+json', 'User-Agent': 'hatchkit-update-watch'})
@@ -272,10 +279,113 @@ def http_get(url):
             reset = error.headers.get('X-RateLimit-Reset') or ''
             when = (dt.datetime.fromtimestamp(int(reset), dt.timezone.utc).strftime('%H:%M UTC')
                     if reset.isdigit() else 'within the hour')
+            if reset.isdigit():
+                raise FeedRateLimit(dt.datetime.fromtimestamp(int(reset), dt.timezone.utc)) from None
             raise FeedError('GitHub API rate limit reached for this address; it resets at ' + when) from None
         raise FeedError('HTTP ' + str(error.code) + ' from ' + url.split('?')[0]) from None
     except (urllib.error.URLError, OSError, ValueError):
         raise FeedError('could not read ' + url.split('?')[0]) from None
+
+
+class GithubFeedReader:
+    """Reuse public responses for one hour; never extend retrieval timestamps.
+
+    Failed reads are never cached as success. `fresh` bypasses positive cache
+    reads but still honors the API's primary-rate-limit reset.
+    """
+    TTL = dt.timedelta(hours=1)
+    MAX_BYTES = 1024**2
+    MAX_ENTRIES = 64
+
+    def __init__(self, work, get=http_get, clock=None, fresh=False):
+        self.directory = Path(work) / 'github-feeds'
+        self.directory.mkdir(mode=0o700, exist_ok=True)
+        s = self.directory.lstat()
+        if not stat.S_ISDIR(s.st_mode) or s.st_uid != os.geteuid() or stat.S_IMODE(s.st_mode) != 0o700:
+            raise FeedError('Unsafe GitHub feed cache directory')
+        self.get, self.clock, self.fresh = get, clock or (lambda:dt.datetime.now(dt.timezone.utc)), fresh
+        self.retrieved = []
+        self.hits = self.network_reads = 0
+
+    def read(self, path):
+        try:
+            s = path.lstat()
+            if not stat.S_ISREG(s.st_mode) or s.st_uid != os.geteuid() or stat.S_IMODE(s.st_mode) != 0o600 or s.st_size > self.MAX_BYTES:
+                return None
+            with path.open('rb') as file:
+                raw = file.read(self.MAX_BYTES + 1)
+            if len(raw) > self.MAX_BYTES:
+                return None
+            value = json.loads(raw)
+            return value if isinstance(value, dict) and value.get('schema') == 1 else None
+        except (OSError, ValueError):
+            return None
+
+    def write(self, path, record):
+        data = json.dumps(record, ensure_ascii=False).encode()
+        if len(data) > self.MAX_BYTES:
+            return
+        try:
+            entries = sorted(self.directory.glob('*.feed.json'), key=lambda p:p.lstat().st_mtime)
+            while len(entries) >= self.MAX_ENTRIES and path not in entries:
+                entries.pop(0).unlink()
+            fd, name = tempfile.mkstemp(prefix='.feed-', dir=self.directory)
+            try:
+                with os.fdopen(fd, 'wb') as file:
+                    file.write(data)
+                    file.flush()
+                    os.fsync(file.fileno())
+                Path(name).replace(path)
+            finally:
+                Path(name).unlink(missing_ok=True)
+        except OSError:
+            raise FeedError('GitHub feed cache could not be written') from None
+
+    def __call__(self, url):
+        parsed = urlsplit(url)
+        if parsed.scheme != 'https' or parsed.netloc != 'api.github.com' or not parsed.path.startswith('/repos/'):
+            return self.get(url)
+        now = self.clock()
+        path = self.directory / (hashlib.sha256(url.encode()).hexdigest() + '.feed.json')
+        cached = None if self.fresh else self.read(path)
+        if cached and cached.get('url') == url and isinstance(cached.get('data'), (dict,list)) and isinstance(cached.get('link'), str):
+            try:
+                retrieved = dt.datetime.fromisoformat(cached['retrievedAt'])
+                if retrieved.tzinfo is not None and dt.timedelta(0) <= now - retrieved < self.TTL:
+                    self.hits += 1
+                    self.retrieved.append(retrieved)
+                    return cached['data'], cached['link']
+            except (KeyError, TypeError, ValueError):
+                pass
+        block_path = self.directory / 'primary-rate-limit.json'
+        blocked = self.read(block_path)
+        if blocked:
+            try:
+                until = dt.datetime.fromisoformat(blocked['until'])
+                observed = dt.datetime.fromisoformat(blocked['observedAt'])
+                if (observed.tzinfo is not None and until.tzinfo is not None
+                        and dt.timedelta(0) <= now - observed < dt.timedelta(hours=2)
+                        and observed < until <= observed + dt.timedelta(hours=2) and now < until):
+                    raise FeedRateLimit(until)
+            except (KeyError, TypeError, ValueError):
+                pass
+        try:
+            self.network_reads += 1
+            data, link = self.get(url)
+        except FeedRateLimit as error:
+            if now < error.retry_at <= now + dt.timedelta(hours=2):
+                self.write(block_path, {'schema':1,'observedAt':now.isoformat(),'until':error.retry_at.isoformat()})
+            raise
+        if not isinstance(data, (dict,list)) or not isinstance(link,str):
+            raise FeedError('Invalid GitHub feed response')
+        self.write(path, {'schema':1,'url':url,'retrievedAt':now.isoformat(),'data':data,'link':link})
+        self.retrieved.append(now)
+        return data, link
+
+    def receipt(self):
+        return {'maximumCacheAgeSeconds':int(self.TTL.total_seconds()),'cacheHits':self.hits,
+                'networkReads':self.network_reads,
+                'oldestRetrievedAt':min(self.retrieved).isoformat() if self.retrieved else None}
 
 
 def known_exploited_catalog(feeds, now):
@@ -1132,7 +1242,8 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
     return safe({'host': socket.gethostname(), 'scannedAt': now.isoformat(timespec='seconds'),
                  'services': report_services, 'findings': findings, 'autoUpdate': auto_update,
                  'cloudflare': cloudflare_state, 'skipped': skipped, 'notes': notes,
-                 **({'kev': kev_state} if kev else {})})
+                 **({'kev': kev_state} if kev else {}),
+                 **({'githubFeeds':feeds.get.receipt()} if isinstance(getattr(feeds,'get',None),GithubFeedReader) else {})})
 
 
 # --- timer --------------------------------------------------------------------
@@ -1547,6 +1658,7 @@ def main(payload=None):
     os.umask(0o077)
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=['scan', 'check', 'failed', 'test'])
+    parser.add_argument('--fresh-feeds',action='store_true',help='Bypass the one-hour GitHub response cache; still honor rate-limit backoff')
     args = parser.parse_args()
     work, config = work_dir()
     services = load(payload, 'services', SERVICES_NAME)
@@ -1564,7 +1676,7 @@ def main(payload=None):
     if args.action == 'test':
         message_id = send_email(mail_settings(config), '[Hatchkit] Update watch alert test — ' + hostname,
                                 'Update watch alerts are configured for this address.\n\n'
-                                'This is a test. The daily check mails when a shared service (Coolify, Traefik, '
+                                'This is a test. The scheduled check mails when a shared service (Coolify, Traefik, '
                                 'Plausible CE, Listmonk, Uptime Kuma, GlitchTip, ClickHouse) runs a version that a '
                                 'high or critical upstream advisory covers, when Coolify auto-update fails, when '
                                 'Cloudflare changes the IP ranges the origin firewalls allow, and when it could not '
@@ -1574,11 +1686,12 @@ def main(payload=None):
         return
     if args.action == 'failed':
         message_id = send_email(mail_settings(config), '[Hatchkit] Update watch did not finish — ' + hostname,
-                                'systemd stopped the daily update watch before it finished (a timeout, the memory '
+                                'systemd stopped the scheduled update watch before it finished (a timeout, the memory '
                                 'limit, or a crash). Nothing was checked this run.\n' + MAIL_FOOTER)
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
     refresh_host_package_indexes(work)
+    feeds = Feeds((payload or {}).get('feeds'), get=GithubFeedReader(work, fresh=args.fresh_feeds))
     state, mail_error = check(run_docker, services, feeds, work, config, send_email, cloudflare=cloudflare, runtime=True, host_runtime=True, image_packages=True, kev=True, host_packages=True)
     print(json.dumps({'ok': state['ok'], 'findings': len(state['findings']), 'error': state['error'],
                       'mailed': state['mailed'], 'mailError': state.get('mailError')}))
