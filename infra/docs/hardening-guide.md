@@ -2771,6 +2771,34 @@ reuse the current data; do not silently roll production data back to a snapshot.
 Keep original-image and candidate anchors until postchecks finish. Re-run the
 normal image scan and watcher afterward; continuing advisory/package clocks must
 keep their original deadlines across package-version changes.
+
+### Add app PID limits without changing the rest of the runtime
+
+Measure both current tasks and the cgroup's lifetime PID peak. Existing lower
+limits stay in place; a 512-PID starting limit needs ample measured headroom and
+application checks. Before applying it, exercise the real native Compose
+generator on an uncommitted clone. Preserve existing run options and require an
+exact hash match before appending the PID option. The generated configuration
+must differ only by `pids_limit`; suppress jobs/events and roll back clone rows.
+A generator's scratch helper may need Bash even when the deployed image does
+not. Use a qualified isolated helper while keeping the app's immutable image
+reference in the generated Compose. Never install a shell into production merely
+to satisfy that helper.
+
+Prove enforcement with a capped, offline fixture using the actual app image and
+synthetic processes: fork attempts must receive EAGAIN and increment the kernel
+PID-denial counter. Give it no production credentials, mounts, ports or network.
+Retain failure diagnostics before removing it. Then persist only the custom PID
+option and update that same running container, one app at a time. Verify its
+kernel limit, unchanged image/data/configuration/start time, health, and zero new
+PID denials. Keep exact owned-value recovery for both canonical options and the
+runtime cap; restoring an unset limit may use Docker's equivalent `-1` unlimited
+value. Refuse to overwrite concurrent changes. Add drift checks only after the
+actual live profiles pass, and separately review their exact integrity diff.
+
+New app Compose templates set `pids_limit: 512` for the app/server/client services.
+This bounds process/thread exhaustion; memory, CPU, privileges, writable paths
+and network boundaries still need their own tested profiles.
 An actual fresh-data shutdown/recovery test has passed for Kuma, including the
 app-running/database-down case. The private host parent remains 0700; an explicit
 0755 container bind root lets MariaDB's node UID traverse it despite umask 0077.

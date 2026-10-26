@@ -65,6 +65,7 @@ services:
       - mongo
       - redis
     restart: unless-stopped
+    pids_limit: 512
 
   client:
     image: ${CLIENT_IMAGE:-ghcr.io/OWNER/REPO-client:main}
@@ -88,6 +89,7 @@ services:
       # this prebuilt container cannot affect them. They are passed as
       # Docker build args in .github/workflows/build-and-deploy.yml.
     restart: unless-stopped
+    pids_limit: 512
 
   mongo:
     image: mongo:7

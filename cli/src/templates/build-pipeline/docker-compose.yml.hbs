@@ -33,6 +33,8 @@ services:
     # mutable default that everything else uses.
     pull_policy: always
     restart: unless-stopped
+    # Bound process/thread exhaustion; review measured peaks before raising it.
+    pids_limit: 512
     # Coolify's Traefik reverse-proxy already owns host ports 80/443 and
     # routes to this container via its internal Docker network. Use
     # `expose` (not `ports`) so we declare the container port without
