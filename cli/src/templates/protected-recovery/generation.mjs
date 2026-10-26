@@ -50,7 +50,12 @@ async function copyLeasedGeneration(store,p,{id,now=()=>Date.now(),startedAt}={}
   validatePolicy(p);
   if(!/^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/.test(id||'')) fail('invalid-generation-id');
   const started=startedAt,prefix=`generations/${id}/`,manifestKey=prefix+'manifest.json',completeKey=prefix+'COMPLETE.json';
-  const deadline=(reserve=0)=>{if(now()-started+reserve>p.maxDurationMs)fail('copy-deadline-exceeded');};
+  let lastObserved=started;
+  const deadline=(reserve=0)=>{
+    const current=now();
+    if(!Number.isSafeInteger(current)||current<lastObserved||current-started+reserve>p.maxDurationMs)fail('copy-deadline-exceeded');
+    lastObserved=current;return current;
+  };
   const source=await inventory(store,p.sourceBucket,p,true,deadline);
   if(!source.length) fail('empty-source');
   // Require every approved project to have a complete restic repository shape.
@@ -86,7 +91,8 @@ async function copyLeasedGeneration(store,p,{id,now=()=>Date.now(),startedAt}={}
   await store.putNew(p.destinationBucket,manifestKey,manifest);
   deadline();
   const manifestHash=await sha256(manifest);
-  const proof={schema:1,id,complete:true,objects:source.length,bytes,manifestSHA256:manifestHash,completedAt:new Date(now()).toISOString(),protectedUntil:new Date(started+90*86400000).toISOString(),usableUntil:new Date(started+119*86400000).toISOString()};
+  const completed=deadline();
+  const proof={schema:1,id,complete:true,objects:source.length,bytes,manifestSHA256:manifestHash,completedAt:new Date(completed).toISOString(),protectedUntil:new Date(started+90*86400000).toISOString(),usableUntil:new Date(started+119*86400000).toISOString()};
   // The adapter's reviewed single-attempt timeout is 30s. Keep that much
   // budget before the final promotion instead of starting it at the deadline.
   deadline(30000);
@@ -99,6 +105,7 @@ export async function copyGeneration(store,p,{id,now=()=>Date.now()}={}) {
   validatePolicy(p);
   if(!/^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/.test(id||'')) fail('invalid-generation-id');
   const startedAt=now();
+  if(!Number.isSafeInteger(startedAt)||startedAt<0||startedAt>8640000000000000-119*86400000)fail('invalid-copy-clock');
   const lease=await store.acquireLease(p.destinationBucket,{owner:id,expiresAt:startedAt+p.maxDurationMs+60000},startedAt);
   if(!lease) fail('another-generation-is-running');
   try { return await copyLeasedGeneration(store,p,{id,now,startedAt}); }

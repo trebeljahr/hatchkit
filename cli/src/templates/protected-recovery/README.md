@@ -29,6 +29,9 @@ work window. Lease acquisition consumes the same work budget. Every
 list/copy/head and final promotion checks the work deadline; the final write
 reserves a full 30-second request timeout. The installer must enforce the adapter
 timeout before activation.
+Invalid initial timestamps fail before lease acquisition. A nonfinite clock or
+any backward clock step stops the operation; it cannot extend the lease work
+window or publish completion. The owned lease is still released on failure.
 
 Before any personal payload copy, the installer must create and read back the
 private EU destination, enable a **90-day bucket lock** for `generations/`, and
@@ -75,6 +78,13 @@ can require more than 8,000 copy/HEAD requests plus inventory and metadata calls
 it is incompatible with Free. Require a verified sufficient plan and explicit
 request budget, or implement a separately tested chunked runner. Do not silently
 change the account's plan or place copy credentials on either VPS.
+
+The existing account dashboard was reviewed on 25 October: 100,000 daily
+requests and an upgrade to Workers Paid were shown. The account remains on Free;
+no upgrade, terms acceptance or billing change was submitted. The full-copy
+runner remains incompatible with that plan. Activation still needs a tested
+execution design, the constrained writer/recovery credential paths, independent
+alerts, a real protected restore and explicit records/destination approval.
 
 Cloudflare references verified 23 October 2026:
 

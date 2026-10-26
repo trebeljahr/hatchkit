@@ -85,3 +85,27 @@ test('final promotion reserves the full single-request timeout',async()=>{
  await assert.rejects(copyGeneration(f.store,policy,{id,now:()=>now}),fails('copy-deadline-exceeded'));
  assert.equal(f.dest.has('generations/'+id+'/COMPLETE.json'),false);
 });
+
+test('invalid initial clocks never acquire a writer lease',async()=>{
+ for(const now of[NaN,Infinity,-1,1.5,8640000000000000]){
+  const f=fixture();let acquired=false;f.store.acquireLease=async()=>{acquired=true;return {etag:'lease',owner:id};};
+  await assert.rejects(copyGeneration(f.store,policy,{id,now:()=>now}),fails('invalid-copy-clock'));
+  assert.equal(acquired,false);assert.equal(f.calls.length,0);
+ }
+});
+test('nonfinite or backward clocks stop copying and release the owned lease',async()=>{
+ for(const changed of[NaN,Infinity,1792756799999]){
+  const f=fixture();let now=1792756800000,released=false;const original=f.store.copy;
+  f.store.copy=async p=>{const result=await original(p);now=changed;return result;};
+  f.store.releaseLease=async()=>{released=true;};
+  await assert.rejects(copyGeneration(f.store,policy,{id,now:()=>now}),fails('copy-deadline-exceeded'));
+  assert.equal(released,true);assert.equal(f.calls.length,1);assert.equal(f.dest.has('generations/'+id+'/COMPLETE.json'),false);
+ }
+});
+test('clock rollback within the original window still stops promotion',async()=>{
+ const f=fixture();let now=1792756800000;const originalCopy=f.store.copy,originalPut=f.store.putNew;
+ f.store.copy=async p=>{const result=await originalCopy(p);now+=1000;return result;};
+ f.store.putNew=async(bucket,key,value)=>{await originalPut(bucket,key,value);if(key.endsWith('/manifest.json'))now-=1000;};
+ await assert.rejects(copyGeneration(f.store,policy,{id,now:()=>now}),fails('copy-deadline-exceeded'));
+ assert.equal(f.dest.has('generations/'+id+'/COMPLETE.json'),false);
+});
