@@ -3255,3 +3255,15 @@ cache/tmpfs paths, persistent assets and rolling-release identity. Verify the
 replacement digest and real package versions, rerun native and HTTP checks and
 scan the final image. Source tests alone do not qualify the production image or
 clear its findings. Respect separate Git publication authorization.
+
+Keep the regression in the normal publication path. For a Node server with
+native modules, run its compiled unit suite in the Linux Docker build stage
+after compilation and before pruning development dependencies. Bound test
+concurrency and use explicit fake database, storage and authentication settings;
+mount no production secrets in that step. A test failure must prevent image
+publication. Include a safe localhost-only regression that fails with the old
+dependency, plus normal request and malformed-input recovery checks. A request
+size limit does not fix a decoder error raised after parsing completes; the
+[body-parser advisory](https://github.com/expressjs/body-parser/security/advisories/GHSA-27r3-jxmh-p828)
+requires a patched parser or its documented decompression workaround. Never
+exercise a crash reproducer against a live application.

@@ -83,3 +83,11 @@ final image and refresh the watcher. Do not close a finding based only on a
 source commit, reset continuing deadlines or suppress unrelated bundled copies.
 Git publication and protected-record uploads retain their separate approval
 boundaries; a maintenance request does not silently grant either.
+
+Put a meaningful regression in the application's existing publication gate.
+Where native server modules matter, run compiled tests in the Linux build stage
+before pruning dev dependencies, using synthetic configuration and bounded
+concurrency. A failing test must stop image publication. Check both the repaired
+failure path and normal requests; qualify crash regressions only on disposable
+localhost fixtures, never a live workload. Source tests do not replace final
+image scanning or deployment-policy checks.
