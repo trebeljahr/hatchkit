@@ -72,5 +72,52 @@
     "probe": { "argv": ["clickhouse-server", "--version"], "pattern": "version (\\d\\S*)" },
     "packageWords": ["clickhouse"],
     "skipWords": ["cloud"]
+  },
+  {
+    "key": "coredns",
+    "name": "CoreDNS",
+    "images": [
+      "coredns/coredns"
+    ],
+    "github": "coredns/coredns",
+    "labels": [],
+    "env": [],
+    "requireProbe": true,
+    "probe": {
+      "argv": [
+        "/coredns",
+        "-version"
+      ],
+      "pattern": "^CoreDNS-(\\d+\\.\\d+\\.\\d+)"
+    },
+    "packageWords": [
+      "coredns"
+    ]
+  },
+  {
+    "key": "sentinel",
+    "name": "Coolify Sentinel",
+    "images": [
+      "coollabsio/sentinel"
+    ],
+    "github": "coollabsio/sentinel",
+    "labels": [],
+    "env": [],
+    "requireProbe": true,
+    "probe": {
+      "argv": [
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        "5",
+        "http://127.0.0.1:8888/api/version"
+      ],
+      "pattern": "^v?(\\d+\\.\\d+\\.\\d+)\\s*$"
+    },
+    "packageWords": [
+      "sentinel"
+    ]
   }
 ]

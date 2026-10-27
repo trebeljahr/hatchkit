@@ -3093,6 +3093,25 @@ Never infer certificate contents from a recent tag or a clean package scan.
 Minimal images may lack cat/sh; inspect public CA files through the daemon archive
 interface under bounds rather than treating missing executables as proof of trust.
 
+The watcher now reads known public system, castore and certifi files through
+bounded local Docker archive requests. Accept one regular expected-name file,
+with a 1 MiB file ceiling, 2 MiB response ceiling and request deadline. Never
+extract a container archive or follow a link. A public symlink alias counts as
+a duplicate only when its regular target was independently inspected. Reject
+arbitrary executable-supplied paths, unexpected entries/types, malformed PEM,
+oversize data and uninspected aliases as incomplete coverage, with fixed safe
+diagnostics. Recheck that the container still runs after inspection. Custom and
+embedded trust stores still require separate application/runtime review.
+
+Include CoreDNS and Sentinel in the upstream advisory/release definitions and
+require actual runtime version probes for those roles. Use CoreDNS's version-only
+command and Sentinel's documented local public version endpoint, without a token.
+Probe failure must not silently fall back to a mutable tag. Preserve the existing
+bounded GitHub feed cache/backoff, finding clocks, weekly raw-package review and
+urgent alert behavior. Test minimal images, unsafe archive entries, response
+bounds, failed probes and unchanged old service definitions before installation;
+qualify actual fleet images read-only, then review the exact AIDE source diff.
+
 For this stateless DNS role, preserve authoritative tailnet answers and refusal
 of unrelated names, exact IPv4 tailnet-only UDP/TCP bindings, read-only root/config,
 UID 65532 and no-new-privileges. Test the binary's NET_BIND_SERVICE file-capability

@@ -50,3 +50,21 @@ watcher after successful validation so resolved host findings clear without
 resetting continuing image/advisory deadlines. Keep LLM review paused when the
 operator has paused it; deterministic checks and external freshness alerts remain
 independent of that reviewer.
+
+Runtime trust inspection reads known public CA bundles through the local Docker
+archive API, so an image needs no `cat` or shell for those files. Requests have
+a deadline and byte bounds; the parser accepts one regular expected-name file
+without extracting it. Directories, hard links, sparse files, unexpected entries,
+oversize archives and malformed PEM make coverage incomplete. A symbolic alias
+is never followed: it is deduplicated only when its known public target was
+independently read as a regular file. Arbitrary paths returned by an executable
+are rejected without a read or raw diagnostic in reports.
+
+The version inventory also includes CoreDNS and Coolify Sentinel. These roles
+require the real CoreDNS version command or Sentinel's documented public local
+version endpoint; an unreadable probe cannot fall back to an image tag. They use
+their upstream repository advisory/release feeds with the existing bounded cache
+and backoff. This adds visibility, not an automatic upgrade or finding suppression.
+Existing raw-package clocks, weekly review and urgent/missed-run behavior stay
+in force. Known-path CA inspection does not inventory custom application stores,
+embedded roots or a program's TLS verification behavior; review those separately.

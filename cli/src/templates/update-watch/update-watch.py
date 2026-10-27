@@ -43,11 +43,14 @@ image's env it reads only the version keys the services file names.
 import argparse
 import datetime as dt
 import hashlib
+import http.client
+import io
 from email.utils import formataddr, parseaddr
 import ipaddress
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import socket
 import ssl
@@ -55,6 +58,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tarfile
+import time
 import urllib.error
 from urllib.parse import quote, urlsplit
 import urllib.request
@@ -572,8 +577,25 @@ def list_services(docker, services, skipped=None):
     return containers, images
 
 
+def probe_version(docker, container, service):
+    probe = service.get('probe')
+    if probe:
+        try:
+            output = docker(['exec', container['name'], *probe['argv']], timeout=30)
+        except WatchError:
+            output = ''
+        match = re.search(probe['pattern'], output, re.M)
+        version = full_version(match.group(1)) if match else None
+        if version:
+            source='runtime probe' if service.get('requireProbe') else 'binary'
+            return version, source+' ('+' '.join(probe['argv'][:2])+')'
+    return None, None
+
+
 def resolve_version(docker, container, image, service):
-    """(version, source): an image label or env key, a full tag, then the binary."""
+    """Required runtime probe, else an image version, full tag or binary probe."""
+    if service.get('requireProbe'):
+        return probe_version(docker, container, service)
     for key in service.get('labels', ()):
         version = full_version(str(image.get('labels', {}).get(key) or ''))
         if version:
@@ -587,17 +609,7 @@ def resolve_version(docker, container, image, service):
     version = full_version(container['tag'] or '')
     if version:
         return version, 'tag'
-    probe = service.get('probe')
-    if probe:
-        try:
-            output = docker(['exec', container['name'], *probe['argv']], timeout=30)
-        except WatchError:
-            output = ''
-        match = re.search(probe['pattern'], output, re.M)
-        version = full_version(match.group(1)) if match else None
-        if version:
-            return version, 'binary (' + ' '.join(probe['argv'][:2]) + ')'
-    return None, None
+    return probe_version(docker, container, service)
 
 
 def read_upgrade_log(path):
@@ -744,11 +756,93 @@ def distrusted_roots(pem):
     return [root for root in DISTRUSTED_ROOTS if any(root in subject for subject in subjects)]
 
 
-def runtime_trust(docker):
+CA_MAX_BYTES = 1024**2
+CA_ARCHIVE_MAX_BYTES = 2*1024**2
+SYSTEM_CA_PATHS = ('/etc/ssl/certs/ca-certificates.crt', '/etc/ssl/cert.pem')
+
+
+def public_ca_path(path):
+    """Only known public bundles; never read an arbitrary executable-supplied path."""
+    return isinstance(path,str) and (path in SYSTEM_CA_PATHS or bool(re.fullmatch(
+        r'/app/lib/(?:castore|certifi)-[0-9A-Za-z.+_-]+/priv/cacerts\.pem|'
+        r'/(?:usr/(?:local/)?lib|opt/venv/lib|app/\.venv/lib)/python[0-9]+(?:\.[0-9]+)?/(?:site|dist)-packages/certifi/cacert\.pem',path)))
+
+
+class CertificateAlias(WatchError):
+    def __init__(self,target):
+        super().__init__('Certificate archive contains an alias')
+        self.target = target
+
+
+def ca_from_archive(data,path):
+    """Parse one bounded regular file, never extract or follow archive links."""
+    try:
+        if not public_ca_path(path) or len(data)>CA_ARCHIVE_MAX_BYTES:
+            raise ValueError('Invalid certificate archive')
+        with tarfile.open(fileobj=io.BytesIO(data),mode='r:') as archive:
+            rows=archive.getmembers()
+            if len(rows)!=1 or rows[0].name!=posixpath.basename(path):
+                raise ValueError('Unexpected certificate archive contents')
+            member=rows[0]
+            if member.issym():
+                target=posixpath.normpath(posixpath.join(posixpath.dirname(path),member.linkname))
+                # Record only a public target, without reading it or exposing an
+                # arbitrary link value. The caller must inspect that target's
+                # regular file separately before treating it as a duplicate.
+                raise CertificateAlias(target if public_ca_path(target) else None)
+            if not member.isfile() or member.sparse or not 0<member.size<=CA_MAX_BYTES:
+                raise ValueError('Unexpected certificate entry type or size')
+            file=archive.extractfile(member)
+            if file is None:raise ValueError('Missing certificate file')
+            value=file.read(CA_MAX_BYTES+1)
+            if len(value)!=member.size:raise ValueError('Truncated certificate file')
+            return value.decode('ascii')
+    except CertificateAlias:
+        raise
+    except (tarfile.TarError,OSError,UnicodeError,ValueError,OverflowError):
+        raise WatchError('Certificate archive inspection failed') from None
+
+
+def container_ca_bundle(container_id,path):
+    """Read a known public CA file through the local daemon without image tools."""
+    if not re.fullmatch(r'[a-f0-9]{12,64}',container_id) or not public_ca_path(path):
+        raise WatchError('Invalid certificate inspection target')
+    class LocalDocker(http.client.HTTPConnection):
+        def connect(self):
+            self.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+            self.sock.settimeout(self.timeout);self.sock.connect('/var/run/docker.sock')
+    connection=LocalDocker('localhost',timeout=5);deadline=time.monotonic()+15
+    try:
+        connection.request('GET','/containers/'+container_id+'/archive?path='+quote(path,safe=''))
+        response=connection.getresponse()
+        if response.status==404:return None
+        if response.status!=200:raise WatchError('Certificate archive request failed')
+        length=response.getheader('Content-Length')
+        if length is not None and (not length.isdecimal() or int(length)>CA_ARCHIVE_MAX_BYTES):
+            raise WatchError('Certificate archive exceeds bounds')
+        chunks=[];size=0
+        while True:
+            remaining=deadline-time.monotonic()
+            if remaining<=0:raise WatchError('Certificate archive deadline exceeded')
+            if connection.sock is not None:connection.sock.settimeout(remaining)
+            chunk=response.read1(min(65536,CA_ARCHIVE_MAX_BYTES+1-size))
+            if not chunk:break
+            size+=len(chunk)
+            if size>CA_ARCHIVE_MAX_BYTES:raise WatchError('Certificate archive exceeds bounds')
+            chunks.append(chunk)
+        return ca_from_archive(b''.join(chunks),path)
+    except (OSError,http.client.HTTPException,ValueError):
+        raise WatchError('Certificate archive request failed') from None
+    finally:
+        connection.close()
+
+
+def runtime_trust(docker,read_ca=container_ca_bundle):
     """Offline runtime floors and CA contents, independent of application tags.
 
-    Missing optional executables/files are normal for minimal container images.
-    Unexpected output from an executable or malformed PEM is an incomplete check.
+    Missing optional executables/files are normal. Known public CA files are
+    read without image executables. Unreadable archives or malformed PEM make
+    coverage incomplete; a verified alias is deduplicated, never followed.
     """
     ids = docker(['ps', '-q', '--no-trunc']).split()
     findings, skipped = [], []
@@ -764,27 +858,35 @@ def runtime_trust(docker):
         if version and vulnerable_node(version):
             finding('node-runtime', 'Node ' + safe(version) + ' is below the 2026-10-21 security release; '
                     'require 22.23.4, 24.22.1 or 26.12.1 within that major')
-        paths = ['/etc/ssl/certs/ca-certificates.crt', '/etc/ssl/cert.pem']
+        paths = list(SYSTEM_CA_PATHS)
         try:
             extra = docker(['exec', cid, 'sh', '-c',
                             'for p in /app/lib/castore-*/priv/cacerts.pem /app/lib/certifi-*/priv/cacerts.pem; '
                             'do test ! -f "$p" || echo "$p"; done'], timeout=15)
-            paths += [p for p in extra.splitlines() if p.startswith('/app/lib/')]
+            for path in extra.splitlines():
+                if public_ca_path(path):paths.append(path)
+                else:skipped.append(name + ': unrecognized public CA bundle path')
         except WatchError:
             pass
         try:
             certifi = docker(['exec', cid, 'python3', '-c',
                               'import certifi; print(certifi.where())'], timeout=15).strip()
-            if certifi.startswith('/'):
-                paths.append(certifi)
+            if public_ca_path(certifi):paths.append(certifi)
+            else:skipped.append(name + ': unrecognized public CA bundle path')
         except WatchError:
             pass
-        checked = set()
-        for path in paths:
+        checked,regular,aliases = set(),set(),{}
+        for path in dict.fromkeys(paths):
             try:
-                pem = docker(['exec', cid, 'cat', path], timeout=15)
-            except WatchError:
+                pem = read_ca(cid,path)
+            except CertificateAlias as alias:
+                aliases[path]=alias.target
                 continue
+            except WatchError:
+                skipped.append(name + ': public CA bundle could not be inspected at ' + path)
+                continue
+            if pem is None:continue
+            regular.add(path)
             digest = hashlib.sha256(pem.encode()).hexdigest()
             if digest in checked:
                 continue
@@ -796,6 +898,14 @@ def runtime_trust(docker):
                 continue
             if roots:
                 finding('certificate-trust', path + ' still trusts compromised eMudhra chains via ' + ', '.join(roots))
+        for path,target in aliases.items():
+            if target not in regular:
+                skipped.append(name + ': public CA bundle alias has no independently inspected regular target at ' + path)
+        try:
+            if docker(['inspect','--format','{{.State.Running}}',cid]).strip()!='true':
+                raise WatchError('Container stopped during inspection')
+        except WatchError:
+            skipped.append(name + ': container changed during runtime trust inspection')
     return findings, skipped
 
 

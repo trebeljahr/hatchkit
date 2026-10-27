@@ -14,10 +14,12 @@ printed on app-vps that day.
 """
 import datetime as dt
 import json
+import io
 import os
 from pathlib import Path
 import sys
 import tempfile
+import tarfile
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
@@ -868,13 +870,13 @@ class RuntimeSecurityTests(unittest.TestCase):
     def test_bundled_store_is_checked_even_when_system_store_passes(self):
         def docker(args,**kwargs):
             if args[0]=='ps':return 'id'
-            if args[0]=='inspect':return '/app'
+            if args[0]=='inspect':return 'true' if args[2]=='{{.State.Running}}' else '/app'
             if args[0]=='exec' and args[2]=='node':return '24.22.1'
             if args[0]=='exec' and args[2]=='sh':return '/app/lib/castore-1.0.16/priv/cacerts.pem'
             if args[0]=='exec' and args[2]=='cat':return 'old' if '/app/lib/'in args[3] else 'new'
             raise uw.WatchError('absent')
         with patch.object(uw,'distrusted_roots',side_effect=lambda pem:['emSign ECC Root CA - G3'] if pem=='old' else []):
-            findings,skipped=uw.runtime_trust(docker)
+            findings,skipped=uw.runtime_trust(docker,lambda cid,path:docker(['exec',cid,'cat',path]))
         self.assertEqual(skipped,[])
         self.assertEqual(len(findings),1)
         self.assertIn('castore',findings[0]['summary'])
@@ -882,12 +884,102 @@ class RuntimeSecurityTests(unittest.TestCase):
     def test_malformed_trust_data_is_incomplete_not_clean(self):
         def docker(args,**kwargs):
             if args[0]=='ps':return 'id'
-            if args[0]=='inspect':return '/app'
+            if args[0]=='inspect':return 'true' if args[2]=='{{.State.Running}}' else '/app'
             if args[0]=='exec' and args[2]=='cat':return 'not a certificate'
             raise uw.WatchError('absent')
-        findings,skipped=uw.runtime_trust(docker)
+        findings,skipped=uw.runtime_trust(docker,lambda cid,path:docker(['exec',cid,'cat',path]))
         self.assertFalse(findings)
         self.assertEqual(len(skipped),1)
+
+
+class CertificateArchiveCoverage(unittest.TestCase):
+    PATH='/etc/ssl/certs/ca-certificates.crt'
+    def archive(self,kind=tarfile.REGTYPE,name='ca-certificates.crt',target='',payload=b'synthetic-public-PEM',extra=False):
+        output=io.BytesIO()
+        with tarfile.open(fileobj=output,mode='w')as tar:
+            member=tarfile.TarInfo(name);member.type=kind;member.linkname=target
+            member.size=len(payload)if kind==tarfile.REGTYPE else 0
+            tar.addfile(member,io.BytesIO(payload)if member.size else None)
+            if extra:tar.addfile(tarfile.TarInfo('unexpected'))
+        return output.getvalue()
+    def test_exact_regular_public_file_is_read_without_extraction(self):
+        self.assertEqual(uw.ca_from_archive(self.archive(),self.PATH),'synthetic-public-PEM')
+    def test_other_entries_links_compression_size_and_truncation_are_rejected(self):
+        for data in [self.archive(kind=tarfile.LNKTYPE,target='/secret'),self.archive(kind=tarfile.DIRTYPE),self.archive(name='../ca-certificates.crt'),self.archive(extra=True),self.archive(payload=b'a'*(uw.CA_MAX_BYTES+1)),self.archive()[:520],b'not a tar',b'x'*(uw.CA_ARCHIVE_MAX_BYTES+1)]:
+            with self.subTest(size=len(data)),self.assertRaisesRegex(uw.WatchError,'^Certificate archive inspection failed$'):uw.ca_from_archive(data,self.PATH)
+    def test_symlink_is_never_followed_and_only_public_alias_metadata_is_retained(self):
+        for target,expected in [('certs/ca-certificates.crt',self.PATH),('/run/secrets/'+SECRET,None)]:
+            data=self.archive(kind=tarfile.SYMTYPE,name='cert.pem',target=target)
+            with self.assertRaises(uw.CertificateAlias)as error:uw.ca_from_archive(data,'/etc/ssl/cert.pem')
+            self.assertEqual(error.exception.target,expected);self.assertNotIn(SECRET,str(error.exception))
+    def test_unknown_paths_never_reach_the_daemon(self):
+        for path in ['/run/secrets/'+SECRET,'/etc/passwd','/app/lib/../../secret','/app/.venv/lib/python3.12/site-packages/certifi/../../secret']:
+            with patch.object(uw.http.client,'HTTPConnection',side_effect=AssertionError('No daemon access')):
+                with self.assertRaises(uw.WatchError):uw.container_ca_bundle('a'*64,path)
+        for cid in ['foreign-name','/../../secret','a'*65]:
+            with self.assertRaises(uw.WatchError):uw.container_ca_bundle(cid,self.PATH)
+    def test_daemon_bounds_and_errors_never_export_response_bodies(self):
+        class Response:
+            status=200;length=None
+            def __init__(self,data):self.body=io.BytesIO(data)
+            def getheader(self,key):return self.length
+            def read1(self,count):return self.body.read(count)
+        class Connection:
+            response=None;closed=False;requests=[]
+            def __init__(self,*args,**kwargs):self.sock=None
+            def request(self,*args):self.requests.append(args)
+            def getresponse(self):return self.response
+            def close(self):Connection.closed=True
+        with patch.object(uw.http.client,'HTTPConnection',Connection):
+            Connection.response=Response(self.archive());self.assertEqual(uw.container_ca_bundle('a'*64,self.PATH),'synthetic-public-PEM');self.assertTrue(Connection.closed)
+            for status,length,data in [(403,None,SECRET.encode()),(200,str(uw.CA_ARCHIVE_MAX_BYTES+1),b''),(200,None,b'x'*(uw.CA_ARCHIVE_MAX_BYTES+1)),(200,'invalid',b'')]:
+                Connection.response=Response(data);Connection.response.status=status;Connection.response.length=length
+                with self.subTest(status=status,length=length),self.assertRaises(uw.WatchError)as error:uw.container_ca_bundle('a'*64,self.PATH)
+                self.assertNotIn(SECRET,str(error.exception));self.assertTrue(Connection.closed)
+            Connection.response=Response(SECRET.encode());Connection.response.status=404
+            self.assertIsNone(uw.container_ca_bundle('a'*64,self.PATH))
+    def docker(self,args,**kwargs):
+        if args[0]=='ps':return 'a'*64
+        if args[0]=='inspect':return 'true' if args[2]=='{{.State.Running}}' else '/minimal-image'
+        raise uw.WatchError('No executable in minimal image')
+    def test_minimal_image_without_shell_or_cat_still_exposes_bad_root(self):
+        reads=[]
+        def reader(cid,path):reads.append(path);return 'public PEM' if path==self.PATH else None
+        with patch.object(uw,'distrusted_roots',return_value=['emSign ECC Root CA - G3']):findings,skipped=uw.runtime_trust(self.docker,reader)
+        self.assertFalse(skipped);self.assertEqual(len(findings),1);self.assertEqual(findings[0]['kind'],'certificate-trust');self.assertEqual(reads,list(uw.SYSTEM_CA_PATHS))
+    def test_unreadable_archive_and_unresolved_alias_are_incomplete(self):
+        for exception in [uw.WatchError(SECRET),uw.CertificateAlias(None)]:
+            def reader(cid,path):
+                if path==self.PATH:raise exception
+                return None
+            findings,skipped=uw.runtime_trust(self.docker,reader);self.assertFalse(findings);self.assertEqual(len(skipped),1);self.assertNotIn(SECRET,str(skipped))
+    def test_public_alias_requires_independent_regular_target_and_unknown_discovery_is_not_read(self):
+        paths=[]
+        def reader(cid,path):
+            paths.append(path)
+            if path=='/etc/ssl/cert.pem':raise uw.CertificateAlias(self.PATH)
+            return 'public PEM'
+        def docker(args,**kwargs):
+            if args[:3]==['exec','a'*64,'python3']:return '/run/secrets/'+SECRET
+            return self.docker(args,**kwargs)
+        with patch.object(uw,'distrusted_roots',return_value=[]):findings,skipped=uw.runtime_trust(docker,reader)
+        self.assertFalse(findings);self.assertEqual(len(skipped),1);self.assertNotIn(SECRET,str(skipped));self.assertEqual(paths,list(uw.SYSTEM_CA_PATHS))
+
+
+class InfrastructureRuntimeVersions(unittest.TestCase):
+    def test_required_probe_wins_over_tag_and_failure_never_falls_back(self):
+        image={'labels':{},'env':[]};row={'name':'synthetic','tag':'9.9.9'}
+        for key,answer,expected in [('coredns','CoreDNS-1.15.0\nlinux/amd64,go1.27.3,synthetic\n','1.15.0'),('sentinel','1.1.2','1.1.2')]:
+            service=BY_KEY[key];self.assertTrue(service['requireProbe'])
+            value,source=uw.resolve_version(lambda args,**kwargs:answer,row,image,service)
+            self.assertEqual(str(value),expected);self.assertTrue(source.startswith('runtime probe '))
+            self.assertEqual(uw.resolve_version(lambda args,**kwargs:SECRET,row,image,service),(None,None))
+            def failed(*args,**kwargs):raise uw.WatchError(SECRET)
+            self.assertEqual(uw.resolve_version(failed,row,image,service),(None,None))
+    def test_runtime_version_discovery_reads_only_documented_fixed_targets(self):
+        self.assertEqual(BY_KEY['coredns']['probe']['argv'],['/coredns','-version'])
+        self.assertEqual(BY_KEY['sentinel']['probe']['argv'],['curl','--fail','--silent','--show-error','--max-time','5','http://127.0.0.1:8888/api/version'])
+        self.assertEqual(BY_KEY['sentinel']['env'],[])
 
 
 class HostRuntimeCoverage(unittest.TestCase):
