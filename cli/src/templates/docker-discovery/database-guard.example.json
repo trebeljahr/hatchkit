@@ -1,5 +1,6 @@
 {
   "schema": 1,
   "proxy": "coolify-proxy",
+  "requireManagedDatabaseCoverage": true,
   "databases": ["postgres-example-project"]
 }

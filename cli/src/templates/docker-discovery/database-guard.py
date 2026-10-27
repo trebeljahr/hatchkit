@@ -28,11 +28,15 @@ def run(args,**kwargs):
 
 
 def topology(config,rows,interfaces):
-    assert set(config)=={'schema','proxy','databases'} and type(config['schema'])is int and config['schema']==1
+    assert set(config)in ({'schema','proxy','databases'},{'schema','proxy','databases','requireManagedDatabaseCoverage'}) and type(config['schema'])is int and config['schema']==1
+    if 'requireManagedDatabaseCoverage'in config:assert type(config['requireManagedDatabaseCoverage'])is bool
     assert isinstance(config['databases'],list)
     names=[config['proxy'],*config['databases']]
     assert 1<len(names)<=65 and len(set(names))==len(names)
     assert all(isinstance(n,str) and n and all(c.isalnum()or c in '_.-'for c in n)for n in names)
+    if config.get('requireManagedDatabaseCoverage'):
+        observed={r['Name'].lstrip('/')for r in rows if(r.get('Config',{}).get('Labels')or{}).get('coolify.type')=='database'}
+        assert observed<=set(config['databases']),'A managed database is outside the reviewed boundary'
     selected={r['Name'].lstrip('/'):r for r in rows if r['Name'].lstrip('/')in names}
     assert set(selected)==set(names),'Required container missing; retain previous protection'
     assert all(r['State']['Running']for r in selected.values())

@@ -12,6 +12,16 @@ class GuardTests(unittest.TestCase):
  def test_unknown_policy_and_non_list_databases_fail_closed(self):
   for config in [{'schema':1,'proxy':'proxy','databases':['db'],'allow':True},{'schema':True,'proxy':'proxy','databases':['db']},{'schema':1,'proxy':'proxy','databases':'db'}]:
    with self.assertRaises(AssertionError):g.topology(config,[],{})
+ def test_new_managed_database_invalidates_coverage_without_auto_expanding_scope(self):
+  def row(name,ip,kind=None):return {'Name':'/'+name,'State':{'Running':True},'Config':{'Labels':{'coolify.type':kind}},'NetworkSettings':{'Networks':{'app':{'IPAddress':ip,'GlobalIPv6Address':''}}}}
+  rows=[row('proxy','172.20.0.2'),row('database','172.20.0.3','database')]
+  config={'schema':1,'proxy':'proxy','databases':['database'],'requireManagedDatabaseCoverage':True}
+  self.assertEqual(g.topology(config,rows,{'app':'veth123'}),[(4,'veth123','172.20.0.3')])
+  rows.append(row('unreviewed','172.20.0.4','database'))
+  with self.assertRaisesRegex(AssertionError,'outside the reviewed boundary'):g.topology(config,rows,{'app':'veth123'})
+  self.assertEqual(config['databases'],['database'])
+  config['requireManagedDatabaseCoverage']='true'
+  with self.assertRaises(AssertionError):g.topology(config,rows,{'app':'veth123'})
  def test_ingress_rules_do_not_trust_packet_source_addresses(self):
   rows=g.wanted([(4,'veth123','172.20.0.3'),(6,'veth123','fd00::3')])
   self.assertEqual(rows[1]['chain']['dev'],'veth123');self.assertEqual(rows[1]['chain']['hook'],'ingress')

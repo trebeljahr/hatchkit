@@ -216,6 +216,21 @@ real TLS routes, original-container checks, independent report coupling and a
 separate exact AIDE review. Template files alone activate nothing. Adapt `database-guard.example.json` to
 explicit existing names before installation.
 
+Use `requireManagedDatabaseCoverage: true` to fail incomplete when a running
+container labeled `coolify.type=database` is outside the reviewed list. Existing
+filter rules stay in place; the watcher never expands scope or grants access on
+its own. This detects new native managed databases, not every embedded/service
+database. Keep the explicit inventory complete and review it before provisioning
+a new database. Missing or duplicate rolling application identities must stop a
+live path qualification rather than selecting an arbitrary peer.
+
+For a proxy attached to several isolated app networks, cover every actual host
+ingress veth for every protected destination. The reviewed dedicated case has
+twelve databases (including both controller stores) and twelve proxy interfaces,
+giving 144 IPv4 destination rules. Qualify every legitimate app/controller TCP
+path and real route separately. No IPv6 rule is generated when those networks
+have no IPv6 addresses; this does not alter public-origin IPv6 filtering.
+
 This boundary does not split the actual Layer 2 networks, remove the proxy's raw
 socket capability, prevent ARP spoofing, restrict general outbound traffic or
 isolate app-to-host management access. Keep those risks visible and continue

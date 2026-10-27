@@ -3183,3 +3183,35 @@ checker/profile/policy change, and retain the previous baseline. Normal vendor
 upgrades preserve this override, but newly created containers still need drift
 and compatibility checks. Resource controls do not remove Coolify's host-level
 SSH management trust or Sentinel's remaining socket/host-PID trust.
+
+### Keep a multi-network proxy away from database ports
+
+Separate project networks still allow a compromised proxy to reach every
+database when that proxy joins each network. Include both control-plane stores
+in the review. Resolve the real application/controller peer for every database
+and qualify existing TCP connectivity without credentials or application writes.
+Refuse missing or ambiguous rolling application identities and require the
+existing exact-image resource profiles to pass.
+
+The dedicated topology has twelve databases across twelve proxy interfaces.
+Its reviewed destination filter has 144 IPv4 rules on the proxy's actual host
+veth ingress devices, before bridging/routing. It changes only the owned netdev
+table. Verify proxy denial and preserved legitimate app/controller TCP paths for
+every database, ten app readiness checks, real TLS routes, original workload
+identities, independent failure coupling and exact integrity review. Rollback
+must remove only the exact owned table/files and retain all current data.
+
+Check kernel IPv6 addresses too: Docker's empty global-IPv6 field does not prove
+the absence of link-local addresses. This dedicated qualification requires no
+non-loopback IPv6 addresses in the proxy and all twelve database namespaces.
+Enabling IPv6 requires a fresh boundary qualification; public-origin IPv6
+filtering is separate and remains intact.
+
+Set `requireManagedDatabaseCoverage: true` to fail incomplete when a new running
+container labeled `coolify.type=database` falls outside the explicit reviewed
+scope. Retain existing protection and alert; do not auto-expand or trust a new
+database identity. This label check does not discover every embedded/service
+database, so maintain the full inventory and review scope before provisioning.
+Use the five-second reconciliation and independent required guard component,
+while retaining the documented convergence/restart window. This guard does not
+establish full Layer 2 separation or general database egress restrictions.
