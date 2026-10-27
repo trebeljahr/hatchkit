@@ -364,8 +364,8 @@ recovery; an old database dump is not the undo path for this rollout.
 
 The `database-readiness-policy.example.json` file is opt-in: replace its image,
 container and network placeholders with reviewed values; merge into existing policy.
-For a reviewed PostgreSQL or Valkey profile, set `databaseReady` to `postgres` or
-`valkey` together with the exact `imageId`. The checker uses SELECT 1 or PING,
+For a reviewed PostgreSQL, Valkey or Redis profile, set `databaseReady` to
+`postgres`, `valkey` or `redis` together with the exact `imageId`. The checker uses SELECT 1 or PING,
 reading authentication variables inside the existing container; credentials and
 raw diagnostics never enter reports. Only matching image bytes may be probed.
 Connection failure, timeout or unexpected output makes coverage incomplete.
@@ -410,3 +410,28 @@ accidental public bind or extra publication. Prove positive A, AAAA, refused
 unrelated names, restart and old-image recovery before serial production change.
 The NET_BIND_SERVICE exception may be needed to execute the upstream binary's
 file capability even when its listener uses the unprivileged 1053 port; test it.
+
+`management-resources.example.yml` is an opt-in resource profile for Coolify's
+supported custom Compose override. Merge it with existing settings; preserve
+the exact services `coolify`, `postgres` and `redis`. Compare complete resolved
+Compose documents with only the four resource fields removed. Keep existing
+environment, images, commands, mounts, aliases, health checks and permissions.
+The override persists across normal vendor upgrades; still verify the newly
+created container and require exact-image drift monitoring after each upgrade.
+
+Qualify fresh control-plane bootstrap, framework SQL/Redis queries, native dump,
+restart and original-limit recovery using synthetic credentials and storage.
+Match the controller's actual bind destinations and service UID; this reviewed
+image runs as UID 9999, not Alpine's older UID 82. Require successful writes,
+then prove the latest database, queue and service-owned configuration files
+survive recovery, including file ownership/mode. Never mount real SSH keys,
+controller data or the Docker socket in the fixture.
+
+Apply runtime limits serially, backing services first, without recreating healthy
+production containers. Keep source fingerprints, intent/outcome receipts and
+current-data recovery; Docker updates cannot restore zero-valued unlimited
+controls reliably. Guard against concurrent deployments and unowned settings.
+Monitor actual SQL/PING, exact bindings/mount destinations, resources and the
+controller's existing UID without claiming new permission containment. Include
+the exact custom override path in AIDE, review its first inclusion and all
+authored policy changes, and preserve previous baselines. No automatic learning.

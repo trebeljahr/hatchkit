@@ -68,12 +68,14 @@ class Policy(unittest.TestCase):
  def test_database_protocol_inspection_never_exports_diagnostics(self):
   class Result:
    returncode=0;stdout='1\n';stderr='must-not-leak'
-  for engine,reply in [('postgres','1'),('valkey','PONG')]:
+  for engine,reply in [('postgres','1'),('valkey','PONG'),('redis','PONG')]:
    Result.returncode=0;Result.stdout=reply+'\n'
    with patch.object(p.subprocess,'run',return_value=Result())as run:
     self.assertTrue(p.database_ready('synthetic-container',engine))
     self.assertEqual(run.call_args.args[0][:5],['docker','exec','synthetic-container','sh','-c'])
     self.assertEqual(run.call_args.kwargs['timeout'],15)
+    if engine=='redis':
+     self.assertIn('REDISCLI_AUTH="$REDIS_PASSWORD"',run.call_args.args[0][-1])
    for returncode,output in [(1,reply),(0,'must-not-leak')]:
     Result.returncode=returncode;Result.stdout=output
     with patch.object(p.subprocess,'run',return_value=Result()),self.assertRaisesRegex(RuntimeError,'^Database readiness inspection failed$'):p.database_ready('synthetic-container',engine)

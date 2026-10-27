@@ -3120,3 +3120,47 @@ the raw Docker socket and host PID namespace and exposes no resource-limit field
 Do not claim Sentinel socket isolation from a read-only mount or temporary runtime
 settings. Its native lifecycle needs a supported configuration or a separately
 reviewed integration before containment can be called durable.
+
+### Bound the control plane without disrupting its workloads
+
+Coolify supports persistent settings in
+[`/data/coolify/source/docker-compose.custom.yml`](https://github.com/coollabsio/coolify-docs/blob/main/content/docs/start-with-self-hosted.mdx#4-compose-overrides).
+Merge the resource example from `cli/src/templates/docker-discovery/` into the
+existing override, using the exact services `coolify`, `postgres` and `redis`.
+Compare the complete resolved Compose documents before and after. Only
+`mem_limit`, `memswap_limit`, `cpus` and `pids_limit` should differ; preserve all
+images, environment, commands, mounts, health checks and existing options.
+
+For the measured 4.5.0 controller workload, the qualified starting limits are
+2 GiB memory / 3 GiB combined memory-swap, two CPUs and 512 PIDs. Its PostgreSQL
+15.19 profile uses 512 MiB / 1 GiB, one CPU and 128 PIDs; Redis 7.4.11 uses
+256 MiB / 512 MiB, half a CPU and 128 PIDs. These values require fresh workload
+headroom and exact-image qualification on another installation. They do not
+qualify a database or controller permission change.
+
+Test a fresh isolated controller with synthetic database/queue credentials,
+no published ports and fresh storage matching its actual mount destinations.
+Never expose real configuration, SSH keys or the Docker socket to the fixture.
+Use the image's actual service identity: this reviewed controller runs as UID
+9999, not Alpine's older UID 82. Require successful service-user writes, then
+prove SQL/Redis queries, native dump, restart and restoration of original resource
+controls while preserving the latest database, queue and controller-file state.
+Check ownership/mode as well as bytes. A fixture that cannot write correctly has
+not qualified recovery, even if its HTTP health endpoint answers.
+
+Capture the live controller database on the original host, keep explicit
+mutation receipts, validate native Compose resolution and apply runtime limits
+serially: backing services first, controller last. A healthy resource update
+needs no service restart. Refuse changed identities or unowned settings. If
+recreation is required to restore unlimited controls, retain the failed instance
+and preserve current volumes and configuration; never restore an older database
+dump as resource rollback.
+
+Monitor exact image, limits, existing UID, bindings and mount destinations, plus
+authenticated SELECT 1/PING for both backing services. The required external
+container-policy component must reject failed or incomplete probes. Protect the
+exact custom override in AIDE, review its first inclusion and every authored
+checker/profile/policy change, and retain the previous baseline. Normal vendor
+upgrades preserve this override, but newly created containers still need drift
+and compatibility checks. Resource controls do not remove Coolify's host-level
+SSH management trust or Sentinel's remaining socket/host-PID trust.

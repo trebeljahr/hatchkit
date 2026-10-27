@@ -91,6 +91,9 @@ def database_ready(container_id, engine):
     elif engine == 'valkey':
         script = 'if [ -n "${VALKEY_PASSWORD:-${REDIS_PASSWORD:-}}" ]; then export VALKEYCLI_AUTH="${VALKEY_PASSWORD:-$REDIS_PASSWORD}"; fi; exec valkey-cli --raw PING'
         expected = 'PONG'
+    elif engine == 'redis':
+        script = 'if [ -n "${REDIS_PASSWORD:-}" ]; then export REDISCLI_AUTH="$REDIS_PASSWORD"; fi; exec redis-cli --raw PING'
+        expected = 'PONG'
     else:
         raise ValueError('Unsupported database readiness engine')
     result = subprocess.run(['docker','exec',container_id,'sh','-c',script],
@@ -207,7 +210,7 @@ def evaluate(containers, policies, proc=kernel_status, mongo_cache=mongo_cache_m
         if 'mongoCacheMaxBytes' in policy['expected'] and (type(cache) is not int or not 0 < cache < 2**50
                 or not re.fullmatch(r'sha256:[a-f0-9]{64}', policy['expected'].get('imageId',''))):
             raise ValueError('Mongo cache control requires a positive ceiling and exact image')
-        if 'databaseReady' in policy['expected'] and (policy['expected']['databaseReady'] not in ('postgres','valkey')
+        if 'databaseReady' in policy['expected'] and (policy['expected']['databaseReady'] not in ('postgres','valkey','redis')
                 or not re.fullmatch(r'sha256:[a-f0-9]{64}', policy['expected'].get('imageId',''))):
             raise ValueError('Database readiness requires a reviewed engine and exact image')
         if 'dnsReady' in policy['expected'] and (not valid_dns_policy(policy['expected']['dnsReady'])

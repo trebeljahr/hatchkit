@@ -1,0 +1,19 @@
+# Merge with the existing /data/coolify/source/docker-compose.custom.yml.
+# Qualify on exact images and measured workloads before use. Resource controls
+# are separate from database/controller permissions and socket isolation.
+services:
+  coolify:
+    mem_limit: 2g
+    memswap_limit: 3g
+    cpus: 2
+    pids_limit: 512
+  postgres:
+    mem_limit: 512m
+    memswap_limit: 1g
+    cpus: 1
+    pids_limit: 128
+  redis:
+    mem_limit: 256m
+    memswap_limit: 512m
+    cpus: 0.5
+    pids_limit: 128
