@@ -91,3 +91,12 @@ concurrency. A failing test must stop image publication. Check both the repaired
 failure path and normal requests; qualify crash regressions only on disposable
 localhost fixtures, never a live workload. Source tests do not replace final
 image scanning or deployment-policy checks.
+
+Inspect a fresh production dependency closure too: in-place pruning can leave
+orphaned development packages in pnpm's virtual store. Preserve legitimate
+production peers and qualify native modules after any clean installation.
+Skipped install scripts require an explicit, reviewed native rebuild. Pin the
+manager in independently installed subprojects and verify overrides took effect.
+Rolling tests should prove a late in-flight response finishes and its idle
+keep-alive socket retires within the existing shutdown budget, with clean exit
+and preserved state on the surviving replica.

@@ -3267,3 +3267,22 @@ size limit does not fix a decoder error raised after parsing completes; the
 [body-parser advisory](https://github.com/expressjs/body-parser/security/advisories/GHSA-27r3-jxmh-p828)
 requires a patched parser or its documented decompression workaround. Never
 exercise a crash reproducer against a live application.
+
+Verify the production dependency tree itself. An in-place pnpm production
+install can retain orphaned development packages in its virtual store, which
+then ride into the final image. Qualify a fresh production installation and
+assert the unwanted tooling is absent. Skipping lifecycle scripts also skips
+native module installation: explicitly rebuild the existing allowed native
+production modules in the build stage, and test their actual database/hash
+operations. Keep development-only prepare hooks out of that installation.
+Retained production peers are a separate case; do not delete them blindly.
+Pin the package manager for independently installed subprojects and verify
+resolved versions, since newer managers can ignore older override locations.
+
+Rolling qualification must include a request admitted before listener close
+whose body completes afterward. After that response finishes, retire its idle
+keep-alive socket without cutting active responses. Require a clean process
+exit inside the existing stop budget, WebSocket reconnection, shared-state
+preservation and zero failures from the surviving replica. A forced exit after
+all WebSockets closed can still indicate an HTTP socket left behind; diagnose
+that boundary before widening timeouts or weakening the test.
