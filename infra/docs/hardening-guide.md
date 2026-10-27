@@ -3223,3 +3223,35 @@ status and unchanged rules, workloads, legitimate database paths and required
 external components before reviewing the exact source/config integrity diff.
 The shared five-database coverage-flag upgrade uses this path without changing
 publisher code, credentials, flags, table rules or database data.
+
+### Patch an application dependency without losing its deployment controls
+
+Resolve a scanner match to its actual artifact path before changing a lockfile.
+The same image can contain an application's dependency, a bundled compiler copy
+and an unused package-manager copy. Record each separately; a top-level override
+does not repair a bundled dependency in global npm. Keep unmatched findings and
+their original deadlines visible until the final replacement image is scanned.
+
+Check the vendor's platform and feature conditions against the deployed build,
+not just source defaults. For the October 2026 Next.js advisories, inspect the
+actual libc, Cache Components setting, typed-array cache functions, image/SVG
+configuration and Server Actions. Disabled features are applicability evidence,
+not permission to ignore the vendor's upgrade recommendation. Next.js 16.4.1
+and Sharp 0.35.5 are the published minimum fixes for the reviewed RCE issues;
+prefer the current compatible patched release after checking its release notes.
+See the [image optimization advisory](https://github.com/vercel/next.js/security/advisories/GHSA-2464-fhr4-w9xw)
+and [cache advisory](https://github.com/vercel/next.js/security/advisories/GHSA-673q-mjm6-r5xr).
+
+Patch the dependency and lockfile in an isolated checkout. Review the entire
+lockfile diff, including native binaries and peer-resolution changes. Run the
+existing app tests, native image-processing tests, typechecks, production build
+and release/drain/retained-asset tests serially. Use synthetic configuration and
+disabled reporters; do not copy production secrets into the checkout. A build
+blocked by local sandbox IPC is incomplete until a permitted clean retry passes.
+
+Before activation, retain the exact current image and supported recovery path.
+Preserve the app's resource limits, user, read-only filesystem, capabilities,
+cache/tmpfs paths, persistent assets and rolling-release identity. Verify the
+replacement digest and real package versions, rerun native and HTTP checks and
+scan the final image. Source tests alone do not qualify the production image or
+clear its findings. Respect separate Git publication authorization.

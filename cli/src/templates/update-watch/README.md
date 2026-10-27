@@ -68,3 +68,18 @@ and backoff. This adds visibility, not an automatic upgrade or finding suppressi
 Existing raw-package clocks, weekly review and urgent/missed-run behavior stay
 in force. Known-path CA inspection does not inventory custom application stores,
 embedded roots or a program's TLS verification behavior; review those separately.
+
+For an app dependency match, inspect the full local report's artifact locations
+before choosing the source repository or override. A package under global npm
+is a different installation from the app's traced production package. Review
+vendor platform/feature conditions against the real deployed configuration and
+record evidence without claiming scanner matches are incidents.
+
+Qualify a dependency/lockfile patch with the app's existing native tests,
+typechecks, production build and release/recovery contracts using synthetic
+configuration. Preserve qualified deployment controls and persistent paths.
+Verify the new immutable image and actual installed versions, then scan the
+final image and refresh the watcher. Do not close a finding based only on a
+source commit, reset continuing deadlines or suppress unrelated bundled copies.
+Git publication and protected-record uploads retain their separate approval
+boundaries; a maintenance request does not silently grant either.
