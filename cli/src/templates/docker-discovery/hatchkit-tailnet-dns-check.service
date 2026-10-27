@@ -1,0 +1,20 @@
+[Unit]
+Description=Reconcile the reviewed tailnet DNS container
+Requires=docker.service
+After=docker.service tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/tailnet-dns.py ensure
+Environment=PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=
+MemoryMax=128M
+CPUQuota=50%
+TasksMax=32

@@ -1,0 +1,8 @@
+# Replace with the reviewed control-plane name and Tailscale address.
+# Authoritative local answer only. Unrelated names are refused; no forwarding.
+control.example.invalid:1053 {
+    hosts {
+        100.64.0.10 control.example.invalid
+    }
+    errors
+}

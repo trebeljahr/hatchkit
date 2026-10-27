@@ -381,3 +381,32 @@ the same no-volume layout; a fixture using a data volume cannot qualify that und
 Suspend automatic restart during the snapshot/replace sequence, preserve exact
 configuration and network aliases, retain the failed container, and restore only
 the current snapshot. A crashed/OOM-killed volatile queue cannot claim that guarantee.
+
+
+The tailnet DNS assets are an opt-in role, not a public resolver. Qualify the
+CoreDNS binary/Go version, certificate contents, exact image and existing
+configuration before using `tailnet-dns.Dockerfile` and the sample Corefile.
+Build with only the Dockerfile, reviewed public CA bundle and supplied deny-first
+context rules. Latest upstream images can still contain distrusted certificate
+roots. Pin the resulting local image ID; the launcher never pulls at boot.
+
+`tailnet-dns.py` consumes root-owned mode-0600 `/etc/tailnet-dns/container.json`
+with schema 1, `imageId`, `tailnetIp` and a reviewed Docker API `create` document.
+Derive it from an exact-image canary; preserve matching image defaults and all
+unowned existing settings. It accepts only the reviewed non-root/read-only/NNP
+profile, explicit memory/CPU/PID controls, the sole read-only Corefile bind and
+UDP/TCP port 53 bound to the actual Tailscale address. It refuses unknown image,
+port, privilege, mount or configuration drift. Keep the original stopped container
+and configuration until restart/recovery checks pass.
+
+The main systemd unit waits for Docker/Tailscale. The check timer verifies presence
+every 30 seconds and recreates only the missing, pinned reviewed container; it
+never repairs unknown drift or accepts a new image. Enable only after validating
+units, exact configuration and live DNS. `tailnet-dns-policy.example.json` requires
+replacing all image/name/IP placeholders and merging with existing policies.
+`dnsReady` checks both UDP and TCP with bounded packet size and total deadlines;
+only reviewed tailnet destinations are accepted. `PortBindings` detects an
+accidental public bind or extra publication. Prove positive A, AAAA, refused
+unrelated names, restart and old-image recovery before serial production change.
+The NET_BIND_SERVICE exception may be needed to execute the upstream binary's
+file capability even when its listener uses the unprivileged 1053 port; test it.

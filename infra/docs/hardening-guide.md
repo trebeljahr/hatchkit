@@ -3080,3 +3080,43 @@ configuration, mounts or network aliases. This planned healthy-process rollback
 does not establish crash recovery for an already OOM-killed volatile queue. See
 [Valkey CLI authentication](https://valkey.io/topics/cli/) and Docker's
 [dynamic resource update guidance](https://docs.docker.com/reference/cli/docker/container/update/).
+
+
+Include infrastructure binaries such as CoreDNS and Sentinel in runtime and
+release review. Container package matches can hide an old compiled Go toolchain;
+verify the running binary version rather than a mutable tag. The tailnet resolver
+was CoreDNS 1.12.1 / Go 1.24.1. CoreDNS 1.15.0 is built with Go 1.27.3 and lists
+security fixes in its [release notes](https://github.com/coredns/coredns/releases/tag/v1.15.0).
+Its official image still contained the distrusted roots, so qualify the same
+binary with a verified patched public CA bundle and a constrained build context.
+Never infer certificate contents from a recent tag or a clean package scan.
+Minimal images may lack cat/sh; inspect public CA files through the daemon archive
+interface under bounds rather than treating missing executables as proof of trust.
+
+For this stateless DNS role, preserve authoritative tailnet answers and refusal
+of unrelated names, exact IPv4 tailnet-only UDP/TCP bindings, read-only root/config,
+UID 65532 and no-new-privileges. Test the binary's NET_BIND_SERVICE file-capability
+requirement explicitly; dropping its bounding capability can prevent execution.
+Qualify 128 MiB memory / 256 MiB combined memory-swap, quarter CPU and 64 PIDs with
+real UDP/TCP/AAAA/negative queries, latency, restart and old-image recovery.
+Persist the reviewed Docker API configuration and fixed image ID in protected
+host configuration. A narrow systemd launcher/reconciliation timer may recreate
+only a missing reviewed container; unknown changes must fail visibly. Keep Docker
+and Tailscale boot ordering explicit and never fall back to a public bind.
+
+Require exact port-binding and dual-transport DNS checks in the independent
+publisher's container policy. Limit DNS packet size and total deadline, validate
+transactions, reject public probe destinations and keep raw diagnostics out of
+reports. A function-only fault probe can test alert folding without changing live
+state or sending mail. Review every added launcher/config/unit/symlink and parent
+timestamp against source fingerprints before promoting AIDE; no scheduled baseline
+learning. Retain the stopped old container for rollback and refresh the normal
+image ledger without resetting deadlines for surviving packages.
+
+Coolify's installed 4.5.0 generator includes environment escaping for the fixed
+[Sentinel token-injection advisory](https://github.com/coollabsio/coolify/security/advisories/GHSA-rpr8-p7jc-x844),
+which affects versions below 4.0.0-beta.466. The inspected generator still hardcodes
+the raw Docker socket and host PID namespace and exposes no resource-limit fields.
+Do not claim Sentinel socket isolation from a read-only mount or temporary runtime
+settings. Its native lifecycle needs a supported configuration or a separately
+reviewed integration before containment can be called durable.

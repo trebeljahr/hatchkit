@@ -1,0 +1,29 @@
+[Unit]
+Description=Reviewed tailnet-only DNS container
+Requires=docker.service
+Wants=network-online.target tailscaled.service
+After=docker.service network-online.target tailscaled.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/tailnet-dns.py ensure
+ExecStop=/usr/bin/python3 /opt/hatchkit-backups/tailnet-dns.py stop
+Restart=on-failure
+RestartSec=30s
+Environment=PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=
+MemoryMax=128M
+CPUQuota=50%
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

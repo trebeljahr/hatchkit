@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import unittest
 import json
+import struct
 import tempfile
 import contextlib
 import io
@@ -76,6 +77,39 @@ class Policy(unittest.TestCase):
    for returncode,output in [(1,reply),(0,'must-not-leak')]:
     Result.returncode=returncode;Result.stdout=output
     with patch.object(p.subprocess,'run',return_value=Result()),self.assertRaisesRegex(RuntimeError,'^Database readiness inspection failed$'):p.database_ready('synthetic-container',engine)
+ def dns_policy(self):return {'address':'100.64.0.10','port':53,'name':'fixture.invalid','answer':'100.64.0.10'}
+ def test_dns_policy_refuses_public_destinations_and_malformed_fields(self):
+  valid=self.dns_policy();self.assertTrue(p.valid_dns_policy(valid))
+  for key,value in [('address','8.8.8.8'),('address','::1'),('address',1681915914),('answer','192.0.2.1'),('port',True),('port',0),('port',65536),('name','bad..name'),('name','bad..'),('name','bad_name'),('name','a'*64+'.invalid')]:
+   changed=dict(valid);changed[key]=value
+   with self.subTest(key=key,value=value):self.assertFalse(p.valid_dns_policy(changed))
+  d=fixture();d['Image']='sha256:'+'a'*64;rule=policy();rule['expected']={'imageId':d['Image'],'dnsReady':valid}
+  self.assertEqual(p.evaluate([d],[rule],dns_probe=lambda _:True),[])
+  self.assertEqual(p.evaluate([d],[rule],dns_probe=lambda _:False),[{'resource':'proxy','field':'dnsReady'}])
+  d['Image']='sha256:'+'b'*64
+  self.assertEqual({f['field']for f in p.evaluate([d],[rule],dns_probe=lambda _:(_ for _ in ()).throw(AssertionError('foreign probe')))},{'reviewedImage','dnsReady'})
+ def test_dns_parser_rejects_malformed_or_wrong_transaction_packets(self):
+  question=b'\x07fixture\x07invalid\0'+struct.pack('!HH',1,1)
+  record=b'\xc0\x0c'+struct.pack('!HHIH',1,1,60,4)+bytes([100,64,0,10])
+  packet=struct.pack('!6H',123,0x8500,1,1,0,0)+question+record
+  self.assertEqual(p.dns_packet(packet,123),{'rcode':0,'addresses':['100.64.0.10']})
+  for invalid in [packet[:11],packet[:-1],struct.pack('!6H',123,0x8700,1,1,0,0)+question+record,struct.pack('!6H',123,0x8500,1,33,0,0)+question+record,struct.pack('!6H',123,0x8500,1,1,0,0)+question+b'\xff\xff'+record[2:]]:
+   with self.assertRaises(ValueError):p.dns_packet(invalid,123)
+  with self.assertRaises(ValueError):p.dns_packet(packet,124)
+ def test_dns_readiness_checks_both_transports_and_hides_diagnostics(self):
+  with patch.object(p,'dns_query',return_value={'rcode':0,'addresses':['100.64.0.10']})as query:
+   self.assertTrue(p.dns_ready(self.dns_policy()));self.assertEqual([c.kwargs['transport']for c in query.call_args_list],['udp','tcp'])
+  for value in [{'rcode':5,'addresses':[]},{'rcode':0,'addresses':['100.64.0.11']}]:
+   with patch.object(p,'dns_query',return_value=value),self.assertRaisesRegex(RuntimeError,'^DNS readiness inspection failed$'):p.dns_ready(self.dns_policy())
+  with patch.object(p,'dns_query',side_effect=TimeoutError('must-not-leak')),self.assertRaisesRegex(RuntimeError,'^DNS readiness inspection failed$'):p.dns_ready(self.dns_policy())
+ def test_reviewed_port_bindings_detect_public_exposure_or_added_protocols(self):
+  d=fixture();rule=policy();rule['expected']={'PortBindings':{'1053/udp':[{'HostIp':'100.64.0.10','HostPort':'53'}]}}
+  d['HostConfig']['PortBindings']=rule['expected']['PortBindings']
+  self.assertEqual(p.evaluate([d],[rule]),[])
+  d['HostConfig']['PortBindings']={'1053/udp':[{'HostIp':'0.0.0.0','HostPort':'53'}]}
+  self.assertEqual(p.evaluate([d],[rule]),[{'resource':'proxy','field':'PortBindings'}])
+  rule['expected']['PortBindings']=None
+  with self.assertRaises(ValueError):p.evaluate([], [rule])
  def test_readonly_mounts_must_really_be_readonly(self):
   d=fixture();d['Mounts']=[{'Type':'bind','Source':'/synthetic','Destination':'/www','RW':False}]
   rule=policy();rule['expected']['readOnlyMountDestinations']=['/www']

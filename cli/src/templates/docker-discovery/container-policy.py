@@ -2,6 +2,11 @@
 """Check explicitly reviewed container controls; never learn or apply policy."""
 import datetime as dt
 import hmac
+import ipaddress
+import secrets
+import socket
+import struct
+import time
 import json
 import os
 from pathlib import Path
@@ -13,7 +18,7 @@ STATUS = Path('/var/lib/hatchkit-backups/container-policy-status.json')
 EXPECTED_FIELDS = {'Memory','MemorySwap','NanoCpus','PidsLimit','ReadonlyRootfs','noNewPrivileges',
                    'uid','imageId','healthy','CapAdd','CapDrop','noHostNamespaces','noPublishedPorts',
                    'networks','mountDestinations','readOnlyMountDestinations','Tmpfs','noDirectDockerSocket','dockerEndpoint',
-                   'mongoCacheMaxBytes','databaseReady'}
+                   'mongoCacheMaxBytes','databaseReady','dnsReady','PortBindings'}
 
 
 def kernel_status(pid):
@@ -95,7 +100,105 @@ def database_ready(container_id, engine):
     return True
 
 
-def evaluate(containers, policies, proc=kernel_status, mongo_cache=mongo_cache_max, database_probe=database_ready):
+def dns_packet(packet, nonce):
+    if len(packet) < 12:
+        raise ValueError('Short DNS response')
+    identity, flags, questions, answers, _, _ = struct.unpack('!6H', packet[:12])
+    if identity != nonce or not flags & 0x8000 or flags & 0x7a00 or questions != 1 or answers > 32:
+        raise ValueError('Invalid DNS response header')
+    def skip_name(offset):
+        for _ in range(128):
+            if offset >= len(packet):
+                raise ValueError('Invalid DNS name')
+            size = packet[offset]
+            if size & 0xc0 == 0xc0:
+                if offset+1 >= len(packet) or ((size & 0x3f)*256+packet[offset+1]) >= len(packet):
+                    raise ValueError('Invalid DNS pointer')
+                return offset+2
+            if size > 63 or offset+1+size > len(packet):
+                raise ValueError('Invalid DNS label')
+            offset += 1+size
+            if not size:
+                return offset
+        raise ValueError('Oversized DNS name')
+    offset = skip_name(12)+4
+    if offset > len(packet):
+        raise ValueError('Short DNS question')
+    addresses = []
+    for _ in range(answers):
+        offset = skip_name(offset)
+        if offset+10 > len(packet):
+            raise ValueError('Short DNS answer')
+        kind, cls, _, size = struct.unpack('!HHIH', packet[offset:offset+10]);offset += 10
+        if offset+size > len(packet):
+            raise ValueError('Short DNS record')
+        if kind == 1 and cls == 1 and size == 4:
+            addresses.append(socket.inet_ntoa(packet[offset:offset+size]))
+        elif kind == 28 and cls == 1 and size == 16:
+            addresses.append(socket.inet_ntop(socket.AF_INET6, packet[offset:offset+size]))
+        offset += size
+    return {'rcode': flags & 15, 'addresses': sorted(addresses)}
+
+
+def dns_query(address, port, name, kind=1, transport='udp'):
+    if transport not in ('udp','tcp') or kind not in (1,28):
+        raise ValueError('Invalid DNS probe type')
+    labels = name.rstrip('.').encode('ascii').split(b'.')
+    if not labels or any(not 0 < len(label) <= 63 for label in labels) or len(name) > 253:
+        raise ValueError('Invalid DNS probe name')
+    nonce = secrets.randbelow(65536)
+    question = b''.join(bytes([len(label)])+label for label in labels)+b'\0'+struct.pack('!HH', kind, 1)
+    wire = struct.pack('!6H', nonce, 0x0100, 1, 0, 0, 0)+question
+    deadline = time.monotonic()+2
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM if transport == 'udp' else socket.SOCK_STREAM) as client:
+        client.settimeout(2);client.connect((address,port))
+        if transport == 'udp':
+            client.send(wire);packet = client.recv(4096)
+        else:
+            client.sendall(struct.pack('!H',len(wire))+wire)
+            def receive(size):
+                result = b''
+                while len(result) < size:
+                    remaining = deadline-time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError('DNS probe deadline')
+                    client.settimeout(remaining);part = client.recv(size-len(result))
+                    if not part:
+                        raise ValueError('Short DNS TCP response')
+                    result += part
+                return result
+            size = struct.unpack('!H',receive(2))[0]
+            if not 12 <= size <= 4096:
+                raise ValueError('Oversized DNS response')
+            packet = receive(size)
+    return dns_packet(packet,nonce)
+
+
+def dns_ready(expected):
+    try:
+        for transport in ('udp','tcp'):
+            result = dns_query(expected['address'],expected['port'],expected['name'],transport=transport)
+            if result != {'rcode':0,'addresses':[expected['answer']]}:
+                raise ValueError('Unexpected DNS result')
+        return True
+    except (OSError,ValueError,KeyError,TypeError,struct.error):
+        raise RuntimeError('DNS readiness inspection failed') from None
+
+
+def valid_dns_policy(value):
+    try:
+        if not isinstance(value,dict) or set(value) != {'address','port','name','answer'}:
+            return False
+        tailnet = ipaddress.ip_network('100.64.0.0/10')
+        return (all(type(value[key]) is str and ipaddress.ip_address(value[key]) in tailnet for key in ('address','answer'))
+                and type(value['port']) is int and 1 <= value['port'] <= 65535
+                and isinstance(value['name'],str) and 0 < len(value['name']) <= 253 and not value['name'].endswith('..')
+                and all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',label) for label in value['name'].rstrip('.').split('.')))
+    except (ValueError,TypeError):
+        return False
+
+
+def evaluate(containers, policies, proc=kernel_status, mongo_cache=mongo_cache_max, database_probe=database_ready, dns_probe=dns_ready):
     findings = []
     for policy in policies:
         if not isinstance(policy.get('expected'),dict) or set(policy['expected'])-EXPECTED_FIELDS:
@@ -107,6 +210,11 @@ def evaluate(containers, policies, proc=kernel_status, mongo_cache=mongo_cache_m
         if 'databaseReady' in policy['expected'] and (policy['expected']['databaseReady'] not in ('postgres','valkey')
                 or not re.fullmatch(r'sha256:[a-f0-9]{64}', policy['expected'].get('imageId',''))):
             raise ValueError('Database readiness requires a reviewed engine and exact image')
+        if 'dnsReady' in policy['expected'] and (not valid_dns_policy(policy['expected']['dnsReady'])
+                or not re.fullmatch(r'sha256:[a-f0-9]{64}', policy['expected'].get('imageId',''))):
+            raise ValueError('DNS readiness requires a reviewed tailnet destination and exact image')
+        if 'PortBindings' in policy['expected'] and not isinstance(policy['expected']['PortBindings'],dict):
+            raise ValueError('Invalid reviewed port bindings')
         readonly = policy['expected'].get('readOnlyMountDestinations', [])
         if (not isinstance(readonly,list) or any(not isinstance(path,str) or not path.startswith('/') for path in readonly)
                 or len(set(readonly))!=len(readonly)):
@@ -126,7 +234,7 @@ def evaluate(containers, policies, proc=kernel_status, mongo_cache=mongo_cache_m
                 if not condition:
                     findings.append({'resource': policy['resource'], 'field': field})
             require(d['State']['Running'] is True, 'running')
-            for key in ['Memory', 'MemorySwap', 'NanoCpus', 'PidsLimit', 'ReadonlyRootfs']:
+            for key in ['Memory', 'MemorySwap', 'NanoCpus', 'PidsLimit', 'ReadonlyRootfs', 'PortBindings']:
                 if key in expected:
                     require(host.get(key) == expected[key], key)
             if expected.get('noNewPrivileges'):
@@ -140,6 +248,8 @@ def evaluate(containers, policies, proc=kernel_status, mongo_cache=mongo_cache_m
                 require(d['Image'] == expected['imageId'] and mongo_cache(d['Id']) == expected['mongoCacheMaxBytes'], 'mongoCacheMaxBytes')
             if 'databaseReady' in expected:
                 require(d['Image'] == expected['imageId'] and database_probe(d['Id'], expected['databaseReady']), 'databaseReady')
+            if 'dnsReady' in expected:
+                require(d['Image'] == expected['imageId'] and dns_probe(expected['dnsReady']), 'dnsReady')
             if expected.get('healthy'):
                 require(d['State'].get('Health', {}).get('Status') == 'healthy', 'health')
             for key in ['CapAdd', 'CapDrop']:

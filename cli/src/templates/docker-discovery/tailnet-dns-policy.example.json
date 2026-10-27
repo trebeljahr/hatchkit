@@ -1,0 +1,58 @@
+{
+  "schema": 2,
+  "policies": [
+    {
+      "resource": "tailnet-dns",
+      "selector": {
+        "name": "tailnet-dns"
+      },
+      "expected": {
+        "Memory": 134217728,
+        "MemorySwap": 268435456,
+        "NanoCpus": 250000000,
+        "PidsLimit": 64,
+        "ReadonlyRootfs": true,
+        "noNewPrivileges": true,
+        "uid": 65532,
+        "imageId": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "CapDrop": [
+          "ALL"
+        ],
+        "CapAdd": [
+          "NET_BIND_SERVICE"
+        ],
+        "networks": [
+          "bridge"
+        ],
+        "mountDestinations": [
+          "/Corefile"
+        ],
+        "readOnlyMountDestinations": [
+          "/Corefile"
+        ],
+        "noHostNamespaces": true,
+        "noDirectDockerSocket": true,
+        "PortBindings": {
+          "1053/tcp": [
+            {
+              "HostIp": "100.64.0.10",
+              "HostPort": "53"
+            }
+          ],
+          "1053/udp": [
+            {
+              "HostIp": "100.64.0.10",
+              "HostPort": "53"
+            }
+          ]
+        },
+        "dnsReady": {
+          "address": "100.64.0.10",
+          "port": 53,
+          "name": "control.example.invalid",
+          "answer": "100.64.0.10"
+        }
+      }
+    }
+  ]
+}
