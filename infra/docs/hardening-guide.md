@@ -3215,3 +3215,11 @@ database, so maintain the full inventory and review scope before provisioning.
 Use the five-second reconciliation and independent required guard component,
 while retaining the documented convergence/restart window. This guard does not
 establish full Layer 2 separation or general database egress restrictions.
+
+For an existing guard, first prove that the updated scope generates exactly its
+current live rules. Stop only its watcher/check jobs while replacing reviewed
+source and configuration; retain the filter itself. Require a fresh post-start
+status and unchanged rules, workloads, legitimate database paths and required
+external components before reviewing the exact source/config integrity diff.
+The shared five-database coverage-flag upgrade uses this path without changing
+publisher code, credentials, flags, table rules or database data.
