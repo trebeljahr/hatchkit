@@ -1,0 +1,25 @@
+{
+  "schema": 2,
+  "policies": [
+    {
+      "resource": "reviewed-postgres",
+      "selector": {
+        "name": "postgres"
+      },
+      "expected": {
+        "Memory": 536870912,
+        "MemorySwap": 1073741824,
+        "NanoCpus": 1000000000,
+        "PidsLimit": 128,
+        "imageId": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "databaseReady": "postgres",
+        "networks": [
+          "reviewed-private-network"
+        ],
+        "noPublishedPorts": true,
+        "noHostNamespaces": true,
+        "noDirectDockerSocket": true
+      }
+    }
+  ]
+}

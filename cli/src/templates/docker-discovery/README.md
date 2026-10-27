@@ -360,3 +360,24 @@ temporary bootstrap server can answer ping before initialization finishes. Keep
 activity IDs and mutation intents, retain failed evidence and never retry an
 unknown native outcome. Current database volumes and writes survive configuration
 recovery; an old database dump is not the undo path for this rollout.
+
+
+The `database-readiness-policy.example.json` file is opt-in: replace its image,
+container and network placeholders with reviewed values; merge into existing policy.
+For a reviewed PostgreSQL or Valkey profile, set `databaseReady` to `postgres` or
+`valkey` together with the exact `imageId`. The checker uses SELECT 1 or PING,
+reading authentication variables inside the existing container; credentials and
+raw diagnostics never enter reports. Only matching image bytes may be probed.
+Connection failure, timeout or unexpected output makes coverage incomplete.
+Require this policy component in the independent publisher.
+
+Preserve both native raw and rendered Compose resource fields for service bundles.
+Compare candidate generation with a baseline parse in adjacent rolled-back
+transactions: pre-existing controller metadata regeneration must not be attributed
+to resource changes or written into a resource-only update. Qualify each exact
+engine/image, including PostgreSQL's version-specific data-volume destination.
+For a no-volume Valkey queue, test current graceful-shutdown snapshot recovery in
+the same no-volume layout; a fixture using a data volume cannot qualify that undo.
+Suspend automatic restart during the snapshot/replace sequence, preserve exact
+configuration and network aliases, retain the failed container, and restore only
+the current snapshot. A crashed/OOM-killed volatile queue cannot claim that guarantee.

@@ -13,7 +13,7 @@ STATUS = Path('/var/lib/hatchkit-backups/container-policy-status.json')
 EXPECTED_FIELDS = {'Memory','MemorySwap','NanoCpus','PidsLimit','ReadonlyRootfs','noNewPrivileges',
                    'uid','imageId','healthy','CapAdd','CapDrop','noHostNamespaces','noPublishedPorts',
                    'networks','mountDestinations','readOnlyMountDestinations','Tmpfs','noDirectDockerSocket','dockerEndpoint',
-                   'mongoCacheMaxBytes'}
+                   'mongoCacheMaxBytes','databaseReady'}
 
 
 def kernel_status(pid):
@@ -79,7 +79,23 @@ print(JSON.stringify({bytes:Number(r.wiredTiger.cache["maximum bytes configured"
         raise RuntimeError('Mongo cache inspection returned invalid metadata') from None
 
 
-def evaluate(containers, policies, proc=kernel_status, mongo_cache=mongo_cache_max):
+def database_ready(container_id, engine):
+    if engine == 'postgres':
+        script = 'export PGPASSWORD="$POSTGRES_PASSWORD"; exec psql -h 127.0.0.1 -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT 1"'
+        expected = '1'
+    elif engine == 'valkey':
+        script = 'if [ -n "${VALKEY_PASSWORD:-${REDIS_PASSWORD:-}}" ]; then export VALKEYCLI_AUTH="${VALKEY_PASSWORD:-$REDIS_PASSWORD}"; fi; exec valkey-cli --raw PING'
+        expected = 'PONG'
+    else:
+        raise ValueError('Unsupported database readiness engine')
+    result = subprocess.run(['docker','exec',container_id,'sh','-c',script],
+                            capture_output=True,text=True,timeout=15)
+    if result.returncode or result.stdout.strip() != expected:
+        raise RuntimeError('Database readiness inspection failed')
+    return True
+
+
+def evaluate(containers, policies, proc=kernel_status, mongo_cache=mongo_cache_max, database_probe=database_ready):
     findings = []
     for policy in policies:
         if not isinstance(policy.get('expected'),dict) or set(policy['expected'])-EXPECTED_FIELDS:
@@ -88,6 +104,9 @@ def evaluate(containers, policies, proc=kernel_status, mongo_cache=mongo_cache_m
         if 'mongoCacheMaxBytes' in policy['expected'] and (type(cache) is not int or not 0 < cache < 2**50
                 or not re.fullmatch(r'sha256:[a-f0-9]{64}', policy['expected'].get('imageId',''))):
             raise ValueError('Mongo cache control requires a positive ceiling and exact image')
+        if 'databaseReady' in policy['expected'] and (policy['expected']['databaseReady'] not in ('postgres','valkey')
+                or not re.fullmatch(r'sha256:[a-f0-9]{64}', policy['expected'].get('imageId',''))):
+            raise ValueError('Database readiness requires a reviewed engine and exact image')
         readonly = policy['expected'].get('readOnlyMountDestinations', [])
         if (not isinstance(readonly,list) or any(not isinstance(path,str) or not path.startswith('/') for path in readonly)
                 or len(set(readonly))!=len(readonly)):
@@ -118,7 +137,9 @@ def evaluate(containers, policies, proc=kernel_status, mongo_cache=mongo_cache_m
             if 'imageId' in expected:
                 require(d['Image'] == expected['imageId'], 'reviewedImage')
             if 'mongoCacheMaxBytes' in expected:
-                require(mongo_cache(d['Id']) == expected['mongoCacheMaxBytes'], 'mongoCacheMaxBytes')
+                require(d['Image'] == expected['imageId'] and mongo_cache(d['Id']) == expected['mongoCacheMaxBytes'], 'mongoCacheMaxBytes')
+            if 'databaseReady' in expected:
+                require(d['Image'] == expected['imageId'] and database_probe(d['Id'], expected['databaseReady']), 'databaseReady')
             if expected.get('healthy'):
                 require(d['State'].get('Health', {}).get('Status') == 'healthy', 'health')
             for key in ['CapAdd', 'CapDrop']:

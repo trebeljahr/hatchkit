@@ -18,11 +18,23 @@ if (!existsSync(from)) {
   console.error(`copy-templates: source missing at ${from}`);
   process.exit(1);
 }
-cpSync(from, to, { recursive: true });
 
 // Only tracked files belong in the published templates. Never package local
 // credentials, dependencies, build caches or a developer's infrastructure state.
 const repo = join(root, "..");
+const templateFiles = execFileSync("git", ["ls-files", "-z", "--", "cli/src/templates"], {
+  cwd: repo, encoding: "utf8",
+}).split("\0").filter(Boolean);
+if (!templateFiles.length) throw new Error("No tracked CLI templates found");
+rmSync(to, { recursive: true, force: true });
+for (const file of templateFiles) {
+  if (/(?:^|\/)(?:__pycache__|node_modules|\.git)(?:\/|$)|\.pyc$|\.tfstate(?:\.|$)|(?:^|\/)\.env\.keys$/.test(file)) {
+    throw new Error(`Refusing to package private or generated template state: ${file}`);
+  }
+  const destination = join(to, file.slice("cli/src/templates/".length));
+  mkdirSync(dirname(destination), { recursive: true });
+  cpSync(join(repo, file), destination, { dereference: true });
+}
 const bundle = join(root, "dist", "bundle");
 rmSync(bundle, { recursive: true, force: true });
 const files = execFileSync("git", ["ls-files", "-z", "--", "starter", "infra", "services"], {

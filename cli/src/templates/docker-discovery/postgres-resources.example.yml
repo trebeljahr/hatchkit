@@ -1,5 +1,6 @@
 # Resource-only fragment. Qualify exact images, real workload headroom and recovery.
 # Preserve existing image, credentials, command, volumes, networks and permissions.
+# A busier instance may need 1g / 1536m and 256 PIDs; measure and qualify it.
 # Standalone Coolify databases use their canonical limits_* fields plus
 # --pids-limit=128; prove the native generator retains these fields.
 services:

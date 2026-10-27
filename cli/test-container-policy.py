@@ -51,6 +51,31 @@ class Policy(unittest.TestCase):
    report=json.loads(status.read_text())
    self.assertFalse(report['complete']);self.assertFalse(report['ok']);self.assertEqual(report['error'],'RuntimeError')
    self.assertNotIn('must-not-leak',status.read_text()+output.getvalue())
+ def test_database_protocol_checks_require_exact_image_and_never_probe_foreign_bytes(self):
+  d=fixture();d['Id']='synthetic-container';d['Image']='sha256:'+'a'*64
+  rule=policy();rule['expected']={'imageId':d['Image'],'databaseReady':'postgres'}
+  self.assertEqual(p.evaluate([d],[rule],database_probe=lambda cid,engine:engine=='postgres'),[])
+  self.assertEqual(p.evaluate([d],[rule],database_probe=lambda cid,engine:False),[{'resource':'proxy','field':'databaseReady'}])
+  d['Image']='sha256:'+'b'*64
+  with patch.object(p,'database_ready',side_effect=AssertionError('Do not probe foreign image')):
+   self.assertEqual({v['field']for v in p.evaluate([d],[rule],database_probe=lambda *a:(_ for _ in ()).throw(AssertionError('foreign probe')))},{'reviewedImage','databaseReady'})
+  for invalid in [None,True,'mongo','']:
+   rule['expected']['databaseReady']=invalid
+   with self.subTest(invalid=invalid),self.assertRaises(ValueError):p.evaluate([], [rule])
+  rule['expected']={'databaseReady':'valkey'}
+  with self.assertRaises(ValueError):p.evaluate([], [rule])
+ def test_database_protocol_inspection_never_exports_diagnostics(self):
+  class Result:
+   returncode=0;stdout='1\n';stderr='must-not-leak'
+  for engine,reply in [('postgres','1'),('valkey','PONG')]:
+   Result.returncode=0;Result.stdout=reply+'\n'
+   with patch.object(p.subprocess,'run',return_value=Result())as run:
+    self.assertTrue(p.database_ready('synthetic-container',engine))
+    self.assertEqual(run.call_args.args[0][:5],['docker','exec','synthetic-container','sh','-c'])
+    self.assertEqual(run.call_args.kwargs['timeout'],15)
+   for returncode,output in [(1,reply),(0,'must-not-leak')]:
+    Result.returncode=returncode;Result.stdout=output
+    with patch.object(p.subprocess,'run',return_value=Result()),self.assertRaisesRegex(RuntimeError,'^Database readiness inspection failed$'):p.database_ready('synthetic-container',engine)
  def test_readonly_mounts_must_really_be_readonly(self):
   d=fixture();d['Mounts']=[{'Type':'bind','Source':'/synthetic','Destination':'/www','RW':False}]
   rule=policy();rule['expected']['readOnlyMountDestinations']=['/www']

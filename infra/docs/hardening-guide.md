@@ -3050,3 +3050,33 @@ drift cannot report healthy. Keep container policy required by the independent
 publisher. Accept only tested unset-DNS serialization and equivalent root-startup
 spellings while preserving configured DNS and verifying mongod's real UID. Review
 source/policy payloads and parent timestamp changes exactly before AIDE promotion.
+
+
+Shared service databases need separate measured resource profiles. The qualified
+PostgreSQL 16.15 and two 18.6 images preserve their different data-volume layouts;
+two lighter workloads use 512 MiB memory / 1 GiB combined memory-swap, one CPU and
+128 PIDs, while the busier error-reporting database uses 1 GiB / 1.5 GiB and 256
+PIDs. The reviewed Valkey 9.1.2 workload uses 256 MiB / 512 MiB, half a CPU and 128
+PIDs. These are tested starting profiles, not universal database defaults. Preserve
+image bytes, credentials, existing permissions, commands, volumes and networks.
+Save four resource fields in both native raw and rendered Compose, verify the
+native parser in rolled-back transactions and apply runtime limits serially.
+Check real apps, SQL/PING, kernel controls and database network boundaries after
+each change; retain current registered captures and tested current-data recovery.
+
+A running container is insufficient database readiness. Exact-image reviewed
+`databaseReady` controls run SELECT 1 or PING with authentication read inside the
+container. Bound runtime/output, return no credentials or diagnostics, and fail
+incomplete on connection errors. Never execute probes in changed image bytes.
+Keep these controls required by the external publisher and prove failure folding
+with a function-only probe that changes no live state and sends no delivery test.
+
+A resource rollback that recreates a no-volume Valkey queue needs the latest
+writable-layer state. Test graceful SHUTDOWN SAVE, safely suspend automatic
+restart, retain the original stopped container, copy only its current validated
+RDB archive into the exact original configuration and verify latest synthetic
+writes. Keep artifacts on the original VPS and refuse changed identities,
+configuration, mounts or network aliases. This planned healthy-process rollback
+does not establish crash recovery for an already OOM-killed volatile queue. See
+[Valkey CLI authentication](https://valkey.io/topics/cli/) and Docker's
+[dynamic resource update guidance](https://docs.docker.com/reference/cli/docker/container/update/).
