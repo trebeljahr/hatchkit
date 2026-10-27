@@ -1,11 +1,56 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import json
+import tempfile
+import contextlib
+import io
+from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('policy',Path(__file__).parent/'src/templates/docker-discovery/container-policy.py');p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
 def fixture():
  return {'Name':'/proxy','Image':'sha256:reviewed','State':{'Running':True,'Pid':123,'Health':{'Status':'healthy'}},'HostConfig':{'Memory':128,'ReadonlyRootfs':True,'SecurityOpt':['no-new-privileges:true'],'CapDrop':['ALL'],'CapAdd':None,'PortBindings':{},'Privileged':False},'Mounts':[], 'Config':{'Cmd':['--providers.docker.endpoint=tcp://discovery:2375'],'Env':['PRIVATE=must-not-leak']},'NetworkSettings':{'Networks':{'internal':{}}}}
 def policy():return {'resource':'proxy','selector':{'name':'proxy'},'expected':{'Memory':128,'ReadonlyRootfs':True,'noNewPrivileges':True,'uid':65532,'imageId':'sha256:reviewed','healthy':True,'CapDrop':['ALL'],'CapAdd':[],'noPublishedPorts':True,'noHostNamespaces':True,'networks':['internal'],'noDirectDockerSocket':True,'dockerEndpoint':'tcp://discovery:2375'}}
 class Policy(unittest.TestCase):
+ def test_mongo_cache_drift_is_checked_with_fake_credentials_only(self):
+  d=fixture();d['Id']='synthetic-container';d['Image']='sha256:'+'a'*64;rule=policy();rule['expected'].update(imageId=d['Image'],mongoCacheMaxBytes=536870912)
+  check=lambda value:p.evaluate([d],[rule],lambda pid:{'uid':65532,'nnp':1},lambda cid:value)
+  self.assertEqual(check(536870912),[])
+  self.assertIn('mongoCacheMaxBytes',[x['field']for x in check(3*1024**3)])
+  with self.assertRaisesRegex(RuntimeError,'synthetic failure'):
+   p.evaluate([d],[rule],lambda pid:{'uid':65532,'nnp':1},lambda cid:(_ for _ in ()).throw(RuntimeError('synthetic failure')))
+ def test_mongo_cache_requires_typed_limit_and_exact_image_even_if_missing(self):
+  for value in [None,True,0,-1,'512m',2**50]:
+   rule=policy();rule['expected']['mongoCacheMaxBytes']=value
+   with self.subTest(value=value),self.assertRaises(ValueError):p.evaluate([], [rule])
+  rule=policy();rule['expected']['mongoCacheMaxBytes']=536870912
+  with self.assertRaises(ValueError):p.evaluate([], [rule])
+ def test_mongo_cache_inspector_does_not_expose_credentials_or_diagnostics(self):
+  class Result:
+   returncode=0;stdout='{"bytes":536870912}';stderr='must-not-leak'
+  with patch.object(p.subprocess,'run',return_value=Result())as run:
+   self.assertEqual(p.mongo_cache_max('synthetic-container'),536870912)
+   args=run.call_args.args[0]
+   self.assertEqual(args,['docker','exec','-i','synthetic-container','mongosh','--quiet','--norc','--file','/dev/stdin'])
+   self.assertIn('process.env.MONGO_INITDB_ROOT_PASSWORD',run.call_args.kwargs['input'])
+   Result.returncode=1
+   with self.assertRaisesRegex(RuntimeError,'^Mongo cache inspection failed$'):p.mongo_cache_max('synthetic-container')
+  for output in ['{"bytes":true}','{"bytes":"536870912"}','{"bytes":0}','{"bytes":536870912,"unexpected":"must-not-leak"}','must-not-leak']:
+   Result.returncode=0;Result.stdout=output
+   with patch.object(p.subprocess,'run',return_value=Result()),self.assertRaisesRegex(RuntimeError,'^Mongo cache inspection returned invalid metadata$'):p.mongo_cache_max('synthetic-container')
+ def test_cache_inspection_failure_makes_full_report_incomplete_without_leaking(self):
+  d=fixture();d['Id']='synthetic-container';d['Image']='sha256:'+'a'*64
+  rule=policy();rule['expected']={'imageId':d['Image'],'mongoCacheMaxBytes':536870912}
+  class Failed:
+   returncode=1;stdout='must-not-leak';stderr='must-not-leak'
+  with tempfile.TemporaryDirectory()as directory:
+   config=Path(directory)/'config.json';status=Path(directory)/'status.json'
+   config.write_text(json.dumps({'schema':2,'policies':[rule]}))
+   output=io.StringIO()
+   with patch.object(p,'CONFIG',config),patch.object(p,'STATUS',status),patch.object(p.subprocess,'check_output',side_effect=['synthetic-container',json.dumps([d])]),patch.object(p.subprocess,'run',return_value=Failed()),contextlib.redirect_stdout(output):
+    self.assertEqual(p.main(),1)
+   report=json.loads(status.read_text())
+   self.assertFalse(report['complete']);self.assertFalse(report['ok']);self.assertEqual(report['error'],'RuntimeError')
+   self.assertNotIn('must-not-leak',status.read_text()+output.getvalue())
  def test_readonly_mounts_must_really_be_readonly(self):
   d=fixture();d['Mounts']=[{'Type':'bind','Source':'/synthetic','Destination':'/www','RW':False}]
   rule=policy();rule['expected']['readOnlyMountDestinations']=['/www']

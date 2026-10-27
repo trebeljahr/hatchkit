@@ -1,0 +1,10 @@
+# Opt-in resource fragment. Preserve the existing project network and volumes.
+# Set a compatible WiredTiger cache ceiling in the existing Mongo configuration;
+# qualify authentication, replica transactions, restart and current-data rollback.
+# Keep the reviewed image pinned by its public immutable registry digest.
+services:
+  mongo:
+    mem_limit: 2g
+    memswap_limit: 3g
+    cpus: 1
+    pids_limit: 512

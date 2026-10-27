@@ -3021,3 +3021,32 @@ Use mongosh script mode with /dev/stdin for original-host authentication input,
 normalize bounded BSON numeric output explicitly, and retain fixed metadata
 instead of raw shell output that could echo credentials. This observation does
 not establish that MongoDB containment or canonical-image persistence is complete.
+
+A native Mongo image/cache/resource rollout can close the gap between locally
+patched running bytes and a pullable canonical image. The qualified public Mongo
+7.0.45 digest excludes the distrusted roots. Four instances retain 7.0.45; the
+replica is a tested same-major patch update from 7.0.40 to 7.0.45. The exact old
+replica image recovered candidate-written data in the canary. A
+512 MiB WiredTiger cache is paired with a 2 GiB memory / 3 GiB combined memory-swap
+limit, one CPU and 512 PIDs. Preserve each project's original network and data
+volumes, and merge only the cache field into an existing replica/keyfile config.
+The native generator must preserve all remaining configuration. Test standalone
+and replica transactions, native dump/restore, restart and old-image recovery on
+candidate-written synthetic data before a serial production rollout.
+
+The candidate still contains three js-yaml CPU-exhaustion matches. Their reviewed
+entrypoint input is the controller-owned startup YAML, mounted read-only; database
+protocol input does not feed that parser in the reviewed configuration. Keep the
+raw matches and vendor fixes visible, record the exact-image input-boundary
+evidence and a seven-day expiry, and apply no blanket suppression or automatic
+renewal. See the maintainer's [merge-chain advisory](https://github.com/nodeca/js-yaml/security/advisories/GHSA-52cp-r559-cp3m),
+[empty-source advisory](https://github.com/nodeca/js-yaml/security/advisories/GHSA-2883-xcg3-v3hh)
+and [ordered-map advisory](https://github.com/nodeca/js-yaml/security/advisories/GHSA-5p4m-2wfm-xmqj).
+
+The periodic container policy now supports an exact-image `mongoCacheMaxBytes`
+requirement. Authentication stays in container stdin, and only bounded numeric
+metadata is returned. Missing credentials, timeout, malformed results or cache
+drift cannot report healthy. Keep container policy required by the independent
+publisher. Accept only tested unset-DNS serialization and equivalent root-startup
+spellings while preserving configured DNS and verifying mongod's real UID. Review
+source/policy payloads and parent timestamp changes exactly before AIDE promotion.

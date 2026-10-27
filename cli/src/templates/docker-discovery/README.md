@@ -339,3 +339,24 @@ transactions, dump/restore, restart and current-data undo on the exact image. A
 synthetic localhost password test must use explicit SCRAM host initialization
 rather than the default localhost trust exception. These examples neither change
 database permissions nor resolve a canonical-image mismatch.
+
+The Mongo fragments qualify resources and a cache ceiling together. Merge the
+cache field into the existing configuration; retain its database path, network,
+authentication/keyfile and replica settings. A public registry digest belongs in
+the native image definition; the platform-specific image ID belongs in the
+monitoring policy. Replace the example policy's deliberately invalid image-ID
+placeholder before installation.
+
+`mongoCacheMaxBytes` requires an exact image ID and a positive integer ceiling.
+The checker authenticates inside the container through stdin and emits only the
+numeric cache result. A failed, timed-out or malformed inspection makes the
+check incomplete. The existing required container-policy flag folds these
+results into the independent process-health alert. It checks the running cache,
+not only the text of the startup configuration.
+
+Qualify both standalone and replica transactions, dump/restore, restart, and
+old-image recovery on candidate-written data. Use final-process readiness; Mongo's
+temporary bootstrap server can answer ping before initialization finishes. Keep
+activity IDs and mutation intents, retain failed evidence and never retry an
+unknown native outcome. Current database volumes and writes survive configuration
+recovery; an old database dump is not the undo path for this rollout.

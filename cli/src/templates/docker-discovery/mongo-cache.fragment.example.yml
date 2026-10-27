@@ -1,0 +1,7 @@
+# Merge this field into the EXISTING configuration. Preserve its storage.dbPath,
+# network, authentication, keyfile and replica settings. Do not replace the file
+# with this fragment. Qualify the cache against the workload and container limit.
+storage:
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 0.5

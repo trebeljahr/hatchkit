@@ -1,0 +1,18 @@
+{
+  "resource": "example-mongo",
+  "selector": {"name": "replace-with-reviewed-container-name"},
+  "expected": {
+    "Memory": 2147483648,
+    "MemorySwap": 3221225472,
+    "NanoCpus": 1000000000,
+    "PidsLimit": 512,
+    "imageId": "sha256:replace-with-reviewed-64-character-image-id",
+    "mongoCacheMaxBytes": 536870912,
+    "uid": 999,
+    "healthy": true,
+    "readOnlyMountDestinations": ["/etc/mongo/mongod.conf", "/docker-entrypoint-initdb.d"],
+    "noPublishedPorts": true,
+    "noHostNamespaces": true,
+    "noDirectDockerSocket": true
+  }
+}

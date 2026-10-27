@@ -12,7 +12,8 @@ CONFIG = Path('/etc/hatchkit-security/container-policy.json')
 STATUS = Path('/var/lib/hatchkit-backups/container-policy-status.json')
 EXPECTED_FIELDS = {'Memory','MemorySwap','NanoCpus','PidsLimit','ReadonlyRootfs','noNewPrivileges',
                    'uid','imageId','healthy','CapAdd','CapDrop','noHostNamespaces','noPublishedPorts',
-                   'networks','mountDestinations','readOnlyMountDestinations','Tmpfs','noDirectDockerSocket','dockerEndpoint'}
+                   'networks','mountDestinations','readOnlyMountDestinations','Tmpfs','noDirectDockerSocket','dockerEndpoint',
+                   'mongoCacheMaxBytes'}
 
 
 def kernel_status(pid):
@@ -58,11 +59,35 @@ def discovery_pair(containers, pair):
                 and len(passwords) == 1 and hmac.compare_digest(passwords[0], token))
 
 
-def evaluate(containers, policies, proc=kernel_status):
+def mongo_cache_max(container_id):
+    # Authentication values are read inside the container. Never put them in
+    # Docker/mongosh argv or return raw shell diagnostics to the status report.
+    script = r'''const a=db.getSiblingDB("admin");
+if(!process.env.MONGO_INITDB_ROOT_USERNAME||!process.env.MONGO_INITDB_ROOT_PASSWORD||!a.auth(process.env.MONGO_INITDB_ROOT_USERNAME,process.env.MONGO_INITDB_ROOT_PASSWORD))throw Error("authentication");
+const r=a.runCommand({serverStatus:1});if(r.ok!==1)throw Error("serverStatus");
+print(JSON.stringify({bytes:Number(r.wiredTiger.cache["maximum bytes configured"])}));'''
+    result = subprocess.run(['docker','exec','-i',container_id,'mongosh','--quiet','--norc','--file','/dev/stdin'],
+                            input=script+'\n',capture_output=True,text=True,timeout=15)
+    if result.returncode:
+        raise RuntimeError('Mongo cache inspection failed')
+    try:
+        value = json.loads(result.stdout.strip())
+        if set(value) != {'bytes'} or type(value['bytes']) is not int or not 0 < value['bytes'] < 2**50:
+            raise ValueError('Invalid Mongo cache result')
+        return value['bytes']
+    except (ValueError, TypeError, KeyError):
+        raise RuntimeError('Mongo cache inspection returned invalid metadata') from None
+
+
+def evaluate(containers, policies, proc=kernel_status, mongo_cache=mongo_cache_max):
     findings = []
     for policy in policies:
         if not isinstance(policy.get('expected'),dict) or set(policy['expected'])-EXPECTED_FIELDS:
             raise ValueError('Unsupported reviewed control field')
+        cache = policy['expected'].get('mongoCacheMaxBytes')
+        if 'mongoCacheMaxBytes' in policy['expected'] and (type(cache) is not int or not 0 < cache < 2**50
+                or not re.fullmatch(r'sha256:[a-f0-9]{64}', policy['expected'].get('imageId',''))):
+            raise ValueError('Mongo cache control requires a positive ceiling and exact image')
         readonly = policy['expected'].get('readOnlyMountDestinations', [])
         if (not isinstance(readonly,list) or any(not isinstance(path,str) or not path.startswith('/') for path in readonly)
                 or len(set(readonly))!=len(readonly)):
@@ -92,6 +117,8 @@ def evaluate(containers, policies, proc=kernel_status):
                 require(proc(d['State']['Pid'])['uid'] == expected['uid'], 'runtimeUid')
             if 'imageId' in expected:
                 require(d['Image'] == expected['imageId'], 'reviewedImage')
+            if 'mongoCacheMaxBytes' in expected:
+                require(mongo_cache(d['Id']) == expected['mongoCacheMaxBytes'], 'mongoCacheMaxBytes')
             if expected.get('healthy'):
                 require(d['State'].get('Health', {}).get('Status') == 'healthy', 'health')
             for key in ['CapAdd', 'CapDrop']:
