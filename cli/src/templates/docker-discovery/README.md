@@ -309,3 +309,20 @@ provider boundary. Trust only the fixture CA inside the fixture; retain normal
 TLS verification. Explicitly chmod a non-root bind directory after a private
 umask-masked mkdir while keeping its host parent 0700. Preserve existing native
 capability/PID options and qualify only source-proven restart bookkeeping resets.
+
+`redis-resources.example.yml` and its matching policy JSON are an opt-in resource
+profile, separate from database permissions. Measure current/lifetime memory and
+PID use and require headroom. The reviewed Redis 7.2.16 image passed authenticated
+pipeline writes, AOF restart and a separate cold RDB reload with 256 MiB memory,
+512 MiB combined memory/swap, half a CPU and 128 PIDs. These observations do not
+qualify arbitrary Redis datasets or engine upgrades. The native standalone
+database generator can be exercised through an injected non-executing command
+executor, with its database/environment changes rolled back. Compare the complete
+generated configuration outside the four intended resource fields.
+
+Record canonical-image differences separately when a running locally patched
+image differs from its upstream tag. Qualify image selection before a native
+restart/redeploy. Resource-only cgroup changes preserve current image/data bytes;
+configuration recovery must preserve current volumes and writes, including when
+the limited container is stopped or OOM-killed. Never overwrite a newer image,
+credential, mount, network or privilege change during recovery.

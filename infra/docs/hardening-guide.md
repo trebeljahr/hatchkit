@@ -2960,3 +2960,28 @@ observed reset against the pinned deployment-job source and unchanged writable
 layer; do not allow arbitrary restart metadata or restart-limit changes. Retain
 the first rejected verification and all earlier failed fixture evidence. Original
 registered PostgreSQL SQL captures stay on the host and are not a new restore drill.
+
+For remaining standalone Redis resource limits, native generation and runtime
+compatibility are separate proofs. A non-executing `DatabaseStartCommandExecutor`
+binding intercepts the real action's commands; the probe rolls back model and
+environment changes and compares the full generated Compose document outside
+memory, combined memory/swap, CPU and PID fields. The exact Redis 7.2.16 image
+passed 1,000 authenticated writes, AOF restart and a separate cold RDB reload with
+the optional 256 MiB/512 MiB/half-CPU/128-PID profile. Use only fresh synthetic data,
+no network, and images without inherited credential keys or healthcheck commands.
+Require measured headroom and verify cgroups plus new OOM/PID-denial counters.
+
+Some standalone database definitions still reference upstream tags while their
+running images contain local security rebuilds. Record that image-persistence gap
+and qualify selection before a native restart/redeploy. Resource-only updates
+preserve current running bytes and credentials. Configuration undo must remain
+available for an owned stopped/OOM container, while refusing any changed image,
+mount, credentials, network or unowned privilege setting. It must not restore an
+older database snapshot. These source templates and probes do not establish that
+the proposed profile is already applied to every live database.
+
+The 27 October Redis rollout remains prepared, with no production limit changes
+executed. Server work is pending by operator choice. Retained generator and canary
+proofs expire after one hour; measurement expires after 30 minutes. Resume with
+fresh, separately retained attempts and reviewed source hashes. Do not extend
+those windows or overwrite previous private evidence to make a rollout proceed.

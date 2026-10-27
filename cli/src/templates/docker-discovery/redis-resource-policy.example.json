@@ -1,0 +1,11 @@
+{
+  "resource": "example-redis",
+  "selector": {"name": "replace-with-reviewed-container-name"},
+  "expected": {
+    "Memory": 268435456,
+    "MemorySwap": 536870912,
+    "NanoCpus": 500000000,
+    "PidsLimit": 128,
+    "healthy": true
+  }
+}

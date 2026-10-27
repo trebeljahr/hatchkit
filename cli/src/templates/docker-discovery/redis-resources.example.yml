@@ -1,0 +1,10 @@
+# Resource-only fragment. Qualify exact images, data, auth and observed peaks.
+# Preserve existing image, credentials, command, volumes, networks and permissions.
+# Standalone Coolify databases use their canonical limits_* fields plus
+# --pids-limit=128; prove the native generator retains these fields.
+services:
+  redis:
+    mem_limit: 256m
+    memswap_limit: 512m
+    cpus: 0.5
+    pids_limit: 128
