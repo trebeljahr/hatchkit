@@ -3008,3 +3008,16 @@ passwords. This fixture configuration does not establish production authenticati
 coverage or permission hardening. The two dedicated instances passed serial
 resource-only changes without restart; measure each workload before copying the
 profile, preserve its image/data/configuration and verify native persistence.
+
+Measure MongoDB's configured WiredTiger ceiling before setting a smaller cgroup
+limit. The five observed instances each allowed 3,524,263,936 cache bytes even
+though current caches were under 45 MB. A 2 GiB container cap needs a compatible
+engine cache setting, not just a Docker update. Qualify the supported startup
+cache configuration, replica behavior, persistence and undo together; do not use
+generic engine runtime reconfiguration as an unreviewed shortcut. See MongoDB's
+[container/cache guidance](https://www.mongodb.com/docs/v7.0/faq/storage/) and
+[server parameter guidance](https://www.mongodb.com/docs/v7.0/reference/parameters/).
+Use mongosh script mode with /dev/stdin for original-host authentication input,
+normalize bounded BSON numeric output explicitly, and retain fixed metadata
+instead of raw shell output that could echo credentials. This observation does
+not establish that MongoDB containment or canonical-image persistence is complete.
