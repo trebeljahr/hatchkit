@@ -326,3 +326,9 @@ restart/redeploy. Resource-only cgroup changes preserve current image/data bytes
 configuration recovery must preserve current volumes and writes, including when
 the limited container is stopped or OOM-killed. Never overwrite a newer image,
 credential, mount, network or privilege change during recovery.
+
+The qualified three-instance Redis resource rollout passed without restarting
+production containers. Before any later rollout, refresh evidence and measure
+current headroom. Its stopped-fixture undo preserves the latest writes and
+compares original kernel values, including inherited PID defaults. Monitoring
+must cover the resulting limits without claiming untested database permissions.

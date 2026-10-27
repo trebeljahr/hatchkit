@@ -2980,8 +2980,20 @@ mount, credentials, network or unowned privilege setting. It must not restore an
 older database snapshot. These source templates and probes do not establish that
 the proposed profile is already applied to every live database.
 
-The 27 October Redis rollout remains prepared, with no production limit changes
-executed. Server work is pending by operator choice. Retained generator and canary
-proofs expire after one hour; measurement expires after 30 minutes. Resume with
-fresh, separately retained attempts and reviewed source hashes. Do not extend
+The three qualified dedicated Redis resource profiles were applied serially on
+27 October without replacing or restarting a production container. Each update
+retained image/credentials/mounts/networks and passed all ten application readiness
+checks with no new OOM kills or PID denials. The four fields persist in native
+configuration; three exact-image monitoring profiles were added without changing
+existing expectations. Public TLS checks cover all 13 configured routes, including
+the games' read-only RPC endpoints and only the two reviewed Beauty alias redirects.
+The exact policy file and parent timestamps were reviewed before AIDE promotion;
+normal host checks and all seven accepted external checks passed.
+
+The stopped-container undo canary preserves writes made after adding limits and
+compares all original kernel controls. An unset Docker PID field can still inherit
+a daemon/kernel default: never equate it with a literal unlimited cgroup. Retain
+failed fixture/verifier attempts and explain each correction. Generator, canary and
+undo proofs expire after one hour; measurement expires after 30 minutes. Resume
+with fresh, separately retained attempts and reviewed source hashes. Do not extend
 those windows or overwrite previous private evidence to make a rollout proceed.
