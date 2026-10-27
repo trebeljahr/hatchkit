@@ -1,0 +1,11 @@
+{
+  "resource": "example-postgres",
+  "selector": {"name": "replace-with-reviewed-container-name"},
+  "expected": {
+    "Memory": 536870912,
+    "MemorySwap": 1073741824,
+    "NanoCpus": 1000000000,
+    "PidsLimit": 128,
+    "healthy": true
+  }
+}

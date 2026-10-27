@@ -332,3 +332,10 @@ production containers. Before any later rollout, refresh evidence and measure
 current headroom. Its stopped-fixture undo preserves the latest writes and
 compares original kernel values, including inherited PID defaults. Monitoring
 must cover the resulting limits without claiming untested database permissions.
+
+`postgres-resources.example.yml` and the matching policy JSON are an optional
+resource-only profile. Qualify measured headroom, native generation, authenticated
+transactions, dump/restore, restart and current-data undo on the exact image. A
+synthetic localhost password test must use explicit SCRAM host initialization
+rather than the default localhost trust exception. These examples neither change
+database permissions nor resolve a canonical-image mismatch.

@@ -1,0 +1,10 @@
+# Resource-only fragment. Qualify exact images, real workload headroom and recovery.
+# Preserve existing image, credentials, command, volumes, networks and permissions.
+# Standalone Coolify databases use their canonical limits_* fields plus
+# --pids-limit=128; prove the native generator retains these fields.
+services:
+  postgres:
+    mem_limit: 512m
+    memswap_limit: 1g
+    cpus: 1
+    pids_limit: 128

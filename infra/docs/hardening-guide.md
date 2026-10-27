@@ -2997,3 +2997,14 @@ failed fixture/verifier attempts and explain each correction. Generator, canary 
 undo proofs expire after one hour; measurement expires after 30 minutes. Resume
 with fresh, separately retained attempts and reviewed source hashes. Do not extend
 those windows or overwrite previous private evidence to make a rollout proceed.
+
+The optional PostgreSQL resource fragment is 512 MiB memory, 1 GiB combined
+memory/swap, one CPU and 128 PIDs. The qualified 16.15 image passed synthetic
+transactions, custom-format dump/restore, restart persistence and stopped-container
+undo preserving the latest writes. Explicitly initialize synthetic SCRAM host
+rules when testing password authentication: initdb's default localhost trust can
+otherwise make correct-password checks meaningless. Reject both missing and wrong
+passwords. This fixture configuration does not establish production authentication
+coverage or permission hardening. The two dedicated instances passed serial
+resource-only changes without restart; measure each workload before copying the
+profile, preserve its image/data/configuration and verify native persistence.
