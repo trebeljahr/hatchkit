@@ -90,7 +90,7 @@ for (const [repo, advisories, latest] of fixtures.urls) {
 }
 assert.deepEqual(
   watchedServices().map((s) => s.key),
-  ["coolify", "traefik", "plausible", "listmonk", "uptime-kuma", "glitchtip", "clickhouse"],
+  ["coolify", "traefik", "plausible", "listmonk", "uptime-kuma", "glitchtip", "clickhouse", "coredns", "sentinel"],
 );
 
 const now = new Date("2026-10-19T08:00:00Z");

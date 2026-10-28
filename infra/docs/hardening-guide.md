@@ -1961,6 +1961,30 @@ Use the report's provenance time, not its filesystem modification time. A new
 database invalidates every cached report. Re-enumerate running images after the
 scan; a deployment race leaves the inventory incomplete until another check.
 
+Check image coverage every 15 minutes, with at most one minute of timer jitter.
+Use a read-only systemd condition: unchanged immutable images and workload names
+with current complete provenance skip both the scanner and its watcher poststep.
+New/removed images, rolling names, failed attempts or invalid provenance require
+a refresh; refresh the vulnerability database at least daily even without a
+deployment. A ledger 23 hours old or an individual cached image report 24 hours
+old must refresh. Do not reset finding deadlines. A runtime-inspection failure
+must fail visibly (ExecCondition 255), never become the healthy skip code 1.
+Keep the scanner's lock and CPU/memory/time bounds. This also clears findings
+for retired images promptly instead of leaving old package alerts until tomorrow.
+
+For a database image's library-only patch, compare installed package versions
+and the database executable hash against the immutable original. Test native
+dump/restore, restart, downgrade with the latest synthetic writes and reapplication
+using an isolated volume before changing production. Capture the registered
+native backup on its original host. Compare the native Compose parser in a
+rolled-back transaction and change only the reviewed component's image in both
+canonical documents. Deploy that component without dependencies. Verify the
+original volume, prior credential values, resource limits and application query;
+review any controller-generated metadata additions explicitly. Update the exact
+image policy only after those checks, then review the precise AIDE differences.
+Retain the original image and baseline. Never substitute an old backup for a
+current-data rollback when the tested same-version image can reuse the volume.
+
 Keep the last complete image ledger while recording refresh progress and failed
 attempts separately. A normal refresh is not lost coverage. Initial inventory is
 an explicit setup state, not a clean result; require progress within 20 minutes

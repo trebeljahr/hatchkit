@@ -6,6 +6,7 @@ OnFailure=hatchkit-update-watch-failed.service
 
 [Service]
 Type=oneshot
+ExecCondition=/usr/bin/python3 /opt/hatchkit-backups/image-vulnerabilities.py --needs-refresh
 ExecStart=/usr/bin/python3 /opt/hatchkit-backups/image-vulnerabilities.py
 ExecStartPost=/usr/bin/python3 /opt/hatchkit-backups/update-watch.py check
 User=root

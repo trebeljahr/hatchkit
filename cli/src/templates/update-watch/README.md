@@ -84,6 +84,27 @@ source commit, reset continuing deadlines or suppress unrelated bundled copies.
 Git publication and protected-record uploads retain their separate approval
 boundaries; a maintenance request does not silently grant either.
 
+The image timer checks coverage every 15 minutes with up to one minute of
+jitter. Its read-only `--needs-refresh` condition skips the scanner and watcher
+when the same immutable images and workload names already have current coverage.
+Changed or removed images, rolling names, failed attempts, malformed provenance,
+24-hour-old image reports and a ledger 23 hours old require a refresh. This keeps
+database review daily without rescanning unchanged images every quarter hour.
+An unavailable Docker inventory returns ExecCondition 255 and fails visibly;
+only verified current coverage returns the normal skip code 1. Existing resource
+limits, scan locking, failed-attempt evidence and notification deadlines remain.
+
+For a database image's library-only patch, verify the database binary hash is
+unchanged and enumerate the exact package delta. Qualify native dump/restore,
+restart, current-data downgrade and reapplication on a synthetic volume first.
+Capture the registered backup on the original host before deployment. Change
+only the image in both native Compose documents, compare parser output in a
+rolled-back transaction, deploy only that database component, then verify its
+original volume, prior credential values, resources and application queries.
+Review any native metadata additions explicitly. Enroll the qualified image in
+the existing exact-image policy and review AIDE differences before accepting a
+new baseline. A retained image alone is not a tested recovery path.
+
 Put a meaningful regression in the application's existing publication gate.
 Where native server modules matter, run compiled tests in the Linux build stage
 before pruning dev dependencies, using synthetic configuration and bounded

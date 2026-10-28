@@ -74,6 +74,39 @@ def running_images():
     return {image: sorted(names) for image, names in images.items()}
 
 
+def needs_refresh(report, attempt, images, now):
+    """A current ledger must cover names and immutable images, not just a tag.
+
+    Recheck the vulnerability database daily even if no workload changes.
+    Failed attempts remain visible and are retried by the bounded timer.
+    """
+    try:
+        if report['complete'] is not True or report['errors'] != [] or attempt['complete'] is not True or attempt['errors'] != []:
+            return True
+        checked = dt.datetime.fromisoformat(report['checkedAt'].replace('Z', '+00:00'))
+        if checked.tzinfo is None or not -dt.timedelta(minutes=5) <= now - checked < dt.timedelta(hours=23):
+            return True
+        rows = report['images']
+        if not isinstance(rows, list) or any(not isinstance(row['containers'], list)
+                or not all(isinstance(name, str) for name in row['containers']) for row in rows):
+            return True
+        if len({row['image'] for row in rows}) != len(rows):
+            return True
+        covered = {row['image']: sorted(row['containers']) for row in rows}
+        if covered != images:
+            return True
+        for row in rows:
+            scanned = dt.datetime.fromisoformat(row['scannedAt'].replace('Z', '+00:00'))
+            if scanned.tzinfo is None or not -dt.timedelta(minutes=5) <= now - scanned < dt.timedelta(hours=24):
+                return True
+        database = report['database']
+        built = dt.datetime.fromisoformat(database['built'].replace('Z', '+00:00'))
+        return not (database['valid'] is True and built.tzinfo is not None
+                    and -dt.timedelta(minutes=5) <= now - built <= dt.timedelta(days=5))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return True
+
+
 def usable_report(report, image, database, scanner_version, now):
     """Reuse only the same image, scanner and verified DB for at most 24 hours.
 
@@ -144,7 +177,27 @@ def scan():
             'ok': not findings and not errors, 'complete': not errors, 'findings': findings,
             'errors': errors, 'images': inventories, 'database': db}
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--needs-refresh', action='store_true', help='Read-only systemd condition: 0 refresh, 1 current, 255 inspection failed')
+    args = parser.parse_args(argv)
+    if args.needs_refresh:
+        try:
+            images = running_images()
+            def previous(name):
+                try:
+                    return json.loads((WORK / name).read_text())
+                except (OSError, ValueError):
+                    return {}
+            needed = needs_refresh(previous('image-vulnerability-status.json'),
+                                   previous('image-vulnerability-attempt.json'), images,
+                                   dt.datetime.now(dt.timezone.utc))
+            print(json.dumps({'refreshRequired': needed}), flush=True)
+            return 0 if needed else 1
+        except Exception as error:
+            # ExecCondition 255 fails visibly; 1 would silently skip coverage.
+            print(json.dumps({'refreshInspectionFailed': type(error).__name__}), flush=True)
+            return 255
     os.umask(0o077)
     WORK.mkdir(parents=True, exist_ok=True)
     with (WORK / '.image-vulnerability-scan.lock').open('w') as lock:

@@ -1,9 +1,10 @@
 [Unit]
-Description=Daily final image package security scan
+Description=Refresh image package coverage after deployments and daily
 
 [Timer]
-OnCalendar=*-*-* 07:00:00 UTC
-RandomizedDelaySec=15min
+OnCalendar=*-*-* *:00/15:00 UTC
+OnBootSec=5min
+RandomizedDelaySec=1min
 Persistent=true
 
 [Install]

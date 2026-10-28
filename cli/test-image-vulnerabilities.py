@@ -65,13 +65,50 @@ class ImageScanTests(unittest.TestCase):
  def test_failed_attempt_retains_last_complete_ledger_and_explicit_failed_progress(self):
   old={'checkedAt':NOW.isoformat(),'ok':False,'complete':True,'findings':[{'id':'old-risk'}]}
   path=self.root/'image-vulnerability-status.json';path.write_text(json.dumps(old))
-  with patch.object(iv,'scan',side_effect=RuntimeError('scanner failed')),contextlib.redirect_stdout(io.StringIO()):self.assertEqual(iv.main(),1)
+  with patch.object(iv,'scan',side_effect=RuntimeError('scanner failed')),contextlib.redirect_stdout(io.StringIO()):self.assertEqual(iv.main([]),1)
   self.assertEqual(json.loads(path.read_text()),old)
   self.assertFalse(json.loads((self.root/'image-vulnerability-attempt.json').read_text())['complete'])
   self.assertEqual(json.loads((self.root/'image-vulnerability-progress.json').read_text())['phase'],'failed')
  def test_completed_attempt_replaces_ledger_only_after_success(self):
   complete={'checkedAt':NOW.isoformat(),'ok':True,'complete':True,'findings':[],'errors':[],'images':[]}
-  with patch.object(iv,'scan',return_value=complete),contextlib.redirect_stdout(io.StringIO()):self.assertEqual(iv.main(),0)
+  with patch.object(iv,'scan',return_value=complete),contextlib.redirect_stdout(io.StringIO()):self.assertEqual(iv.main([]),0)
   self.assertEqual(json.loads((self.root/'image-vulnerability-status.json').read_text()),complete)
   self.assertEqual(json.loads((self.root/'image-vulnerability-progress.json').read_text())['phase'],'complete')
+ def current(self):
+  return {'checkedAt':NOW.isoformat(),'ok':False,'complete':True,'errors':[],
+          'images':[{'image':'sha256:1','containers':['worker','web'],'scannedAt':NOW.isoformat()}],'database':DB.copy()}
+ def test_current_inventory_with_findings_needs_no_repeat_scan(self):
+  current=self.current()
+  self.assertFalse(iv.needs_refresh(current,current,{'sha256:1':['web','worker']},NOW))
+ def test_deployments_renames_and_removed_images_refresh_the_ledger(self):
+  current=self.current()
+  for images in [{'sha256:2':['web','worker']},{'sha256:1':['new-web','worker']},{}]:
+   self.assertTrue(iv.needs_refresh(current,current,images,NOW))
+ def test_daily_database_refresh_and_old_cached_reports_cannot_be_deferred_by_renames(self):
+  current=self.current();images={'sha256:1':['web','worker']}
+  self.assertTrue(iv.needs_refresh(current,current,images,NOW+dt.timedelta(hours=23)))
+  for mutate in [lambda r:r['images'][0].update(scannedAt=(NOW-dt.timedelta(hours=24)).isoformat()),
+                 lambda r:r.update(database=DB|{'valid':False}),
+                 lambda r:r.update(database=DB|{'built':(NOW-dt.timedelta(days=6)).isoformat()}),
+                 lambda r:r.update(checkedAt=(NOW+dt.timedelta(minutes=6)).isoformat()),
+                 lambda r:r.update(images=r['images']*2)]:
+   bad=copy.deepcopy(current);mutate(bad);self.assertTrue(iv.needs_refresh(bad,current,images,NOW))
+ def test_failed_or_missing_attempt_and_malformed_ledger_require_retry(self):
+  current=self.current();images={'sha256:1':['web','worker']}
+  for attempt in [{},current|{'complete':False},current|{'errors':['failed']}]:
+   self.assertTrue(iv.needs_refresh(current,attempt,images,NOW))
+  for bad in [{},current|{'images':None},current|{'images':[{'image':'sha256:1','containers':'web'}]}]:
+   self.assertTrue(iv.needs_refresh(bad,current,images,NOW))
+ def test_refresh_condition_skips_without_scanning_writing_or_sending(self):
+  current=self.current()
+  for name in ['image-vulnerability-status.json','image-vulnerability-attempt.json']:(self.root/name).write_text(json.dumps(current))
+  before={p.name:p.read_bytes()for p in self.root.iterdir()}
+  with patch.object(iv,'running_images',return_value={'sha256:1':['web','worker']}),patch.object(iv,'scan')as scan,contextlib.redirect_stdout(io.StringIO()):
+   self.assertEqual(iv.main(['--needs-refresh']),1);scan.assert_not_called()
+  self.assertEqual(before,{p.name:p.read_bytes()for p in self.root.iterdir()})
+ def test_refresh_condition_fails_visibly_when_runtime_inspection_breaks(self):
+  output=io.StringIO()
+  with patch.object(iv,'running_images',side_effect=RuntimeError('PRIVATE_TEST_VALUE')),contextlib.redirect_stdout(output):
+   self.assertEqual(iv.main(['--needs-refresh']),255)
+  self.assertNotIn('PRIVATE_TEST_VALUE',output.getvalue());self.assertIn('RuntimeError',output.getvalue())
 if __name__=='__main__':unittest.main()
