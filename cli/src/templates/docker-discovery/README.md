@@ -460,3 +460,13 @@ Monitor actual SQL/PING, exact bindings/mount destinations, resources and the
 controller's existing UID without claiming new permission containment. Include
 the exact custom override path in AIDE, review its first inclusion and all
 authored policy changes, and preserve previous baselines. No automatic learning.
+
+Vendor upgrades need fresh qualification of each changed immutable image. Prove
+capped synthetic bootstrap, CLI/FPM versions, authenticated SQL/PING, restart and
+current-data recreation before enrolling only the changed image pins. Verify
+the persistent override and live resource limits survived. Exact-image gating
+can short-circuit a database readiness probe; inspect the mismatch and run an
+independent authenticated probe before diagnosing a database outage. Require
+the complete policy check, retain the old policy, and separately review the
+exact AIDE file/parent timestamp diff. Keep raw image findings visible. Capped
+recreation does not qualify unlimited-resource undo or permission changes.

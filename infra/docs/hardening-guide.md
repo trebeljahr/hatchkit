@@ -3242,6 +3242,20 @@ upgrades preserve this override, but newly created containers still need drift
 and compatibility checks. Resource controls do not remove Coolify's host-level
 SSH management trust or Sentinel's remaining socket/host-PID trust.
 
+After a vendor upgrade, qualify the new immutable controller and backing-store
+images before enrolling their pins. Use capped synthetic bootstrap and current
+data recreation, actual CLI/FPM runtime checks, SQL/PING and restart persistence.
+Verify that the persistent override and live limits survived. A database probe
+gated on an exact-image match can report failure because its pin is stale;
+inspect that cause and independently test authenticated readiness.
+
+Change only the reviewed image fields, require the complete policy check to
+pass, and review the exact policy-file/parent timestamp AIDE diff separately.
+Keep the prior policy and baseline on the original host. Pin enrollment does
+not resolve scanner matches or qualify new permissions. A capped recreation
+test also does not establish recovery to unlimited resource settings; record
+those results separately. Never make future vendor images auto-approved.
+
 ### Keep a multi-network proxy away from database ports
 
 Separate project networks still allow a compromised proxy to reach every
