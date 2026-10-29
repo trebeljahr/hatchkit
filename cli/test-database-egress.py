@@ -1,4 +1,4 @@
-import copy
+import copy,subprocess
 import importlib.util
 import json
 from pathlib import Path
@@ -14,6 +14,13 @@ def row(name,address):
 def rows():return [row('db','172.20.0.2'),row('app','172.20.0.3'),row('unrelated','172.20.0.4')]
 
 class Egress(unittest.TestCase):
+    def test_read_failure_keeps_egress_incomplete_with_safe_operation_only(self):
+        error=subprocess.TimeoutExpired(['PRIVATE_VALUE'],25);error.operation='docker-inspect'
+        with tempfile.TemporaryDirectory()as folder,patch.object(g,'STATUS',Path(folder)/'status.json'),patch.object(g,'cycle',side_effect=error):
+            report=g.once(True)
+        self.assertFalse(report['ok']);self.assertFalse(report['complete'])
+        self.assertEqual(report['error'],'TimeoutExpired');self.assertEqual(report['failedOperation'],'docker-inspect')
+        self.assertNotIn('PRIVATE_VALUE',json.dumps(report))
     def test_only_reviewed_peers_get_destination_rules(self):
         entries,stamp,summary=g.topology(CONFIG,rows(),{'db':{'private':'veth123'}})
         self.assertEqual(entries,[('veth123',('172.20.0.3',))]);self.assertEqual(summary['allowedPeerAddresses'],1)

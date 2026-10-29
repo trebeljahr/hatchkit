@@ -11,6 +11,11 @@ notice wording remains incomplete coverage for manual review. Reviewed older
 notice wording through TS-2026-013 remains covered by the existing floor;
 do not treat an empty GitHub advisory list as successful vendor coverage.
 
+Keep the vendor RSS bound separate from larger JSON catalogs: 1 MiB for the
+Tailscale feed and 8 MiB for JSON downloads. CISA's real catalog exceeds 1 MiB.
+An oversized or unreadable catalog must remain missing coverage, never an empty
+successful result. Exercise that larger-catalog case before deploying feed work.
+
 Patch the access daemon one host at a time. Retain authenticated old/new
 packages and private recovery state on the original host, run the update in
 a transient system service that survives SSH disconnection, and reconnect over

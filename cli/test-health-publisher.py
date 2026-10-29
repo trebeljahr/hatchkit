@@ -3,6 +3,18 @@ from unittest.mock import patch
 p=pathlib.Path(__file__).parent/'src/templates/security-controller/publish-health.py'
 spec=importlib.util.spec_from_file_location('pub',p);pub=importlib.util.module_from_spec(spec);spec.loader.exec_module(pub)
 class PublisherBoundary(unittest.TestCase):
+ def test_guard_operation_is_local_diagnostic_metadata_not_external_payload(self):
+  rows={'host-integrity-quick-status.json':{'checkedAt':'2026-10-28T07:00:00Z','ok':True},
+        'database-guard-status.json':{'checkedAt':'2026-10-28T07:00:00Z','ok':False,'complete':False,'error':'TimeoutExpired','failedOperation':'docker-inspect','argv':'PRIVATE_VALUE'}}
+  original=pathlib.Path.read_text
+  def read(path,*a,**kw):
+   if str(path)=='/etc/hatchkit-backups/config.json':return json.dumps({'projects':[]})
+   return original(path,*a,**kw)
+  with patch.dict(pub.os.environ,{'HATCHKIT_DATABASE_GUARD_REQUIRED':'1'}),patch.object(pub,'read',side_effect=lambda n:rows.get(n,{})),patch.object(pathlib.Path,'read_text',read):
+   details={};payload=pub.metadata(details)
+  self.assertEqual(details['databaseGuard']['failedOperation'],'docker-inspect');self.assertFalse(payload['checks']['process']['complete'])
+  self.assertNotIn('failedOperation',json.dumps(payload));self.assertNotIn('PRIVATE_VALUE',json.dumps(details))
+  self.assertNotIn('failedOperation',pub.control_summary({'failedOperation':'PRIVATE_VALUE'}))
  def test_required_database_egress_cannot_disappear_or_export_private_destinations(self):
   rows={'host-integrity-quick-status.json':{'checkedAt':'2026-10-26T02:00:00Z','ok':True},
         'database-egress-status.json':{'checkedAt':'2026-10-26T01:58:00Z','ok':True,'complete':True,'destinations':['DO_NOT_EXPORT']}}

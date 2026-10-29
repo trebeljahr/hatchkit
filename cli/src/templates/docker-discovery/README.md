@@ -208,6 +208,16 @@ when their veth disappears. Accept only that exact subtraction when the observed
 Docker identity/topology changed and the old host devices are independently
 absent; keep every other reviewed rule exact. Never learn an unexplained policy.
 
+Docker metadata timeouts receive one fresh inventory read retry, starting with
+a new container list. Never reuse a partial list or retry a firewall write.
+Other failures and persistent timeouts remain incomplete. Each subprocess keeps
+its 25-second bound and scheduled checks retain their 90-second unit deadline.
+Local status records inventoryReadRetries and a fixed failedOperation enum;
+never retain argv, raw diagnostics or credentials in those fields. The external
+publisher's seven-check payload stays fixed. A generic process failure can
+originate in a required network/container guard: inspect the retained component
+receipt before changing process permissions or exemptions.
+
 The synthetic internal-network canary proves before/apply/undo/reapply behavior,
 application-path preservation and replacement-proxy reconciliation without
 production records, credentials or mounts. Real deployment additionally needs

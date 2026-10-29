@@ -21,10 +21,34 @@ TAG='hatchkit-proxy-db-v1'
 CONFIG=Path('/etc/hatchkit-security/database-guard.json')
 WORK=Path('/var/lib/hatchkit-security/database-guard')
 STATUS=Path('/var/lib/hatchkit-backups/database-guard-status.json')
+OPERATIONS={'docker-list','docker-inspect','interface-read','firewall-read','firewall-validate','firewall-write','docker-incarnation-read','other-command'}
 
 
 def run(args,**kwargs):
-    return subprocess.run(args,capture_output=True,text=True,check=True,timeout=25,**kwargs).stdout
+    try:
+        return subprocess.run(args,capture_output=True,text=True,check=True,timeout=25,**kwargs).stdout
+    except (subprocess.SubprocessError,OSError) as error:
+        # Fixed operation names are safe to retain; argv and command output are
+        # never copied into a status report or external heartbeat.
+        if args[:2]==['docker','ps']:operation='docker-list'
+        elif args[:2]==['docker','inspect']:operation='docker-inspect'
+        elif args[0]in('ip','nsenter'):operation='interface-read'
+        elif args[0]=='systemctl':operation='docker-incarnation-read'
+        elif args[0]=='nft':operation='firewall-read'if'list'in args else'firewall-validate'if'--check'in args else'firewall-write'
+        else:operation='other-command'
+        error.operation=operation
+        raise
+
+
+def read_inventory():
+    # Image archive reads can briefly occupy the daemon. Retry only this read
+    # sequence, from a new ps result; never reuse a partial or obsolete list.
+    for attempt in range(2):
+        try:
+            ids=run(['docker','ps','-q']).split();assert ids
+            return json.loads(run(['docker','inspect',*ids])),attempt
+        except subprocess.TimeoutExpired:
+            if attempt:raise
 
 
 def topology(config,rows,interfaces):
@@ -139,8 +163,7 @@ def write(path,value):
 
 
 def cycle(apply=False):
-    config=json.loads(CONFIG.read_text());raw=run(['docker','ps','-q']).split();assert raw
-    rows=json.loads(run(['docker','inspect',*raw]));proxy=next(r for r in rows if r['Name'].lstrip('/')==config['proxy'])
+    config=json.loads(CONFIG.read_text());rows,retries=read_inventory();proxy=next(r for r in rows if r['Name'].lstrip('/')==config['proxy'])
     interfaces=proxy_interfaces(proxy);pairs=topology(config,rows,interfaces)
     invocation=run(['systemctl','show','docker.service','-p','InvocationID','--value']).strip();assert invocation
     prior=json.loads((WORK/'state.json').read_text())if(WORK/'state.json').exists()else None
@@ -164,13 +187,15 @@ def cycle(apply=False):
         current=current_table();assert current==expected
         write(WORK/'state.json',{'dockerInvocation':invocation,'rules':expected,'proxyStamp':stamp})
     assert current==expected,'Topology or firewall differs from current protection'
-    return {'databases':len(config['databases']),'addressPairs':len(pairs),'ipv6Pairs':sum(v==6 for v,a,b in pairs)}
+    return {'databases':len(config['databases']),'addressPairs':len(pairs),'ipv6Pairs':sum(v==6 for v,a,b in pairs),'inventoryReadRetries':retries}
 
 
 def once(apply):
     report={'checkedAt':dt.datetime.now(dt.timezone.utc).isoformat(),'ok':False,'complete':False,'findings':[]}
     try:report.update(cycle(apply),ok=True,complete=True)
-    except Exception as error:report['error']=type(error).__name__
+    except Exception as error:
+        report['error']=type(error).__name__
+        if getattr(error,'operation',None)in OPERATIONS:report['failedOperation']=error.operation
     write(STATUS,report)
     return report
 

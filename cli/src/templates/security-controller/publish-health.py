@@ -61,10 +61,13 @@ def with_container_controls(process,controls):
 
 
 def control_summary(row):
- return {'checkedAt':row.get('checkedAt'),'ok':row.get('ok')is True,
+ result={'checkedAt':row.get('checkedAt'),'ok':row.get('ok')is True,
          'complete':row.get('complete')is True and not row.get('error'),
          'findings':len(row.get('findings')or[]),
          'errorType':row.get('error')if re.fullmatch(r'[A-Za-z]{1,80}',str(row.get('error')or''))else('OtherError'if row.get('error')else None)}
+ if row.get('failedOperation')in {'docker-list','docker-inspect','interface-read','firewall-read','firewall-validate','firewall-write','docker-incarnation-read','other-command'}:
+  result['failedOperation']=row['failedOperation']
+ return result
 
 def record_receipt(attempt,payload,components,delivery):
  with (WORK/'.health-publisher-history.lock').open('a')as lock:

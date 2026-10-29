@@ -91,8 +91,7 @@ def wanted(entries):
 
 def cycle(apply=False):
     config=json.loads(CONFIG.read_text());definitions=validate(config)
-    ids=owned.run(['docker','ps','-q']).split();assert ids
-    rows=json.loads(owned.run(['docker','inspect',*ids]))
+    rows,retries=owned.read_inventory()
     selected={r['Name'].lstrip('/'):r for r in rows}
     interfaces={d['container']:owned.proxy_interfaces(selected[d['container']])for d in definitions if d['container']in selected}
     entries,stamp,summary=topology(config,rows,interfaces)
@@ -115,12 +114,14 @@ def cycle(apply=False):
         owned.write(WORK/'state.json',{'dockerInvocation':invocation,'rules':expected,'topologyStamp':stamp})
     assert current==expected,'Current database topology is not protected'
     complete=not(summary['missingDatabases']or summary['missingClients'])
-    return {**summary,'ok':complete,'complete':complete}
+    return {**summary,'ok':complete,'complete':complete,'inventoryReadRetries':retries}
 
 def once(apply=False):
     report={'checkedAt':dt.datetime.now(dt.timezone.utc).isoformat(),'ok':False,'complete':False,'findings':[]}
     try:report.update(cycle(apply))
-    except Exception as error:report['error']=type(error).__name__
+    except Exception as error:
+        report['error']=type(error).__name__
+        if getattr(error,'operation',None)in owned.OPERATIONS:report['failedOperation']=error.operation
     owned.write(STATUS,report);return report
 
 def main():

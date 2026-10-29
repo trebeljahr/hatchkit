@@ -1934,6 +1934,15 @@ review each changed path before a separate baseline promotion. Keep prior truste
 databases. An interrupted daily scan is a real coverage gap even when the quick
 check stayed healthy; distinguish SIGTERM from a proved timeout or OOM.
 
+The external process summary also includes required container and network
+guards. Inspect its original component receipt: a Docker inventory timeout or
+an unhealthy app is different evidence from a suspicious process. For guard
+metadata timeouts, retry the entire read once with a new container list; keep
+the command and unit deadlines. Never retry firewall writes, reuse partial
+inventory or weaken detection to clear a transient alert. Record only fixed
+operation names and retry counts locally; keep credentials and command arguments
+out of diagnostics and preserve the external payload boundary.
+
 Very young `runc:[2:INIT]` processes can expose `/runc` during container exec.
 Re-observe that exact transition once after 50 ms for the whole process table.
 This is not an allowance: persistent, older or differently named `/runc`
