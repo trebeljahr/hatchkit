@@ -1913,11 +1913,32 @@ def load(payload, key, name):
     return json.loads((Path(__file__).resolve().parent / name).read_text())
 
 
+def failure_notice(hostname, unit):
+    """Name the failed producer; partial work is never reported as no checks."""
+    if unit == SERVICE:
+        subject = '[Hatchkit] Update watch did not finish — ' + hostname
+        body = ('The scheduled update watch failed or stopped before finishing. '
+                'This run may contain partial checks; inspect its last report and service logs.\n')
+    elif unit == 'hatchkit-image-vulnerabilities.service':
+        subject = '[Hatchkit] Final image scan did not finish — ' + hostname
+        body = ('The final image scan failed or stopped before publishing a complete result. '
+                'Any previous complete image ledger is retained; partial results do not establish current coverage.\n\n'
+                'A deployment during a scan can invalidate its image inventory. The image timer retries '
+                'within 15 minutes plus up to one minute of jitter. Investigate if the next attempt also fails.\n'
+                'Latest attempt: /var/lib/hatchkit-backups/image-vulnerability-attempt.json\n')
+    else:
+        raise WatchError('Failure notification origin is not recognized')
+    return subject, body + ('\nInspect: hatchkit host updates --json\n'
+                            'Server logs: journalctl -u ' + unit + '\n')
+
+
 def main(payload=None):
     os.umask(0o077)
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=['scan', 'check', 'failed', 'test'])
     parser.add_argument('--fresh-feeds',action='store_true',help='Bypass the one-hour GitHub response cache; still honor rate-limit backoff')
+    parser.add_argument('--failed-unit', choices=[SERVICE, 'hatchkit-image-vulnerabilities.service'], default=SERVICE,
+                        help='Exact producer for the systemd failure notification')
     args = parser.parse_args()
     work, config = work_dir()
     services = load(payload, 'services', SERVICES_NAME)
@@ -1945,9 +1966,8 @@ def main(payload=None):
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
     if args.action == 'failed':
-        message_id = send_email(mail_settings(config), '[Hatchkit] Update watch did not finish — ' + hostname,
-                                'systemd stopped the scheduled update watch before it finished (a timeout, the memory '
-                                'limit, or a crash). Nothing was checked this run.\n' + MAIL_FOOTER)
+        subject, body = failure_notice(hostname, args.failed_unit)
+        message_id = send_email(mail_settings(config), subject, body)
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
     refresh_host_package_indexes(work)

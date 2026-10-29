@@ -522,6 +522,7 @@ esac`,
   assert.equal(payload.dryRun, true);
   assert.deepEqual(Object.keys(payload).sort(), ["boot", "dryRun", "feeds", "files"]);
   assert.deepEqual(Object.keys(payload.files).sort(), [
+    "hatchkit-image-vulnerabilities-failed.service",
     "hatchkit-image-vulnerabilities.service",
     "hatchkit-image-vulnerabilities.timer",
     "hatchkit-update-watch-failed.service",
@@ -539,6 +540,8 @@ esac`,
   );
   assert.match(payload.files["hatchkit-update-watch.service"], /update-watch\.py check/);
   assert.match(payload.files["hatchkit-update-watch-failed.service"], /update-watch\.py failed/);
+  assert.match(payload.files["hatchkit-image-vulnerabilities.service"], /OnFailure=hatchkit-image-vulnerabilities-failed\.service/);
+  assert.match(payload.files["hatchkit-image-vulnerabilities-failed.service"], /update-watch\.py failed --failed-unit hatchkit-image-vulnerabilities\.service/);
   assert.equal(command.includes(payload.boot), true, "install probes with the same boot line");
   const installer = Buffer.from(
     argv("ops-vps")[2].match(/b64decode\("([^"]+)"\)/)![1],

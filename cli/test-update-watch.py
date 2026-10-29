@@ -61,6 +61,38 @@ def flagged(key, version):
     return hits, unknown
 
 
+class FailureRouting(unittest.TestCase):
+    def test_failure_handlers_name_the_actual_producer_without_claiming_zero_checks(self):
+        for unit, expected in [(uw.SERVICE, 'Update watch did not finish'),
+                               ('hatchkit-image-vulnerabilities.service', 'Final image scan did not finish')]:
+            with self.subTest(unit=unit), tempfile.TemporaryDirectory() as directory:
+                sent = []
+                config = {'alerts': {'enabled': True, 'to': 'fixture@example.test',
+                                     'from': 'fixture@example.test', 'smtpFile': 'fixture-only'}}
+                def send(settings, subject, body):
+                    sent.append((subject, body))
+                    return 'fixture-message'
+                with patch.object(uw, 'work_dir', return_value=(Path(directory), config)), \
+                     patch.object(uw.socket, 'gethostname', return_value='fixture-host'), \
+                     patch.object(sys, 'argv', ['update-watch.py', 'failed', '--failed-unit', unit]), \
+                     patch.dict(sys.modules, {'alerts': NS(send_email=send)}), \
+                     __import__('contextlib').redirect_stdout(io.StringIO()):
+                    uw.main({'services': SERVICES, 'cloudflare': CLOUDFLARE})
+                self.assertEqual(len(sent), 1)
+                subject, body = sent[0]
+                self.assertEqual(subject, '[Hatchkit] ' + expected + ' — fixture-host')
+                self.assertIn('journalctl -u ' + unit, body)
+                self.assertNotIn('Nothing was checked', body)
+                if unit != uw.SERVICE:
+                    self.assertIn('previous complete image ledger', body)
+                    self.assertIn('15 minutes', body)
+                    self.assertNotIn('journalctl -u ' + uw.SERVICE, body)
+
+    def test_unknown_failure_origin_cannot_enter_the_message(self):
+        with self.assertRaisesRegex(uw.WatchError, '^Failure notification origin is not recognized$'):
+            uw.failure_notice('fixture-host', SECRET)
+
+
 class Versions(unittest.TestCase):
     def test_ordering(self):
         V = uw.Version

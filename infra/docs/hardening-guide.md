@@ -2037,6 +2037,8 @@ Use the report's provenance time, not its filesystem modification time. A new
 database invalidates every cached report. Re-enumerate running images after the
 scan; a deployment race leaves the inventory incomplete until another check.
 
+Route image-scan and advisory-watcher failures to their own named handlers. An image inventory invalidated by a deployment must identify the image service and its retry, not claim the update watcher crashed or that no checks ran. Preserve the previous complete ledger and the failed attempt separately; the independent monitor still reports incomplete coverage.
+
 Check image coverage every 15 minutes, with at most one minute of timer jitter.
 Use a read-only systemd condition: unchanged immutable images and workload names
 with current complete provenance skip both the scanner and its watcher poststep.

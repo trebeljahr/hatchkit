@@ -644,6 +644,7 @@ const FILES = [
   "update-watch-services.json",
   "update-watch-cloudflare.json",
   "image-vulnerabilities.py",
+  "hatchkit-image-vulnerabilities-failed.service",
   "hatchkit-image-vulnerabilities.service",
   "hatchkit-image-vulnerabilities.timer",
   "hatchkit-update-watch.service",
@@ -662,7 +663,7 @@ def fail(message):
 payload=json.load(sys.stdin)
 opt=pathlib.Path('/opt/hatchkit-backups')
 units=pathlib.Path('/etc/systemd/system')
-names=('update-watch.py','update-watch-services.json','update-watch-cloudflare.json','hatchkit-update-watch.service','hatchkit-update-watch.timer','hatchkit-update-watch-failed.service','image-vulnerabilities.py','hatchkit-image-vulnerabilities.service','hatchkit-image-vulnerabilities.timer')
+names=('update-watch.py','update-watch-services.json','update-watch-cloudflare.json','hatchkit-update-watch.service','hatchkit-update-watch.timer','hatchkit-update-watch-failed.service','image-vulnerabilities.py','hatchkit-image-vulnerabilities.service','hatchkit-image-vulnerabilities.timer','hatchkit-image-vulnerabilities-failed.service')
 if sorted(payload['files'])!=sorted(names):
  fail('unexpected installer files')
 if not pathlib.Path('/usr/local/bin/grype').is_file():
@@ -706,7 +707,7 @@ print(json.dumps(dict(result,applied=True,timerEnabled=True,nextRun=next_run or 
 
 const UNINSTALL = `import json,pathlib,subprocess,sys
 dry=sys.argv[1]=='dry'
-paths=['/etc/systemd/system/hatchkit-image-vulnerabilities.timer','/etc/systemd/system/hatchkit-image-vulnerabilities.service','/opt/hatchkit-backups/image-vulnerabilities.py','/etc/systemd/system/hatchkit-update-watch.timer','/etc/systemd/system/hatchkit-update-watch.service','/etc/systemd/system/hatchkit-update-watch-failed.service','/opt/hatchkit-backups/update-watch.py','/opt/hatchkit-backups/update-watch-services.json','/opt/hatchkit-backups/update-watch-cloudflare.json']
+paths=['/etc/systemd/system/hatchkit-image-vulnerabilities-failed.service','/etc/systemd/system/hatchkit-image-vulnerabilities.timer','/etc/systemd/system/hatchkit-image-vulnerabilities.service','/opt/hatchkit-backups/image-vulnerabilities.py','/etc/systemd/system/hatchkit-update-watch.timer','/etc/systemd/system/hatchkit-update-watch.service','/etc/systemd/system/hatchkit-update-watch-failed.service','/opt/hatchkit-backups/update-watch.py','/opt/hatchkit-backups/update-watch-services.json','/opt/hatchkit-backups/update-watch-cloudflare.json']
 present=[p for p in paths if pathlib.Path(p).exists()]
 kept=[p for p in ('/var/lib/hatchkit-backups/update-watch-status.json','/var/lib/hatchkit-backups/image-vulnerability-status.json') if pathlib.Path(p).exists()]
 if not dry:

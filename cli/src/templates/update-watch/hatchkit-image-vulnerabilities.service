@@ -2,7 +2,7 @@
 Description=Scan final deployed images for OS and application dependency vulnerabilities
 Wants=network-online.target
 After=network-online.target docker.service
-OnFailure=hatchkit-update-watch-failed.service
+OnFailure=hatchkit-image-vulnerabilities-failed.service
 
 [Service]
 Type=oneshot

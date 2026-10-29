@@ -139,6 +139,8 @@ source commit, reset continuing deadlines or suppress unrelated bundled copies.
 Git publication and protected-record uploads retain their separate approval
 boundaries; a maintenance request does not silently grant either.
 
+Route image-scan and advisory-watcher failures to their own named handlers. An image inventory invalidated by a deployment must identify the image service and its retry, not claim the update watcher crashed or that no checks ran. Preserve the previous complete ledger and the failed attempt separately; the independent monitor still reports incomplete coverage.
+
 The image timer checks coverage every 15 minutes with up to one minute of
 jitter. Its read-only `--needs-refresh` condition skips the scanner and watcher
 when the same immutable images and workload names already have current coverage.
