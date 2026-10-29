@@ -1138,6 +1138,7 @@ class TailscaleVendorCoverage(unittest.TestCase):
             return uw.tailscale_rss(self.xml()), ''
         with tempfile.TemporaryDirectory() as work:
             reader = uw.GithubFeedReader(work, get=get, clock=lambda:clock[0])
+            reader.blocked_until = self.now + dt.timedelta(hours=2)
             reader(uw.TAILSCALE_BULLETINS)
             clock[0] += dt.timedelta(minutes=59)
             reader(uw.TAILSCALE_BULLETINS)
@@ -1145,6 +1146,10 @@ class TailscaleVendorCoverage(unittest.TestCase):
             clock[0] += dt.timedelta(minutes=2)
             reader(uw.TAILSCALE_BULLETINS)
             self.assertEqual(len(calls), 2)
+
+    def test_still_affected_tailscale_update_does_not_reset_vendor_notice_identity(self):
+        row={'kind':'advisory','service':'host-tailscale','id':'TS-2026-014','name':'Tailscale','version':'1.104.2'}
+        self.assertEqual(uw.finding_identity(row),uw.finding_identity(row|{'version':'1.104.3'}))
 
 
 class HostPackageCoverage(unittest.TestCase):

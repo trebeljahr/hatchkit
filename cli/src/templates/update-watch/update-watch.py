@@ -410,9 +410,9 @@ class GithubFeedReader:
             except (KeyError, TypeError, ValueError):
                 pass
         block_path = self.directory / 'primary-rate-limit.json'
-        if self.blocked_until is not None and now < self.blocked_until:
+        if github and self.blocked_until is not None and now < self.blocked_until:
             raise FeedRateLimit(self.blocked_until)
-        blocked = self.read(block_path)
+        blocked = self.read(block_path) if github else None
         if blocked:
             try:
                 until = dt.datetime.fromisoformat(blocked['until'])
@@ -427,7 +427,7 @@ class GithubFeedReader:
             self.network_reads += 1
             data, link = self.get(url)
         except FeedRateLimit as error:
-            if now < error.retry_at <= now + dt.timedelta(hours=2):
+            if github and now < error.retry_at <= now + dt.timedelta(hours=2):
                 self.blocked_until = error.retry_at
                 self.write(block_path, {'schema':1,'observedAt':now.isoformat(),'until':error.retry_at.isoformat()})
             raise
@@ -1688,7 +1688,7 @@ def finding_identity(finding):
         # matches that advisory has not remediated it.
         service = 'host-image-packages'
     key = {k: finding.get(k) for k in ('kind', 'id', 'name', 'version')}
-    if finding.get('kind') == 'image-package':
+    if finding.get('kind') == 'image-package' or (finding.get('kind') == 'advisory' and service == 'host-tailscale'):
         key.pop('version')
     key['service'] = service
     if not finding.get('id'):

@@ -1965,6 +1965,14 @@ health, containment and firewall before touching the other VPS. Review each
 AIDE difference against authenticated package bytes before manual baseline
 promotion; an expected restart is not evidence that the update succeeded.
 
+A Tailscale restart can reposition its iptables jumps above Docker's security
+hooks. Compare both families' full normalized rule hashes. Restore only proven
+hook positions, without flushing tables, and verify the exact previous hashes.
+Do not normalize away rule ordering: an earlier ACCEPT can bypass a later
+guard. Keep Docker's DOCKER-USER and DOCKER-FORWARD ordering intact and run the
+normal metadata guard check after restart. For a transient Type=oneshot update,
+bound TimeoutStartSec; RuntimeMaxSec does not bound a oneshot service's startup.
+
 If CISA's canonical download is unavailable, use its own
 [`cisagov/kev-data` mirror](https://github.com/cisagov/kev-data), which CISA says
 normally synchronizes within minutes. Validate count, CVE identifiers and release
