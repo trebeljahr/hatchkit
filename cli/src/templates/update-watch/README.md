@@ -1,5 +1,23 @@
 # Reviewed image applicability
 
+Host Tailscale coverage includes its [vendor security bulletin RSS](https://tailscale.com/security-bulletins/index.xml)
+as well as GitHub advisories. The required security floor is 1.104.4. Vendor
+notices are maintenance review items with a 24-hour deadline; their high review
+priority does not invent a vendor severity, exploitation claim or enabled
+SSH/Serve feature. Confirm each feature's applicability. The bounded one-hour
+cache preserves retrieval times. Missing, oversized, malformed, duplicate,
+wrong-origin, future-dated or regressed feeds fail visibly. New unsupported
+notice wording remains incomplete coverage for manual review. Reviewed older
+notice wording through TS-2026-013 remains covered by the existing floor;
+do not treat an empty GitHub advisory list as successful vendor coverage.
+
+Patch the access daemon one host at a time. Retain authenticated old/new
+packages and private recovery state on the original host, run the update in
+a transient system service that survives SSH disconnection, and reconnect over
+the existing tailnet. Verify actual version, node identity/preferences/Serve,
+container starts and containment, firewall and normal checks before the second
+host. Review AIDE package-file differences separately; never auto-accept them.
+
 The optional `/etc/hatchkit-security/image-assessments.json` is root-owned mode
 0600. Start from the empty example. Reviews are explicit operator decisions;
 feed text cannot create or extend one. Raw findings, severities, first-seen

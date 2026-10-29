@@ -783,6 +783,16 @@ class Check(unittest.TestCase):
         self.assertTrue(next_run['findings'][0]['knownExploited'])
         self.assertEqual(first['findings'][0]['dueAt'],next_run['findings'][0]['dueAt'])
 
+    def test_vendor_review_priority_has_24_hour_deadline_without_claiming_exploitation(self):
+        row={'kind':'advisory','service':'host-tailscale','id':'TS-2026-014','name':'Tailscale',
+             'version':'1.104.2','severity':'high','vendorSeverity':'unclassified','patchWithinHours':24,'summary':'Synthetic notice'}
+        with patch.object(uw,'scan',return_value={'services':[],'findings':[dict(row)],'skipped':[]}):
+            first,_=uw.check(None,[],None,self.work,self.config,self.send,NOW)
+            again,_=uw.check(None,[],None,self.work,self.config,self.send,NOW+dt.timedelta(hours=1))
+        self.assertEqual(dt.datetime.fromisoformat(first['findings'][0]['dueAt']),NOW+dt.timedelta(hours=24))
+        self.assertEqual(first['findings'][0]['dueAt'],again['findings'][0]['dueAt'])
+        self.assertFalse(first['findings'][0].get('knownExploited'))
+
     def test_notification_identity_upgrade_does_not_resend_acknowledged_ledger(self):
         row={'kind':'image-package','service':'image','id':'CVE-2026-1234','name':'pkg',
              'version':'1','severity':'high','summary':'test'}
@@ -1069,6 +1079,72 @@ class HostRuntimeCoverage(unittest.TestCase):
         self.assertTrue(any(f.get('id') == 'GHSA-test' for f in report['findings']))
         self.assertTrue(any(f['kind'] == 'host-runtime' for f in report['findings']))
         self.assertEqual(report['services'][0]['versionSource'], 'host binary')
+
+
+class TailscaleVendorCoverage(unittest.TestCase):
+    now = dt.datetime(2026, 10, 29, tzinfo=dt.timezone.utc)
+
+    def xml(self, extra=''):
+        items = ''.join('<item><title>TS-2026-%03d</title><link>https://tailscale.com/security-bulletins/#ts-2026-%03d</link>'
+                        '<pubDate>Mon, 26 Oct 2026 00:00:00 GMT</pubDate><description>'
+                        '&lt;p&gt;Description: Synthetic vendor condition.&lt;/p&gt;'
+                        '&lt;p&gt;This vulnerability is fixed in Tailscale version 1.104.4 or newer.&lt;/p&gt;'
+                        '</description></item>' % (n, n) for n in range(14, 18))
+        return ('<rss><channel>' + items + extra + '</channel></rss>').encode()
+
+    def test_vendor_feed_flags_old_runtime_even_when_github_has_no_advisories(self):
+        data = uw.tailscale_rss(self.xml())
+        rows, skipped = uw.tailscale_bulletin_findings(uw.Feeds({uw.TAILSCALE_BULLETINS:data}, get=offline), uw.Version('1.104.2'), self.now)
+        self.assertEqual({r['id'] for r in rows}, {'TS-2026-%03d' % n for n in range(14, 18)})
+        self.assertEqual(skipped, [])
+        self.assertTrue(all(r['vendorSeverity'] == 'unclassified' and r['patchWithinHours'] == 24
+                            and r['applicability'] == 'review-required' and not r.get('knownExploited') for r in rows))
+        self.assertEqual(uw.tailscale_bulletin_findings(uw.Feeds({uw.TAILSCALE_BULLETINS:data}, get=offline), uw.Version('1.104.4'), self.now), ([], []))
+
+    def test_scan_checks_vendor_source_and_missing_source_is_incomplete(self):
+        spec = next(s for s in uw.HOST_RUNTIMES if s['key'] == 'host-tailscale')
+        data = {uw.latest_url(spec['github']):{'tag_name':'v1.104.4'}, uw.advisories_url(spec['github']):[],
+                uw.TAILSCALE_BULLETINS:uw.tailscale_rss(self.xml())}
+        with tempfile.TemporaryDirectory() as root, patch.object(uw, 'host_runtime_versions', return_value=([(spec, uw.Version('1.104.2'))], [])):
+            report = uw.scan(FakeDocker([]), [], uw.Feeds(data, get=offline), source=root, now=self.now, host_runtime=True)
+            self.assertEqual(len([r for r in report['findings'] if r.get('id', '').startswith('TS-')]), 4)
+            del data[uw.TAILSCALE_BULLETINS]
+            report = uw.scan(FakeDocker([]), [], uw.Feeds(data, get=lambda url: (_ for _ in ()).throw(uw.FeedError('unavailable'))), source=root, now=self.now, host_runtime=True)
+            self.assertTrue(any('Tailscale vendor bulletins' in row for row in report['skipped']))
+
+    def test_unsafe_truncated_duplicate_or_wrong_origin_rss_fails(self):
+        good = self.xml()
+        for raw in (b'<!DOCTYPE rss [<!ENTITY x "bad">]>' + good, b'x' * (1024**2 + 1), good[:-10],
+                    good.replace(b'TS-2026-017', b'TS-2026-016'), good.replace(b'https://tailscale.com/', b'https://example.com/')):
+            with self.subTest(raw=raw[:40]), self.assertRaises(uw.FeedError):
+                uw.tailscale_rss(raw)
+
+    def test_unknown_future_notice_wording_remains_visible_and_future_dates_fail(self):
+        data = uw.tailscale_rss(self.xml())
+        row = dict(data['bulletins'][0], id='TS-2026-018', url='https://tailscale.com/security-bulletins/#ts-2026-018', description='New vendor format requires review.')
+        data['bulletins'].append(row)
+        rows, skipped = uw.tailscale_bulletin_findings(uw.Feeds({uw.TAILSCALE_BULLETINS:data}, get=offline), uw.Version('1.104.4'), self.now)
+        self.assertEqual(rows, [])
+        self.assertIn('TS-2026-018', skipped[0])
+        row['publishedAt'] = (self.now + dt.timedelta(days=1)).isoformat()
+        with self.assertRaises(uw.FeedError):
+            uw.tailscale_bulletin_findings(uw.Feeds({uw.TAILSCALE_BULLETINS:data}, get=offline), uw.Version('1.104.4'), self.now)
+
+    def test_vendor_source_uses_bounded_one_hour_cache_without_timestamp_extension(self):
+        calls = []
+        clock = [self.now]
+        def get(url):
+            calls.append(url)
+            return uw.tailscale_rss(self.xml()), ''
+        with tempfile.TemporaryDirectory() as work:
+            reader = uw.GithubFeedReader(work, get=get, clock=lambda:clock[0])
+            reader(uw.TAILSCALE_BULLETINS)
+            clock[0] += dt.timedelta(minutes=59)
+            reader(uw.TAILSCALE_BULLETINS)
+            self.assertEqual(len(calls), 1)
+            clock[0] += dt.timedelta(minutes=2)
+            reader(uw.TAILSCALE_BULLETINS)
+            self.assertEqual(len(calls), 2)
 
 
 class HostPackageCoverage(unittest.TestCase):

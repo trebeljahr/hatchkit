@@ -45,7 +45,8 @@ import datetime as dt
 import hashlib
 import http.client
 import io
-from email.utils import formataddr, parseaddr
+from email.utils import formataddr, parseaddr, parsedate_to_datetime
+from html.parser import HTMLParser
 import ipaddress
 import json
 import os
@@ -63,6 +64,7 @@ import time
 import urllib.error
 from urllib.parse import quote, urlsplit
 import urllib.request
+import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
 BACKUP_CONFIG = '/etc/hatchkit-backups/config.json'
@@ -76,6 +78,7 @@ SERVICE = 'hatchkit-update-watch.service'
 COOLIFY_SOURCE = '/data/coolify/source'
 GITHUB = 'https://api.github.com'
 GITLAB = 'https://gitlab.com/api/v4'
+TAILSCALE_BULLETINS = 'https://tailscale.com/security-bulletins/index.xml'
 KEV_URL = 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'
 KEV_MIRROR_URL = 'https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json'
 FLAGGED = ('critical', 'high')
@@ -273,12 +276,46 @@ class FeedRateLimit(FeedError):
                          + retry_at.strftime('%H:%M UTC'))
 
 
+def tailscale_rss(data):
+    """Parse only the fixed public vendor feed; never execute embedded markup."""
+    if len(data) > 1024**2 or re.search(br'<!\s*(?:DOCTYPE|ENTITY)', data, re.I):
+        raise FeedError('Unsafe or oversized Tailscale bulletin feed')
+    try:
+        root = ET.fromstring(data)
+        items = root.findall('./channel/item')
+        if root.tag != 'rss' or not 1 <= len(items) <= 256:
+            raise ValueError('Invalid RSS structure')
+        rows, ids = [], set()
+        for item in items:
+            identifier = item.findtext('title', '')
+            link = item.findtext('link', '')
+            description = item.findtext('description', '')
+            if (not re.fullmatch(r'TS-\d{4}-\d{3}', identifier) or identifier in ids
+                    or link != 'https://tailscale.com/security-bulletins/#' + identifier.lower()
+                    or not 1 <= len(description) <= 65536):
+                raise ValueError('Invalid RSS item')
+            date = parsedate_to_datetime(item.findtext('pubDate', ''))
+            if date.tzinfo is None:
+                raise ValueError('Missing bulletin timezone')
+            ids.add(identifier)
+            rows.append({'id': identifier, 'url': link, 'publishedAt': date.isoformat(),
+                         'description': description})
+        if 'TS-2026-017' not in ids:
+            raise ValueError('Vendor feed predates reviewed security floor')
+        return {'schema': 1, 'bulletins': rows}
+    except (ET.ParseError, TypeError, ValueError, IndexError):
+        raise FeedError('Tailscale bulletin feed could not be parsed') from None
+
+
 def http_get(url):
     request = urllib.request.Request(url, headers={
         'Accept': 'application/vnd.github+json', 'User-Agent': 'hatchkit-update-watch'})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode()), response.headers.get('Link') or ''
+            data = response.read(1024**2 + 1)
+            if len(data) > 1024**2:
+                raise FeedError('Public advisory feed exceeds byte limit')
+            return (tailscale_rss(data) if url == TAILSCALE_BULLETINS else json.loads(data.decode())), response.headers.get('Link') or ''
     except urllib.error.HTTPError as error:
         if error.code in (403, 429) and error.headers.get('X-RateLimit-Remaining') == '0':
             reset = error.headers.get('X-RateLimit-Reset') or ''
@@ -293,7 +330,7 @@ def http_get(url):
 
 
 class GithubFeedReader:
-    """Reuse public responses for one hour; never extend retrieval timestamps.
+    """Reuse GitHub and the fixed vendor RSS response for one hour.
 
     Failed reads are never cached as success. `fresh` bypasses positive cache
     reads but still honors the API's primary-rate-limit reset.
@@ -357,7 +394,8 @@ class GithubFeedReader:
 
     def __call__(self, url):
         parsed = urlsplit(url)
-        if parsed.scheme != 'https' or parsed.netloc != 'api.github.com' or not parsed.path.startswith('/repos/'):
+        github = parsed.scheme == 'https' and parsed.netloc == 'api.github.com' and parsed.path.startswith('/repos/')
+        if not github and url != TAILSCALE_BULLETINS:
             return self.get(url)
         now = self.clock()
         path = self.directory / (hashlib.sha256(url.encode()).hexdigest() + '.feed.json')
@@ -921,8 +959,63 @@ HOST_RUNTIMES = (
      'packageWords': ['runc']},
     {'key': 'host-tailscale', 'name': 'Tailscale', 'github': 'tailscale/tailscale',
      'argv': ['tailscale', 'version'], 'pattern': r'^(\d+\.\d+\.\d+)',
-     'packageWords': ['tailscale'], 'floor': '1.104.2'},
+     'packageWords': ['tailscale'], 'floor': '1.104.4'},
 )
+
+
+class BulletinText(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+
+    def handle_data(self, value):
+        self.parts.append(value)
+
+
+def tailscale_bulletin_findings(feeds, version, now):
+    """Vendor notices remain review items until feature applicability is checked.
+
+    Older notices were reviewed through TS-2026-013 for the prior 1.104.2
+    floor. Any newer unsupported wording is incomplete coverage, never clean.
+    Vendor severity is not supplied; high denotes our maintenance priority.
+    """
+    data = feeds.json(TAILSCALE_BULLETINS)
+    try:
+        rows = data['bulletins']
+        assert data['schema'] == 1 and isinstance(rows, list) and 1 <= len(rows) <= 256
+        assert 'TS-2026-017' in {row['id'] for row in rows}
+        findings, skipped, seen = [], [], set()
+        for row in rows:
+            identifier = row['id']
+            assert re.fullmatch(r'TS-\d{4}-\d{3}', identifier) and identifier not in seen
+            seen.add(identifier)
+            assert row['url'] == 'https://tailscale.com/security-bulletins/#' + identifier.lower()
+            published = dt.datetime.fromisoformat(row['publishedAt'])
+            assert published.tzinfo is not None and published <= now + dt.timedelta(minutes=5)
+            assert isinstance(row['description'], str) and len(row['description']) <= 65536
+            parser = BulletinText()
+            parser.feed(row['description'])
+            text = ' '.join(' '.join(parser.parts).split())
+            fixes = set(re.findall(r'This vulnerability is fixed in Tailscale version (\d+\.\d+\.\d+) or newer\.', text))
+            if len(fixes) != 1:
+                if identifier > 'TS-2026-013':
+                    skipped.append('Tailscale vendor bulletin needs range/applicability review: ' + identifier + ' ' + row['url'])
+                continue
+            fixed = parse_version(next(iter(fixes)))
+            assert fixed
+            if version >= fixed:
+                continue
+            summary = text.split('What happened?', 1)[0].removeprefix('Description :').strip()
+            findings.append({'kind': 'advisory', 'service': 'host-tailscale', 'name': 'Tailscale',
+                             'version': str(version), 'containers': [], 'id': identifier,
+                             'severity': 'high', 'vendorSeverity': 'unclassified', 'patchWithinHours': 24,
+                             'fixed': str(fixed), 'url': row['url'], 'published': published.isoformat(),
+                             'applicability': 'review-required',
+                             'summary': 'Tailscale vendor notice ' + identifier + ': ' + safe(summary[:200])
+                                        + '; review SSH/Serve feature applicability; fixed in ' + str(fixed)})
+        return findings, skipped
+    except (AssertionError, KeyError, TypeError, ValueError, AttributeError):
+        raise FeedError('Invalid Tailscale vendor bulletin data; coverage incomplete') from None
 
 
 def host_runtime_versions(run=None):
@@ -1270,6 +1363,13 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
                 findings.append({'kind': 'host-runtime', 'service': spec['key'], 'name': spec['name'],
                                  'severity': 'high', 'version': str(version), 'fixed': str(floor),
                                  'summary': spec['name'] + ' is below the required security release ' + str(floor)})
+            if spec['key'] == 'host-tailscale':
+                try:
+                    vendor_findings, vendor_skipped = tailscale_bulletin_findings(feeds, version, now)
+                    findings.extend(vendor_findings)
+                    skipped.extend(vendor_skipped)
+                except FeedError as error:
+                    skipped.append('Tailscale vendor bulletins: ' + str(error))
     report_services = []
     for group in sorted(groups.values(), key=lambda g: (g['service'], g['_version'].key())):
         service, version = group.pop('_service'), group.pop('_version')
@@ -1669,7 +1769,7 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
     for old in previous.get('findings', []):
         started = old.get('firstSeenAt')
         if not started and old.get('dueAt') and old.get('severity') in ('critical', 'high'):
-            hours = 24 if old.get('severity') == 'critical' or old.get('knownExploited') else 72
+            hours = 24 if old.get('severity') == 'critical' or old.get('knownExploited') or old.get('patchWithinHours') == 24 else 72
             started = (dt.datetime.fromisoformat(old['dueAt']) - dt.timedelta(hours=hours)).isoformat(timespec='seconds')
         if started:
             identity = finding_identity(old)
@@ -1698,7 +1798,7 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
         first_seen[identity] = started
         finding['firstSeenAt'] = started
         if finding.get('severity') in ('critical', 'high'):
-            hours = 24 if finding.get('severity') == 'critical' or finding.get('knownExploited') else 72
+            hours = 24 if finding.get('severity') == 'critical' or finding.get('knownExploited') or finding.get('patchWithinHours') == 24 else 72
             finding['dueAt'] = (dt.datetime.fromisoformat(started) + dt.timedelta(hours=hours)).isoformat(timespec='seconds')
             if old.get('dueAt'):
                 finding['dueAt'] = min(dt.datetime.fromisoformat(finding['dueAt']), dt.datetime.fromisoformat(old['dueAt'])).isoformat(timespec='seconds')

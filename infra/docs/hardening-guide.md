@@ -1948,6 +1948,23 @@ maintenance name. Test the actual helper on isolated synthetic WAL data.
 
 Compare running versions with vendor advisories, repository GHSAs and the CISA known-exploited catalog. An empty product advisory feed does not establish dependency security. Check vendor bulletins that are not published as GHSAs, supported-release lifecycles and distribution backports. Preserve the upstream package/version evidence when assessing a scanner match; a scanner severity alone does not prove an exposed attack path.
 
+Tailscale publishes security notices in its own
+[bulletin RSS](https://tailscale.com/security-bulletins/index.xml). GitHub's
+repository advisory list alone misses that source. The watcher checks both,
+with 1.104.4 as the required security floor. Vendor notices receive a 24-hour
+maintenance deadline while SSH/Serve applicability is reviewed; high review
+priority does not establish vendor severity or known exploitation. Bound feed
+size and cache age, validate identifiers/origin/dates, reject regressed data and
+make unsupported new wording an explicit coverage gap. Preserve prior clocks.
+
+Upgrade the access daemon serially in a transient system service so an SSH
+disconnect cannot kill package installation. Retain signed old/new packages
+and recovery state on the original VPS. Reconnect through the existing tailnet
+and check its real version, identity, preferences, Serve configuration, app
+health, containment and firewall before touching the other VPS. Review each
+AIDE difference against authenticated package bytes before manual baseline
+promotion; an expected restart is not evidence that the update succeeded.
+
 If CISA's canonical download is unavailable, use its own
 [`cisagov/kev-data` mirror](https://github.com/cisagov/kev-data), which CISA says
 normally synchronizes within minutes. Validate count, CVE identifiers and release
