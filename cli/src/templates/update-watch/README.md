@@ -11,6 +11,27 @@ establish application reachability. Review the separate October 23 session
 upload-progress advisory and actual web-SAPI configuration too; a version floor
 alone does not establish that configuration predicate.
 
+Application dependency review must compare source-audit results with the final
+image and actual enabled features. Multi-workspace production graphs can include
+docs tools and optional peers that the server never executes. Check existing
+image reports for the GHSA before creating a duplicate feed. Raw matches remain
+visible while applicability is reviewed; they are not incident counts.
+
+Confirm that a proposed fixed release is published. If the registry cannot
+supply the advisory's suggested version, preserve its deadline and record the
+missing fix plus vendor mitigation/review expiry. Test an upstream-supported
+worker or adapter branch against its actual build/protocol before pinning it.
+Authentication updates also require matching integration versions, replay and
+2FA checks, and review of custom verification-identifier hooks. Use synthetic
+accounts to prove OAuth state cannot act as a Magic Link and cannot consume
+another flow's state. Restart pending links/flows as the vendor requires.
+
+Public RCE/authentication-bypass notices need immediate operator applicability
+review. Positive exposure ingestion is not yet automatic. Keep named ownership,
+evidence and expiry; only use automated assessments with an implemented, tested
+predicate. Never add an unsupported predicate or broad severity exemption to
+silence a notification. The weekly raw queue does not replace urgent review.
+
 Host Tailscale coverage includes its [vendor security bulletin RSS](https://tailscale.com/security-bulletins/index.xml)
 as well as GitHub advisories. The required security floor is 1.104.4. Vendor
 notices are maintenance review items with a 24-hour deadline; their high review

@@ -1927,6 +1927,38 @@ Review the separate October 23 session upload-progress configuration condition
 against the actual web SAPI. [PHP's advisories](https://www.php.net/archive/2026.php)
 explain both the runtime fixes and that additional condition.
 
+Review application dependency advisories against the deployed execution path.
+A multi-workspace `audit --prod` can include documentation tools and optional
+peers absent from the deployed server. Correlate its package graph with final
+image reports and actual runtime features. A package severity is not an incident
+count. Existing final-image reports may already contain the same GHSA; inspect
+them before adding another feed or duplicate notification.
+
+Verify that a suggested fixed version is actually published and available from
+the trusted registry. An advisory's patched range can name an unreleased version.
+Keep that finding and its original clock visible, record the unavailable fix,
+and review supported mitigation or isolation. Do not invent an installable pin,
+turn a failed audit into a clean result, or force an incompatible major solely
+to make counts disappear. Qualify worker/adapter compatibility with its actual
+build and protocol tests when an upstream-supported branch changes.
+
+Authentication dependency updates require coordinated client/server/plugin
+versions and real sign-in, token-purpose, replay and two-factor regressions.
+Better Auth's purpose-isolation update changes verification identifiers; review
+custom Magic Link hooks as well as the package manifest. A guard using an old
+identifier can silently stop enforcing its extra two-factor check. Exercise
+OAuth state presented to the Magic Link endpoint using synthetic identities;
+confirm no session is minted and the legitimate flow's state survives. Follow
+vendor instructions for pending links/state and shared verification storage.
+
+New public code-execution or authentication-bypass advisories need immediate
+applicability review, even while the raw package queue is weekly. Record the
+exact image/features, evidence, owner, original deadline and review expiry.
+This remains an operator step until proof-backed applicability ingestion is
+installed. Only enroll an automated exception after its fixed predicate and
+failure/expiry behavior are implemented and tested; an unsupported review must
+fail visibly. Keep the raw advisory throughout mitigation and patch validation.
+
 After setup settles, aim for one short weekly human review. Frequent server
 checks continue independently; healthy and materially unchanged results stay
 quiet. Batch ordinary maintenance and non-urgent decisions. Interrupt promptly
