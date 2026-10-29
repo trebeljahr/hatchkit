@@ -1,5 +1,16 @@
 # Reviewed image applicability
 
+Runtime trust checks probe actual `php -v` and `php-fpm -v`, separately from
+image tags. The known `coolify` controller requires both probes; missing or
+unrecognized output is incomplete coverage. Optional binaries absent from
+unrelated containers are normal. Supported PHP2Shell floors are 8.2.35,
+8.3.36, 8.4.27 and 8.5.12; an affected binary keeps its 24-hour advisory clock
+through a still-affected upgrade. Other branches require an explicit supported
+release/backport review. This does not discover differently named SAPIs or
+establish application reachability. Review the separate October 23 session
+upload-progress advisory and actual web-SAPI configuration too; a version floor
+alone does not establish that configuration predicate.
+
 Host Tailscale coverage includes its [vendor security bulletin RSS](https://tailscale.com/security-bulletins/index.xml)
 as well as GitHub advisories. The required security floor is 1.104.4. Vendor
 notices are maintenance review items with a 24-hour deadline; their high review

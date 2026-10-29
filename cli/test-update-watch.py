@@ -902,6 +902,55 @@ class RuntimeSecurityTests(unittest.TestCase):
         self.assertEqual(len(skipped),1)
 
 
+class PhpRuntimeCoverage(unittest.TestCase):
+    def docker(self, versions):
+        def run(args, **kwargs):
+            value = versions.get(args[2])
+            if value is None:
+                raise uw.WatchError(SECRET)
+            self.assertEqual(args[3], '-v')
+            self.assertEqual(kwargs['timeout'], 15)
+            return value
+        return run
+
+    def test_fixed_supported_branches_and_fpm_are_measured(self):
+        for version in ('8.2.35', '8.3.36', '8.4.27', '8.5.12', '8.4.28'):
+            with self.subTest(version=version):
+                rows, skipped = uw.php_runtime_trust(self.docker({'php': 'PHP ' + version + ' (cli)',
+                    'php-fpm': 'PHP ' + version + ' (fpm-fcgi)'}), 'id', 'coolify')
+                self.assertEqual((rows, skipped), ([], []))
+
+    def test_fpm_cannot_hide_behind_patched_cli(self):
+        for version in ('8.2.34', '8.3.35', '8.4.26', '8.5.11'):
+            with self.subTest(version=version):
+                rows, skipped = uw.php_runtime_trust(self.docker({'php': 'PHP 8.4.27 (cli)',
+                    'php-fpm': 'PHP ' + version + ' (fpm-fcgi)'}), 'id', 'coolify')
+                self.assertEqual(skipped, [])
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]['kind'], 'php-runtime')
+                self.assertEqual(rows[0]['patchWithinHours'], 24)
+                self.assertIn('php-fpm', rows[0]['summary'])
+
+    def test_known_controller_requires_both_probes_without_raw_errors(self):
+        rows, skipped = uw.php_runtime_trust(self.docker({'php': 'PHP 8.4.27 (cli)'}), 'id', 'coolify')
+        self.assertEqual(rows, [])
+        self.assertEqual(len(skipped), 1)
+        self.assertNotIn(SECRET, str(skipped))
+        self.assertEqual(uw.php_runtime_trust(self.docker({}), 'id', 'unrelated'), ([], []))
+
+    def test_still_affected_upgrade_preserves_advisory_identity(self):
+        rows = [uw.php_runtime_trust(self.docker({'php-fpm': 'PHP ' + version + ' (fpm-fcgi)'}),
+                'id', 'app')[0][0] for version in ('8.4.25', '8.4.26')]
+        self.assertEqual(uw.finding_identity(rows[0]), uw.finding_identity(rows[1]))
+
+    def test_unknown_backport_branch_and_malformed_versions_require_review(self):
+        for banner in ('PHP 8.6.0 (cli)', 'PHP 8.1.35 (cli)', 'PHP 8.4.27RC1 (cli)', SECRET):
+            rows, skipped = uw.php_runtime_trust(self.docker({'php': banner}), 'id', 'app')
+            self.assertEqual(rows, [])
+            self.assertEqual(len(skipped), 1)
+            self.assertNotIn(SECRET, str(skipped))
+
+
 class CertificateArchiveCoverage(unittest.TestCase):
     PATH='/etc/ssl/certs/ca-certificates.crt'
     def archive(self,kind=tarfile.REGTYPE,name='ca-certificates.crt',target='',payload=b'synthetic-public-PEM',extra=False):

@@ -1917,6 +1917,16 @@ If you're using the Ansible role with `ufw_docker_mitigation: true`, the base ro
 
 Hardening is a recurring operating practice. Inventory the host OS/kernel, Docker Engine, containerd, runc, Tailscale, application runtimes, application dependencies and final deployed image packages. Resolve floating tags to running versions and scan immutable image IDs. Keep SBOM/package reports private on the host. Verify the scanner release signature/checksum and record its version and vulnerability-database age. A failed, stale or partial inventory is an incomplete check, never a clean result.
 
+Probe PHP CLI and web SAPIs independently. The PHP2Shell fixed floors are
+8.2.35, 8.3.36, 8.4.27 and 8.5.12. A patched CLI does not prove FPM is patched;
+require both known controller binaries and report unreadable/unknown branches
+as incomplete coverage pending supported-release or vendor-backport review.
+The watcher probes canonical `php` and `php-fpm`; differently named SAPIs need
+their own inventory. Retain a 24-hour clock through still-affected upgrades.
+Review the separate October 23 session upload-progress configuration condition
+against the actual web SAPI. [PHP's advisories](https://www.php.net/archive/2026.php)
+explain both the runtime fixes and that additional condition.
+
 After setup settles, aim for one short weekly human review. Frequent server
 checks continue independently; healthy and materially unchanged results stay
 quiet. Batch ordinary maintenance and non-urgent decisions. Interrupt promptly

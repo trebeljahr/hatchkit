@@ -777,6 +777,8 @@ def cloudflare_check(feeds, pinned, chain=read_chain):
 
 
 NODE_SECURITY_FLOORS = {22: (22, 23, 4), 24: (24, 22, 1), 26: (26, 12, 1)}
+PHP_SECURITY_FLOORS = {(8, 2): (8, 2, 35), (8, 3): (8, 3, 36),
+                       (8, 4): (8, 4, 27), (8, 5): (8, 5, 12)}
 DISTRUSTED_ROOTS = ('AAA Certificate Services', 'emSign ECC Root CA - G3')
 
 
@@ -786,6 +788,35 @@ def vulnerable_node(text):
         return True
     floor = NODE_SECURITY_FLOORS.get(version.release[0])
     return floor is None or version < Version('.'.join(str(part) for part in floor))
+
+
+def php_runtime_trust(docker, cid, name):
+    """Probe actual CLI/FPM binaries; a known controller cannot omit either."""
+    findings, skipped = [], []
+    for binary in ('php', 'php-fpm'):
+        try:
+            banner = docker(['exec', cid, binary, '-v'], timeout=15).strip()
+        except WatchError:
+            if name == 'coolify':
+                skipped.append(name + ': required ' + binary + ' runtime could not be inspected')
+            continue
+        match = re.match(r'^PHP (\d+)\.(\d+)\.(\d+)(?=\s|$)', banner)
+        if not match:
+            skipped.append(name + ': unrecognized ' + binary + ' runtime version')
+            continue
+        release = tuple(int(part) for part in match.groups())
+        floor = PHP_SECURITY_FLOORS.get(release[:2])
+        if floor is None:
+            skipped.append(name + ': ' + binary + ' branch requires a supported-release or vendor-backport review')
+        elif release < floor:
+            findings.append({'kind': 'php-runtime', 'service': name, 'name': name,
+                             'id': 'CVE-2026-109618', 'aliases': ['CVE-2026-109619'],
+                             'binary': binary, 'runtimeVersion': '.'.join(map(str, release)),
+                             'severity': 'critical', 'patchWithinHours': 24,
+                             'summary': name + ': ' + binary + ' ' + '.'.join(map(str, release)) +
+                             ' is below the PHP2Shell fixed floor ' + '.'.join(map(str, floor)),
+                             'url': 'https://www.php.net/archive/2026.php'})
+    return findings, skipped
 
 
 def distrusted_roots(pem):
@@ -897,6 +928,9 @@ def runtime_trust(docker,read_ca=container_ca_bundle):
         if version and vulnerable_node(version):
             finding('node-runtime', 'Node ' + safe(version) + ' is below the 2026-10-21 security release; '
                     'require 22.23.4, 24.22.1 or 26.12.1 within that major')
+        php_findings, php_skips = php_runtime_trust(docker, cid, name)
+        findings.extend(php_findings)
+        skipped.extend(php_skips)
         paths = list(SYSTEM_CA_PATHS)
         try:
             extra = docker(['exec', cid, 'sh', '-c',
