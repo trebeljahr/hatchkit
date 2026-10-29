@@ -1151,6 +1151,19 @@ class TailscaleVendorCoverage(unittest.TestCase):
         row={'kind':'advisory','service':'host-tailscale','id':'TS-2026-014','name':'Tailscale','version':'1.104.2'}
         self.assertEqual(uw.finding_identity(row),uw.finding_identity(row|{'version':'1.104.3'}))
 
+    def test_rss_limit_does_not_truncate_larger_cisa_catalog(self):
+        data=json.dumps({'padding':'x'*(1024**2+1)}).encode()
+        response=io.BytesIO(data)
+        response.headers={}
+        with patch.object(uw.urllib.request,'urlopen',return_value=response):
+            result,_=uw.http_get(uw.KEV_MIRROR_URL)
+        self.assertEqual(len(result['padding']),1024**2+1)
+        for url,size in [(uw.TAILSCALE_BULLETINS,1024**2+1),(uw.KEV_MIRROR_URL,8*1024**2+1)]:
+            response=io.BytesIO(b'x'*size)
+            response.headers={}
+            with self.subTest(url=url),patch.object(uw.urllib.request,'urlopen',return_value=response),self.assertRaises(uw.FeedError):
+                uw.http_get(url)
+
 
 class HostPackageCoverage(unittest.TestCase):
     def setUp(self):

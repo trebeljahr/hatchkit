@@ -312,8 +312,9 @@ def http_get(url):
         'Accept': 'application/vnd.github+json', 'User-Agent': 'hatchkit-update-watch'})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            data = response.read(1024**2 + 1)
-            if len(data) > 1024**2:
+            limit = 1024**2 if url == TAILSCALE_BULLETINS else 8 * 1024**2
+            data = response.read(limit + 1)
+            if len(data) > limit:
                 raise FeedError('Public advisory feed exceeds byte limit')
             return (tailscale_rss(data) if url == TAILSCALE_BULLETINS else json.loads(data.decode())), response.headers.get('Link') or ''
     except urllib.error.HTTPError as error:
