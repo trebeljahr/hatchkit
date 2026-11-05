@@ -118,6 +118,7 @@ TEMP_FILES = (
     '/tmp/.mongodb/*',          # mongosh's logs and config when HOME is /tmp
     '/tmp/users.xml',           # ClickHouse entrypoint's generated users file
     '/dev/shm/PostgreSQL.*',    # Postgres dynamic shared memory
+    '/dev/shm/beszel_health',   # Beszel agent's health-check stamp, rewritten every run
 )
 
 PRIVATE_NETS = tuple(ipaddress.ip_network(n) for n in (
@@ -972,11 +973,13 @@ def utc_now():
 
 
 def notification_fingerprint(kind, findings, error):
-    # Process IDs and CPU samples change without creating a new incident.
+    # Process IDs, CPU samples, file stamps and overflow counts change without
+    # creating a new incident; a rewritten temp file once mailed every 5 minutes.
+    # `allow` is derived from the CPU sample, so it moves with it.
+    volatile = ('summary', 'pid', 'pids', 'percent', 'windowSeconds', 'modified', 'size', 'allow', 'overflow')
     def stable(value):
         if isinstance(value, dict):
-            return {k: stable(v) for k, v in value.items()
-                    if k not in ('summary', 'pid', 'pids', 'percent', 'windowSeconds')}
+            return {k: stable(v) for k, v in value.items() if k not in volatile}
         if isinstance(value, list):
             return sorted((stable(v) for v in value), key=lambda v: json.dumps(v, sort_keys=True))
         return value

@@ -646,6 +646,22 @@ class Check(unittest.TestCase):
         state, _ = self.run_check(self.report([]))
         self.assertEqual((state['mailed'], len(self.sent)), (None, 1))
 
+    def test_rewritten_file_or_moving_cpu_sample_mails_once(self):
+        def temp(minute, size):
+            return {'detector': 'temp-file', 'container': 'app', 'path': '/dev/shm/stamp', 'size': size,
+                    'modified': '2026-11-05 21:' + minute + ' UTC', 'executable': False,
+                    'summary': 'app: new file /dev/shm/stamp', 'allow': {'tempFiles': ['/dev/shm/stamp']}}
+        self.run_check(self.report([temp('39', 0)]))
+        self.run_check(self.report([temp('44', 3)]))
+        self.assertEqual(len(self.sent), 1)
+        cpu = {'detector': 'cpu', 'container': 'app', 'limit': 50, 'summary': 'cpu'}
+        self.run_check(self.report([dict(cpu, percent=61, allow={'cpuLimits': {'app*': 80}})]))
+        self.run_check(self.report([dict(cpu, percent=88, allow={'cpuLimits': {'app*': 100}})]))
+        self.assertEqual(len(self.sent), 2)
+
+    def test_beszel_health_stamp_is_a_known_temp_file(self):
+        self.assertTrue(any(hi.fnmatch('/dev/shm/beszel_health', g) for g in hi.TEMP_FILES))
+
     def test_failed_scan_mails_the_safe_reason_only(self):
         state, _ = self.run_check(error=hi.IntegrityError('docker ps failed'))
         self.assertEqual((state['mailed'], state['error']), ('error', 'docker ps failed'))
