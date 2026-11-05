@@ -173,6 +173,20 @@ class WhenItSends(DigestCase):
         self.assertIn('plausible: docker diff failed; writable layer not checked.', unchecked)
         self.assertNotIn('Sustained CPU and outbound peers use the daily full scan.', unchecked)
 
+    def test_auto_fixes_ride_along_but_never_send_a_digest_alone(self):
+        accepted = {'at': NOW.isoformat(), 'packages': ['bind9-host', 'bind9-dnsutils'],
+                    'previousBaseline': '/var/lib/hatchkit-security/aide/aide.db.before-x'}
+        (self.work / 'file-integrity-status.json').write_text(json.dumps(
+            {'checkedAt': NOW.isoformat(), 'ok': True, 'autoAccepted': accepted}))
+        self.run_digest()
+        self.assertEqual(self.sent, [])
+        self.write_watch([direct()])
+        self.run_digest(NOW + DAY)
+        fixed = self.sent[0][1]['sections']['fixed']
+        self.assertIn('bind9-dnsutils', fixed[0]['what'])
+        self.run_digest(NOW + 3 * DAY)
+        self.assertEqual(self.sent[1][1]['sections']['fixed'], [], 'an old auto-fix is not repeated')
+
     def test_a_check_gone_quiet_is_not_checked_rather_than_clean(self):
         (self.units / 'hatchkit-file-integrity.timer').write_text('')
         self.run_digest()

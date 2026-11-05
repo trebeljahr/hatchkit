@@ -229,13 +229,25 @@ def collect(work, host, now, backup_issues, units=UNITS):
                               'command': integrity_command(host)})
 
     files = read_json(work / 'file-integrity-status.json') or {}
+    auto_fixed = []
+    accepted = files.get('autoAccepted') or {}
+    try:
+        accepted_at = dt.datetime.fromisoformat(accepted['at'])
+    except (KeyError, TypeError, ValueError):
+        accepted_at = None
+    if accepted_at and now - accepted_at < dt.timedelta(hours=26):
+        auto_fixed.append({'what': 'Accepted file changes from verified package updates: '
+                              + named(sorted(str(p) for p in accepted.get('packages') or [])) + '.',
+                      'detail': 'Every changed file matched its signed package. The previous baseline is kept.',
+                      'command': 'sudo ls ' + str(accepted.get('previousBaseline') or '/var/lib/hatchkit-security/aide')})
     file_issue = None
     if files.get('error'):
         file_issue = 'The file integrity check crashed: ' + str(files['error']) + '.'
         unchecked.append({'what': file_issue, 'command': 'journalctl -u hatchkit-file-integrity.service -n 50'})
     elif files.get('ok') is False:
         file_issue = str(files.get('issue') or 'AIDE reported changes or failed.')
-        needs.append({'what': file_issue, 'detail': 'Review each change. Hatchkit never accepts a new baseline itself.',
+        needs.append({'what': file_issue, 'detail': 'Review each change. Hatchkit accepts a new baseline itself only '
+                                                    'when a signed package explains every change.',
                       'command': 'sudo less ' + str(files.get('log') or '/var/lib/hatchkit-security/aide')})
 
     for issue in backup_issues:
@@ -296,7 +308,8 @@ def collect(work, host, now, backup_issues, units=UNITS):
             if all(assessed(r, now) for r in rows):
                 line += ' | reviewed not reachable'
             paste_rows.append('- ' + line)
-    return {'needs': needs, 'waiting': waiting, 'unchecked': unchecked, 'rawNeeds': raw_needs, 'rawWaiting': raw_waiting,
+    return {'needs': needs, 'fixed': auto_fixed, 'waiting': waiting, 'unchecked': unchecked,
+            'rawNeeds': raw_needs, 'rawWaiting': raw_waiting,
             'pasteRows': paste_rows, 'rawCount': len(raw), 'reviewedCount': len(reviewed), 'packageCount': len(packages),
             'groupCount': len(grouped)}
 
@@ -324,7 +337,9 @@ def document(state, host, now, weekly):
         notes.append('%d scanner matches have a current reviewed assessment and stay in the ledger.'
                      % state['reviewedCount'])
     doc = {'title': 'Daily digest', 'host': host, 'ledger': LEDGER, 'notes': notes,
-           'sections': {'needs': needs, 'waiting': waiting, 'unchecked': state['unchecked']},
+           # Auto-fixes ride along in a digest that is due anyway; they never send one.
+           'sections': {'needs': needs, 'fixed': state.get('fixed', []), 'waiting': waiting,
+                        'unchecked': state['unchecked']},
            'footer': ['This host sends one digest a day while something is open. No mail means nothing is open.',
                       'Server access remains Tailscale-only.']}
     if state['pasteRows']:

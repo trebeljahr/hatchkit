@@ -63,7 +63,12 @@ packages and private recovery state on the original host, run the update in
 a transient system service that survives SSH disconnection, and reconnect over
 the existing tailnet. Verify actual version, node identity/preferences/Serve,
 container starts and containment, firewall and normal checks before the second
-host. Review AIDE package-file differences separately; never auto-accept them.
+host. The file-integrity check accepts an AIDE diff by itself only when every
+added or changed file matches, in content, mode and owner, its owning package's
+`.deb` as `apt-get download` fetches and verifies it against the signed archive
+index, and directories changed only their timestamps. Removed files, foreign or
+shared files, conffile edits, diversions and failed downloads still mail for
+review and keep the old baseline; the previous baseline is kept on disk.
 
 The optional `/etc/hatchkit-security/image-assessments.json` is root-owned mode
 0600. Start from the empty example. Reviews are explicit operator decisions;
