@@ -94,6 +94,17 @@ proxy defaults can drop the broker/network and restore direct socket access.**
 Review regeneration and controller/provider upgrades against the canary before
 applying them. Sentinel and other management agents need their own trust review.
 
+**Recreating `coolify-proxy` drops every application network that Coolify attached
+at runtime.** The Compose file declares only `coolify` and the discovery network.
+A plain `docker compose up` therefore leaves Traefik healthy with TLS and `/ping`
+working, but each routed request hangs with zero bytes. Restoring the old image
+does not help; it has cost a host about eight minutes of downtime.
+Capture the proxy's networks before a recreate and run `docker network connect`
+for each one immediately after, or use Coolify's `StartProxy`, which does it. Check
+real routes through port 443 after the swap, because the health check can't see this.
+Keep `last_saved_proxy_configuration` on the Coolify server record identical to the
+file on the host. Coolify rewrites the host file from that record.
+
 # Reviewed control drift
 
 `container-policy.py` checks explicit reviewed settings; it never learns a
