@@ -105,6 +105,17 @@ real routes through port 443 after the swap, because the health check can't see 
 Keep `last_saved_proxy_configuration` on the Coolify server record identical to the
 file on the host. Coolify rewrites the host file from that record.
 
+**Access logs.** The proxy command adds
+`--accesslog=true` with JSON to `/traefik/logs/access.log`
+(`/data/coolify/proxy/logs/` on the host, root-only directory). Request headers
+are dropped except `User-Agent`, `Referer`, `Cf-Connecting-Ip`, `Cf-Ray` and
+`Cf-Ipcountry`; `ClientHost` is always a Cloudflare edge, so read the visitor
+from `request_Cf-Connecting-Ip`. `RequestPath` includes the query string.
+`/etc/logrotate.d/coolify-proxy-access` keeps 14 days and sends Traefik `USR1`
+to reopen the file. Pre-change files: `backups/docker-compose.before-accesslog-*`.
+A plain recreate to enable it takes the routes down through the network trap
+above; reconnect the networks in the same script and there is no gap.
+
 # Reviewed control drift
 
 `container-policy.py` checks explicit reviewed settings; it never learns a
