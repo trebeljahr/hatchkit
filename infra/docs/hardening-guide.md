@@ -1271,6 +1271,8 @@ chkrootkit
 
 **Limitations:** Signature-based detection only finds known rootkits. A sophisticated attacker with a custom rootkit won't be detected. These tools are most useful against automated/commodity attacks.
 
+**Ubuntu trap:** the `rkhunter` package ships with `CRON_DAILY_RUN=""` in `/etc/default/rkhunter`, so after `apt install` it never runs on its own. A host can carry it for months without a single log. Installing it without enabling it gives false comfort. Hatchkit hosts rely on the daily `chkrootkit` timer, the AIDE baseline (3.3), `dpkg --verify` and the host-integrity checks instead; rkhunter was removed from app-vps on 2026-11-06. If you want it, set `CRON_DAILY_RUN="true"`, run `rkhunter --propupd` from a trusted state, and expect Docker hosts to need allowlist tuning before the warnings mean anything.
+
 ---
 
 ### 3.5 Log monitoring
