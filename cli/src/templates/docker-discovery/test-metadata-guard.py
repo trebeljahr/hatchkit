@@ -76,6 +76,50 @@ class MetadataBoundary(unittest.TestCase):
                      table(destination).replace('-A FORWARD -j DOCKER-USER','-A FORWARD -j ACCEPT\n-A FORWARD -j DOCKER-USER')]:
             with self.assertRaises(AssertionError):guard.inspect_table(text,destination)
 
+    def tailscale_table(self, destination, installed=True, rules=None):
+        rules=guard.TAILSCALE_FORWARD[destination] if rules is None else rules
+        prefix='-N ts-forward\n'+''.join(shlex.join(['-A','ts-forward',*r])+'\n' for r in rules)
+        text=table(destination,installed).replace('-A FORWARD -j DOCKER-USER','-A FORWARD -j ts-forward\n-A FORWARD -j DOCKER-USER')
+        return prefix+text
+
+    def test_exact_tailscale_forward_prefix_keeps_guard_effective(self):
+        for destination in guard.FAMILIES.values():
+            state=guard.inspect_table(self.tailscale_table(destination),destination)
+            self.assertTrue(state['exists'] and state['first'])
+            self.assertIsNone(guard.transaction(state,destination,'apply'))
+            fresh=guard.inspect_table(self.tailscale_table(destination,False),destination)
+            self.assertIn('-I DOCKER-USER 1 ',guard.transaction(fresh,destination,'apply'))
+
+    def test_live_ip6tables_tailscale_shape_is_accepted(self):
+        # Real shape, captured read-only from a Tailscale host (ip6tables -S ts-forward).
+        live=('-N ts-forward\n'
+              '-A ts-forward -i tailscale0 -j MARK --set-xmark 0x40000/0xff0000\n'
+              '-A ts-forward -m mark --mark 0x40000/0xff0000 -j ACCEPT\n'
+              '-A ts-forward -o tailscale0 -j ACCEPT\n')
+        destination=guard.FAMILIES['ip6tables']
+        text=self.tailscale_table(destination).split('-P FORWARD',1)[1]
+        self.assertTrue(guard.inspect_table(live+'-P FORWARD'+text,destination)['first'])
+
+    def test_changed_tailscale_rules_or_other_prefix_fail_closed(self):
+        for binary,destination in guard.FAMILIES.items():
+            rules=guard.TAILSCALE_FORWARD[destination]
+            other=guard.TAILSCALE_FORWARD[guard.FAMILIES['ip6tables' if binary=='iptables' else 'iptables']]
+            variants=[rules+[['-j','ACCEPT']],rules[:-1],list(reversed(rules)),other,
+                      [r if r[-1]!='ACCEPT' or '-o' not in r else ['-o','eth0','-j','ACCEPT'] for r in rules],
+                      [['-j','ACCEPT']]+rules]
+            for changed in variants:
+                with self.assertRaisesRegex(AssertionError,'Tailscale forwarding rules'):
+                    guard.inspect_table(self.tailscale_table(destination,rules=changed),destination)
+            missing=self.tailscale_table(destination).replace('-N ts-forward\n','')
+            with self.assertRaisesRegex(AssertionError,'chain missing'):
+                guard.inspect_table(missing,destination)
+            foreign=table(destination,True).replace('-A FORWARD -j DOCKER-USER','-N ts-other\n-A FORWARD -j ts-other\n-A FORWARD -j DOCKER-USER')
+            with self.assertRaisesRegex(AssertionError,'hook order'):
+                guard.inspect_table(foreign,destination)
+            doubled=self.tailscale_table(destination).replace('-A FORWARD -j DOCKER-USER','-A FORWARD -j ts-forward\n-A FORWARD -j DOCKER-USER')
+            with self.assertRaisesRegex(AssertionError,'hook order'):
+                guard.inspect_table(doubled,destination)
+
     def test_rollback_removes_only_owned_rules_and_reports_protection_absent(self):
         texts=[table(d,True)for d in guard.FAMILIES.values()]+[table(d)for d in guard.FAMILIES.values()]
         with tempfile.TemporaryDirectory()as directory:

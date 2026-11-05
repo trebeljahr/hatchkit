@@ -17,6 +17,25 @@ TAG = 'hatchkit-provider-metadata-v1'
 ANCHOR = ['-m','comment','--comment',TAG,'-j',CHAIN]
 FAMILIES = {'iptables':'169.254.169.254/32','ip6tables':'fe80::a9fe:a9fe/128'}
 STATUS = Path('/var/lib/hatchkit-backups/metadata-guard-status.json')
+# Tailscale inserts its own FORWARD hook ahead of DOCKER-USER. Its rules match
+# only packets entering or leaving tailscale0, so bridge traffic to the provider
+# metadata address (which leaves via the uplink) still reaches DOCKER-USER.
+# Accept that prefix only with this exact per-family content; any other prefix
+# chain or changed ts-forward rule stays a review finding.
+TAILSCALE_CHAIN = 'ts-forward'
+TAILSCALE_FORWARD = {
+    '169.254.169.254/32':[
+        ['-i','tailscale0','-j','MARK','--set-xmark','0x40000/0xff0000'],
+        ['-m','mark','--mark','0x40000/0xff0000','-j','ACCEPT'],
+        ['-s','100.64.0.0/10','-o','tailscale0','-j','DROP'],
+        ['-o','tailscale0','-j','ACCEPT'],
+    ],
+    'fe80::a9fe:a9fe/128':[
+        ['-i','tailscale0','-j','MARK','--set-xmark','0x40000/0xff0000'],
+        ['-m','mark','--mark','0x40000/0xff0000','-j','ACCEPT'],
+        ['-o','tailscale0','-j','ACCEPT'],
+    ],
+}
 
 
 def expected_rules(destination):
@@ -38,6 +57,11 @@ def inspect_table(text, destination):
     rows=[shlex.split(line) for line in text.splitlines() if line.strip()]
     assert ['-N','DOCKER-USER'] in rows, 'Docker user chain missing'
     forward=[r[2:] for r in rows if r[:2]==['-A','FORWARD']]
+    if forward and forward[0]==['-j',TAILSCALE_CHAIN]:
+        tailscale=[r[2:] for r in rows if r[:2]==['-A',TAILSCALE_CHAIN]]
+        assert rows.count(['-N',TAILSCALE_CHAIN])==1, 'Tailscale forwarding chain missing'
+        assert tailscale==TAILSCALE_FORWARD.get(destination), 'Review changed Tailscale forwarding rules'
+        forward=forward[1:]
     assert forward and forward[0]==['-j','DOCKER-USER'], 'Review changed forwarding hook order'
     parent=[r[2:] for r in rows if r[:2]==['-A','DOCKER-USER']]
     owned=[r[2:] for r in rows if r[:2]==['-A',CHAIN]]

@@ -170,7 +170,11 @@ automatic baseline-learning service. Existing monitor credentials stay unchanged
 first jump in `DOCKER-USER`. It drops Docker bridge forwarding to the exact
 provider metadata IPv4 and IPv6 addresses. Host OUTPUT, Tailscale interfaces and
 other forwarding rules are untouched. Unsupported bridge names/backend, changed
-hook order, modified owned rules or unexpected references require review. Apply
+hook order, modified owned rules or unexpected references require review. The
+only accepted hook ahead of `DOCKER-USER` is Tailscale's `ts-forward`, and only
+while its rules match the exact per-family set in `TAILSCALE_FORWARD` (they
+match `tailscale0` traffic only, so bridge traffic to the metadata address still
+reaches the guard); a Tailscale update that changes them fails the check. Apply
 and rollback use `iptables-restore --noflush`; rollback removes only exact owned
 rules and reports protection absent even when the rollback itself succeeded.
 
