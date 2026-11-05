@@ -55,6 +55,7 @@ BACKUP_CONFIG = '/etc/hatchkit-backups/config.json'
 STATUS_NAME = 'host-integrity-status.json'
 TIMER = 'hatchkit-host-integrity.timer'
 SERVICE = 'hatchkit-host-integrity.service'
+QUICK_SERVICE = 'hatchkit-host-integrity-quick.service'
 CPU_LIMIT = 50.0
 CPU_MIN_WINDOW = 5  # a shorter delta is noise
 CHECK_WINDOW = 3600
@@ -931,33 +932,32 @@ def mail_settings(config):
     settings = dict(config.get('alerts') or {})
     if not settings.get('enabled', False) or not settings.get('to') or not settings.get('smtpFile'):
         raise IntegrityError('backup alert mail is not configured (hatchkit backup alerts)')
-    settings['from'] = formataddr(('Hatchkit Host Check', parseaddr(settings['from'])[1]))
+    settings['from'] = formataddr(('Hatchkit Alerts', parseaddr(settings['from'])[1]))
     return settings
 
 
-MAIL_FOOTER = ('\nInspect: hatchkit host integrity --json\n'
-               'Server logs: journalctl -u ' + SERVICE + '\n'
-               'Server access remains Tailscale-only.\n')
+def inspect_command(hostname):
+    return 'hatchkit host integrity --host ' + hostname + ' --json'
 
 
-def not_checked(report):
-    skipped = (report or {}).get('skipped') or []
-    return ['', 'Not checked this run:'] + ['- ' + s for s in skipped] if skipped else []
-
-
-def mail_body(report, error):
+def mail_document(report, error, hostname):
+    footer = ['Server logs: journalctl -u ' + SERVICE, 'The daily digest lists open findings until they clear.',
+              'Server access remains Tailscale-only.']
     if error:
-        lines = ['The daily host integrity check could not finish: ' + error + '.']
-    else:
-        lines = [str(len(report['findings'])) + ' finding(s) on ' + str(report['containers'])
-                 + ' running containers (CPU averaged over ' + duration(report['cpuWindowSeconds']) + '):', '']
-        lines += ['- ' + f['summary'] for f in report['findings']]
-        lines += not_checked(report)
-        lines += ['', 'Before you stop or delete anything, save the evidence: docker top <container> '
-                  '-eo pid,ppid,etime,comm, docker diff <container>, and cp /proc/<pid>/exe for each named pid.',
-                  'If a finding is expected and you know what causes it, add its "allow" entry from',
-                  '`hatchkit host integrity --json` to ' + SITE_FILE + '.']
-    return '\n'.join(lines) + '\n' + MAIL_FOOTER
+        return {'title': 'Host integrity check failed', 'host': hostname, 'footer': footer,
+                'sections': {'unchecked': [{'what': 'The host integrity check could not finish: ' + error + '.',
+                                            'command': 'journalctl -u ' + SERVICE + ' -n 50'}]}}
+    command = inspect_command(hostname)
+    return {'title': 'Host integrity findings', 'host': hostname, 'footer': footer,
+            'intro': str(len(report['findings'])) + ' finding(s) on ' + str(report['containers'])
+                     + ' running containers (CPU averaged over ' + duration(report['cpuWindowSeconds']) + ').',
+            'sections': {'needs': [{'what': f['summary'], 'flags': ['Possible compromise'], 'command': command}
+                                   for f in report['findings']],
+                         'unchecked': [{'what': skip, 'command': command} for skip in (report.get('skipped') or [])]},
+            'notes': ['Before you stop or delete anything, save the evidence: docker top <container> '
+                      '-eo pid,ppid,etime,comm, docker diff <container>, and cp /proc/<pid>/exe for each named pid.',
+                      'If a finding is expected and you know what causes it, add its "allow" entry from '
+                      '`hatchkit host integrity --json` to ' + SITE_FILE + '.']}
 
 
 def write_status(work, state, status_name=STATUS_NAME):
@@ -1010,10 +1010,10 @@ def check(host, work, config, send, clock=utc_now, window=CHECK_WINDOW, status_n
     hostname = socket.gethostname()
     kind, subject = None, None
     if error:
-        kind, subject = 'error', '[Hatchkit] Host integrity check failed — ' + hostname
+        kind, subject = 'error', '[Hatchkit] ' + hostname + ': host integrity check failed'
     elif findings:
-        kind, subject = 'findings', ('[Hatchkit] Host integrity: ' + str(len(findings)) + ' finding'
-                                     + ('' if len(findings) == 1 else 's') + ' — ' + hostname)
+        kind, subject = 'findings', ('[Hatchkit] ' + hostname + ': ' + str(len(findings)) + ' host integrity finding'
+                                     + ('' if len(findings) == 1 else 's'))
     fingerprint = notification_fingerprint(kind, findings, error) if kind else None
     state = {'checkedAt': finished.isoformat(timespec='seconds'),
              'startedAt': started.isoformat(timespec='seconds'), 'ok': not error and not findings,
@@ -1023,7 +1023,7 @@ def check(host, work, config, send, clock=utc_now, window=CHECK_WINDOW, status_n
              'notifiedFingerprint': previous.get('notifiedFingerprint') if kind else None}
     mail_error = None
     if kind and fingerprint != previous.get('notifiedFingerprint'):
-        body = mail_body(report, error)
+        body = mail_document(report, error, hostname)
         try:
             state['messageId'] = send(mail_settings(config), subject, body)
             state['mailed'] = kind
@@ -1059,20 +1059,27 @@ def main():
     work.mkdir(mode=0o700, parents=True, exist_ok=True)
     hostname = socket.gethostname()
     if args.action == 'test':
-        message_id = send_email(mail_settings(config), '[Hatchkit] Host integrity alert test — ' + hostname,
-                                'Host integrity alerts are configured for this address.\n\n'
-                                'This is a test. The five-minute quick check and daily CPU check alert when a process runs a deleted binary, a container '
-                                'runs a process its image does not explain, a new file appears in /tmp, /var/tmp or /dev/shm '
-                                'of a container, a container uses more than 50 % of one core over an hour, or a container '
-                                'keeps an outbound connection outside private ranges and Cloudflare. Only new or changed '
-                                'abnormalities send mail; healthy and unchanged runs stay silent.\n' + MAIL_FOOTER)
+        message_id = send_email(mail_settings(config), '[Hatchkit] ' + hostname + ': test mail', {
+            'title': 'Test mail', 'host': hostname,
+            'intro': 'Host integrity alerts reach this address. Nothing failed.\n\n'
+                     'The five-minute quick check and daily CPU check mail at once when a process runs a deleted binary, '
+                     'a container runs a process its image does not explain, a new file appears in /tmp, /var/tmp or '
+                     '/dev/shm of a container, a container uses more than 50 % of one core over an hour, or a container '
+                     'keeps an outbound connection outside private ranges and Cloudflare. Open findings repeat in the '
+                     'daily digest. A day with nothing open sends no mail.',
+            'footer': ['Inspect: ' + inspect_command(hostname), 'Server logs: journalctl -u ' + SERVICE]})
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
     if args.action == 'failed':
-        message_id = send_email(mail_settings(config), '[Hatchkit] Host integrity check did not finish — ' + hostname,
-                                'systemd stopped the ' + ('quick' if args.quick else 'daily') + ' host integrity check before it finished (a timeout, the '
-                                'memory limit, a crash, or termination). No completed result was produced.\n' +
-                                ('The quick check reports separately from this daily scan.\n' if not args.quick else '') + MAIL_FOOTER)
+        name = 'quick' if args.quick else 'daily'
+        message_id = send_email(mail_settings(config), '[Hatchkit] ' + hostname + ': host integrity check did not finish', {
+            'title': 'Host integrity check did not finish', 'host': hostname,
+            'sections': {'unchecked': [{'what': 'systemd stopped the ' + name + ' host integrity check before it finished '
+                                                '(a timeout, the memory limit, a crash, or termination). '
+                                                'No completed result was produced.',
+                                        'command': 'journalctl -u ' + (QUICK_SERVICE if args.quick else SERVICE) + ' -n 50'}]},
+            'notes': ['The quick check reports separately from this daily scan.'] if not args.quick else [],
+            'footer': ['Inspect: ' + inspect_command(hostname)]})
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
     state, mail_error = check(Host(), work, config, send_email,

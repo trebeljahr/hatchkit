@@ -28,7 +28,17 @@ Update watch covers Coolify, Traefik, Plausible, Listmonk, Uptime Kuma, GlitchTi
 
 The watcher combines supported advisory feeds, the CISA known-exploited catalog, and the last image-scan report. Missing versions, feed errors, and incomplete scans remain visible. A skipped check is not a clean result.
 
-Findings retain their first-seen time and remediation deadline across image rebuilds. Critical findings and known-exploited issues use a 24-hour target; other high findings use 72 hours. New or changed findings send mail. Unchanged overdue findings can repeat once per 24 hours. Healthy runs stay silent. The watcher reports fixes; it does not install them.
+Findings retain their first-seen time and remediation deadline across image rebuilds. Critical findings and known-exploited issues use a 24-hour target; other high findings use 72 hours. The watcher reports fixes; it does not install them.
+
+### Alert mail
+
+Each host sends one daily digest at about 09:00 Sydney time. It lists what is open under Needs you, Fixed automatically, Waiting on vendor, and Not checked. Each item states what happened, its deadline, and one command. A copy section holds every finding as plain text, grouped by advisory, package, and fixed version, for pasting into an LLM. A day with nothing open sends no mail.
+
+Five events mail at once: a new known-exploited finding, a failed backup, a host-integrity finding or new AIDE difference, a crashed or dark check, and a new critical finding with explicitly affected internet exposure. Repeats of these go in the digest.
+
+Unreviewed scanner matches stay in the ledger and keep their deadlines. They cause a digest once a week, after 09:00 on Monday in Sydney. A known-exploited match or lost coverage is not held for that review.
+
+Digests are per host because package findings do not leave a host. The independent monitor sees only fixed timestamps and counts for each host. It mails a dark check at once and incomplete coverage once a day. A failed or missing digest counts as a dark check. Mail changes when you are told, not what is recorded: the ledger stays complete.
 
 ### Installation prerequisites
 
@@ -46,6 +56,7 @@ Status files live under `/var/lib/hatchkit-backups/` on the host:
 | `image-vulnerability-status.json` | Final-image findings and scan completeness |
 | `file-integrity-status.json` | Reviewed AIDE baseline check, when installed |
 | `health-publisher-status.json` | Latest independent-monitor publication, when installed |
+| `digest-status.json` | Latest daily digest run and delivery, without any findings |
 
 Detailed image reports remain private under `/var/lib/hatchkit-security/image-reports`. Investigate a failed or stale check before changing its policy. Uninstall commands remove their scheduled checks; inspect retained reports before removing evidence.
 

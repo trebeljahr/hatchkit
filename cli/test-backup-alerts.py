@@ -12,7 +12,7 @@ import alerts
 
 
 class BackupAlerts(unittest.TestCase):
-    def test_delivery_dedup_reminder_recovery_and_retry(self):
+    def test_new_failure_mails_once_repeats_go_to_the_digest_and_failed_delivery_retries(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             config = {'alerts': {'to': 'owner@example.test', 'from': 'backup@example.test'}, 'projects': []}
@@ -20,18 +20,49 @@ class BackupAlerts(unittest.TestCase):
             with patch.object(alerts, 'issues_for', return_value=['project: failed']), patch.object(alerts, 'send_email', return_value='message') as send:
                 self.assertEqual(alerts.check(config, work, now=now)['kind'], 'failure')
                 self.assertFalse(alerts.check(config, work, now=now + dt.timedelta(hours=1))['sent'])
-                self.assertTrue(alerts.check(config, work, now=now + dt.timedelta(hours=24))['sent'])
-                self.assertEqual(send.call_count, 2)
-            with patch.object(alerts, 'issues_for', return_value=[]), patch.object(alerts, 'send_email', return_value='message') as send:
-                self.assertEqual(alerts.check(config, work, now=now)['kind'], 'recovery')
-                self.assertFalse(alerts.check(config, work, now=now)['sent'])
+                self.assertFalse(alerts.check(config, work, now=now + dt.timedelta(hours=24))['sent'])
                 self.assertEqual(send.call_count, 1)
+                subject, document = send.call_args.args[1:]
+                self.assertIn('backup failed', subject)
+                self.assertEqual(document['sections']['needs'][0]['what'], 'project: failed')
+            with patch.object(alerts, 'issues_for', return_value=['project: failed', 'other: failed']), patch.object(alerts, 'send_email', return_value='message') as send:
+                self.assertTrue(alerts.check(config, work, now=now)['sent'])
+                self.assertEqual([i['what'] for i in send.call_args.args[2]['sections']['needs']], ['other: failed'])
+            with patch.object(alerts, 'issues_for', return_value=[]), patch.object(alerts, 'send_email', return_value='message') as send:
+                self.assertFalse(alerts.check(config, work, now=now)['sent'])
+                self.assertEqual(send.call_count, 0)
             before = (work / 'alerts-status.json').read_text()
-            with patch.object(alerts, 'issues_for', return_value=['new failure']), patch.object(alerts, 'send_email', side_effect=RuntimeError('smtp unavailable')):
+            with patch.object(alerts, 'issues_for', return_value=['project: failed']), patch.object(alerts, 'send_email', side_effect=RuntimeError('smtp unavailable')):
                 with self.assertRaises(RuntimeError): alerts.check(config, work, now=now)
             self.assertEqual((work / 'alerts-status.json').read_text(), before)
-            with patch.object(alerts, 'issues_for', return_value=['new failure']), patch.object(alerts, 'send_email', return_value='message'):
+            with patch.object(alerts, 'issues_for', return_value=['project: failed']), patch.object(alerts, 'send_email', return_value='message'):
                 self.assertTrue(alerts.check(config, work, now=now)['sent'])
+
+    def test_restore_drill_issue_waits_for_the_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            issue = 'demo: isolated native restore failed, is missing or is older than nine days.'
+            with patch.object(alerts, 'issues_for', return_value=[issue]), patch.object(alerts, 'send_email') as send:
+                self.assertFalse(alerts.check({'alerts': {'to': 'x'}}, work)['sent'])
+            self.assertEqual(send.call_count, 0)
+
+    def test_upgrade_does_not_repeat_issues_the_old_version_already_announced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / 'alerts-status.json').write_text(json.dumps({'issues': ['project: failed'], 'lastSentAt': '2026-11-01T00:00:00+00:00'}))
+            with patch.object(alerts, 'issues_for', return_value=['project: failed']), patch.object(alerts, 'send_email') as send:
+                self.assertFalse(alerts.check({'alerts': {'to': 'x'}}, work)['sent'])
+            self.assertEqual(send.call_count, 0)
+
+    def test_the_digest_still_runs_when_the_backup_mail_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            config = {'alerts': {'to': 'owner@example.test'}, 'projects': []}
+            with patch.object(alerts, 'issues_for', return_value=[]), patch.object(alerts, 'check', side_effect=OSError('smtp')), \
+                 patch.object(alerts, 'run_digest', return_value={'sent': False}) as digest:
+                with self.assertRaises(OSError):
+                    alerts.run_all(config, work)
+            self.assertEqual(digest.call_count, 1)
 
     def test_detects_failed_stale_missing_and_disabled_timer_without_emailing_errors(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -105,6 +136,10 @@ class BackupAlerts(unittest.TestCase):
             client.login.assert_called_once_with('login', 'secret')
             message = client.send_message.call_args.args[0]
             self.assertEqual(message['To'], 'owner@example.test')
+            self.assertEqual(message['From'], 'Hatchkit Alerts <backup@example.test>')
+            self.assertEqual(message['Auto-Submitted'], 'auto-generated')
+            self.assertTrue(message['Message-ID'].endswith('@example.test>'))
+            self.assertEqual(message.get_content_type(), 'multipart/alternative')
             self.assertNotIn('secret', message.as_string())
 
 

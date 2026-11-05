@@ -587,6 +587,10 @@ class Detectors(unittest.TestCase):
             self.assertEqual(hi.read_site(path)['peers'], ['8.8.8.8'])
 
 
+sys.path.insert(0, str(Path(__file__).parent / 'src/templates/backups'))
+from hatchkit_mail import text_of
+
+
 class Check(unittest.TestCase):
     """The timer run: what it mails and records."""
 
@@ -623,10 +627,13 @@ class Check(unittest.TestCase):
         state, error = self.run_check(self.report([finding]))
         self.assertEqual((state['mailed'], state['ok'], error), ('findings', False, None))
         settings, subject, body = self.sent[0]
-        self.assertEqual(settings['from'], 'Hatchkit Host Check <backup@example.test>')
-        self.assertIn('Host integrity: 1 finding', subject)
-        self.assertIn('- plausible: 90 % of one core', body)
-        self.assertIn('hatchkit host integrity --json', body)
+        self.assertEqual(settings['from'], 'Hatchkit Alerts <backup@example.test>')
+        self.assertIn('1 host integrity finding', subject)
+        self.assertTrue(subject.startswith('[Hatchkit] '))
+        body = text_of(body)
+        self.assertIn('1. plausible: 90 % of one core', body)
+        self.assertIn('Possible compromise', body)
+        self.assertIn('--json', body)
         status = json.loads((self.work / hi.STATUS_NAME).read_text())
         self.assertEqual(status['findings'], [finding])
         # checkedAt is when the result is known, not when the hour began.
@@ -642,7 +649,7 @@ class Check(unittest.TestCase):
     def test_failed_scan_mails_the_safe_reason_only(self):
         state, _ = self.run_check(error=hi.IntegrityError('docker ps failed'))
         self.assertEqual((state['mailed'], state['error']), ('error', 'docker ps failed'))
-        self.assertIn('could not finish: docker ps failed', self.sent[0][2])
+        self.assertIn('could not finish: docker ps failed', text_of(self.sent[0][2]))
         state, _ = self.run_check(error=RuntimeError('token=' + SECRET))
         self.assertEqual(state['error'], 'RuntimeError')
         self.assertNotIn(SECRET, json.dumps(self.sent) + (self.work / hi.STATUS_NAME).read_text())

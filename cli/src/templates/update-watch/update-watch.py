@@ -35,7 +35,7 @@ and HTTPS GETs to api.github.com, gitlab.com and api.cloudflare.com. It never pr
 image's env it reads only the version keys the services file names.
 
   scan    print the report as JSON
-  check   scan, mail findings through the backup-alert SMTP and record the
+  check   scan, mail only new urgent findings or a crash, and record the
           result (what the scheduled timer runs)
   failed  mail that a check did not finish (systemd OnFailure)
   test    send a test mail
@@ -65,7 +65,6 @@ import urllib.error
 from urllib.parse import quote, urlsplit
 import urllib.request
 import xml.etree.ElementTree as ET
-from zoneinfo import ZoneInfo
 
 BACKUP_CONFIG = '/etc/hatchkit-backups/config.json'
 SERVICES_NAME = 'update-watch-services.json'
@@ -1539,12 +1538,8 @@ def mail_settings(config):
     settings = dict(config.get('alerts') or {})
     if not settings.get('enabled', False) or not settings.get('to') or not settings.get('smtpFile'):
         raise WatchError('backup alert mail is not configured (hatchkit backup alerts)')
-    settings['from'] = formataddr(('Hatchkit Update Watch', parseaddr(settings['from'])[1]))
+    settings['from'] = formataddr(('Hatchkit Alerts', parseaddr(settings['from'])[1]))
     return settings
-
-
-MAIL_FOOTER = ('\nInspect: hatchkit host updates --json\n'
-               'Server logs: journalctl -u ' + SERVICE + '\n')
 
 
 def advisory_id(finding):
@@ -1587,125 +1582,42 @@ def current_assessment(finding, now):
         return False
 
 
-def weekly_review_key(now):
-    local = now.astimezone(ZoneInfo('Australia/Sydney'))
-    if local.weekday() == 0 and local.hour < 9:
-        return None
-    year, week, _ = local.isocalendar()
-    return '%04d-W%02d' % (year, week)
+def urgent_finding(finding):
+    """The findings that cannot wait for the daily digest."""
+    return bool(finding.get('knownExploited') or
+                (finding.get('severity') == 'critical' and finding.get('applicability') == 'affected'
+                 and finding.get('exposure') == 'internet'))
 
 
-def acknowledged_review_week(previous, now):
-    """Count an old successful digest in its actual delivery week only."""
-    if not previous.get('notifiedFingerprint') or previous.get('mailError'):
-        return None
-    rows, skipped, error = previous.get('findings', []), previous.get('skipped', []), previous.get('error')
-    kind = 'error' if error else 'findings' if rows else 'incomplete' if skipped else None
-    if prior_notification_fingerprint(previous) != notification_fingerprint(kind, rows, error, skipped):
-        return None
-    try:
-        when = dt.datetime.fromisoformat(previous.get('lastNotifiedAt') or previous['checkedAt'])
-        if when.tzinfo is None or when > now + dt.timedelta(minutes=5):
-            return None
-        year, week, _ = when.astimezone(ZoneInfo('Australia/Sydney')).isocalendar()
-        return '%04d-W%02d' % (year, week)
-    except (KeyError, ValueError, TypeError):
-        return None
-
-
-def weekly_package_review(findings):
-    fixes, workloads, advisories, no_fix = {}, set(), set(), set()
-    for finding in findings:
-        names = set(finding.get('containerDisplayNames') or finding.get('containers') or [finding.get('service', 'unknown')])
-        workloads.update(names)
-        advisories.add(advisory_id(finding))
-        if finding.get('fixed'):
-            key = (finding.get('name'), finding.get('version'))
-            entry = fixes.setdefault(key, {'targets':set(), 'floors':set()})
-            entry['targets'].update(names)
-            entry['floors'].update(version.strip() for version in finding['fixed'].split(',') if version.strip())
-        else:
-            no_fix.add((advisory_id(finding), finding.get('name')))
-    lines = ['Weekly package review: %d workloads; %d distinct scanner advisories.' % (len(workloads), len(advisories)),
-             'Next maintenance candidates (verify vendor floors, rebuild and test before deployment):']
-    for (name, version), entry in sorted(fixes.items(), key=lambda item: (-len(item[1]['targets']), item[0]))[:5]:
-        targets = entry['targets']
-        shown = ', '.join(sorted(targets)[:3])
-        if len(targets) > 3:
-            shown += ' and %d more' % (len(targets)-3)
-        floors = sorted(entry['floors'], key=lambda value: (parse_version(value).key() if parse_version(value) else (), value))
-        fixed = ' / '.join(floors[:4]) + (' / …' if len(floors)>4 else '')
-        lines.append('- %s: %s %s → reported fix floors %s' % (shown, name, version, fixed))
-    if not fixes:
-        lines.append('- No package fix is currently reported; vendor applicability review is needed.')
-    elif len(fixes) > 5:
-        lines.append('%d further package/version candidates remain in the private ledger.' % (len(fixes)-5))
-    lines += ['%d advisory/package pairs have no reported fix and need vendor applicability review.' % len(no_fix),
-              'Scanner matches do not establish reachable exposure. Unreviewed matches have no daily overdue reminders.']
-    return lines
-
-
-def package_mail_groups(findings):
+def urgent_document(findings, hostname):
+    """Aggregated by advisory, package and fix. The ledger keeps every raw row."""
+    command = 'hatchkit host updates --host ' + hostname + ' --json'
     groups = {}
     for finding in findings:
-        workloads = tuple(sorted(set(finding.get('containerDisplayNames') or finding.get('containers') or [finding.get('service', 'unknown image')])))
-        groups.setdefault(workloads, []).append(finding)
-    def priority(item):
-        names, rows = item
-        return (not any(r.get('knownExploited') for r in rows),
-                not any(r.get('overdue') for r in rows),
-                not any(r.get('severity') == 'critical' for r in rows), names)
-    lines = []
-    for names, rows in sorted(groups.items(), key=priority)[:MAX_MAIL_FINDINGS]:
-        advisories = {advisory_id(r) for r in rows}
-        fixes = {(r.get('name'), r.get('version'), r.get('fixed')) for r in rows if r.get('fixed')}
-        unreviewed = {advisory_id(r) for r in rows if not r.get('fixed')}
-        flags = []
-        if any(r.get('knownExploited') for r in rows):
-            flags.append('KNOWN EXPLOITED')
-        if any(r.get('overdue') for r in rows):
-            flags.append('OVERDUE')
-        due = [r['dueAt'] for r in rows if r.get('dueAt')]
-        if due:
-            flags.append('earliest due ' + min(due))
-        lines.append('- ' + ', '.join(names) + ': ' + str(len(advisories)) + ' distinct advisories; '
-                     + str(len(fixes)) + ' package fixes reported; ' + str(len(unreviewed))
-                     + ' advisories without a reported fix'
-                     + ('; ' + '; '.join(flags) if flags else ''))
-    if len(groups) > MAX_MAIL_FINDINGS:
-        lines.append(str(len(groups) - MAX_MAIL_FINDINGS) + ' further workload groups retained in the private ledger.')
-    return lines
-
-
-def mail_body(report, error):
-    if error:
-        return 'The daily update watch could not finish: ' + error + '.\n' + MAIL_FOOTER
-    lines = []
-    if report['findings']:
-        packages = [f for f in report['findings'] if f.get('kind') == 'image-package']
-        direct = [f for f in report['findings'] if f.get('kind') != 'image-package']
-        if direct:
-            lines += ['Runtime/service advisories and configuration checks:', '']
-            lines += ['- ' + ('OVERDUE: ' if f.get('overdue') else '') + f['summary']
-                      + ('; due ' + f['dueAt'] if f.get('dueAt') else '') for f in direct[:MAX_MAIL_FINDINGS]]
-            if len(direct) > MAX_MAIL_FINDINGS:
-                lines.append(str(len(direct) - MAX_MAIL_FINDINGS) + ' further direct findings retained in the private ledger.')
-        if packages:
-            if report.get('weeklyPackageReview'):
-                urgent = [f for f in packages if immediate_finding(f)]
-                if urgent:
-                    lines += ['', 'Urgent package findings:'] + package_mail_groups(urgent)
-                lines += [''] + weekly_package_review([f for f in packages if not immediate_finding(f)])
-            else:
-                lines += ['', 'Image package matches by workload:',
-                          'Vendor applicability and application reachability still need review; these are not incident counts.', '']
-                lines += package_mail_groups(packages)
-        lines += ['', 'Full finding ledger: /var/lib/hatchkit-backups/update-watch-status.json',
-                  'Review vendor guidance and exposure, then apply compatible fixes with backup, functional checks and rollback. '
-                  'Keep original deadlines; record any exception with evidence and an expiry.']
-    if report['skipped']:
-        lines += ['', 'Not checked this run:'] + ['- ' + s for s in report['skipped']]
-    return '\n'.join(lines) + '\n' + MAIL_FOOTER
+        groups.setdefault((advisory_id(finding), finding.get('name'), finding.get('fixed') or ''), []).append(finding)
+    items, rows = [], []
+    for (advisory, name, fixed), members in sorted(groups.items(), key=lambda g: (g[0][0], g[0][1] or '', g[0][2])):
+        names = sorted({n for f in members for n in (f.get('containerDisplayNames') or f.get('containers') or [])})
+        what = advisory + ' in ' + (name or 'a service')
+        if names:
+            what += ' (' + ', '.join(names[:6]) + (' and %d more' % (len(names)-6) if len(names) > 6 else '') + ')'
+        what += '. Fix reported: ' + fixed + '.' if fixed else '. No fix reported.'
+        flags = ['Known exploited'] if any(f.get('knownExploited') for f in members) else []
+        if any(f.get('exposure') == 'internet' and f.get('applicability') == 'affected' for f in members):
+            flags.append('Explicitly affected internet exposure')
+        due = sorted(dt.datetime.fromisoformat(f['dueAt']) for f in members if f.get('dueAt'))
+        deadline = due[0].astimezone(dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if due else None
+        if deadline and any(f.get('overdue') for f in members):
+            deadline += ' (past due)'
+        items.append({'what': what, 'flags': flags, 'deadline': deadline, 'command': command})
+        rows.append('- ' + what + (' ' + ', '.join(flags) + '.' if flags else '') + (' Deadline: ' + deadline if deadline else ''))
+    ledger = '/var/lib/hatchkit-backups/' + STATUS_NAME
+    return {'title': 'New urgent finding', 'host': hostname, 'ledger': ledger, 'sections': {'needs': items},
+            'paste': {'instruction': 'Help me fix these Hatchkit findings. Check vendor guidance first, keep every '
+                                     'deadline, never suppress a finding, and list each change you make.',
+                      'meta': ['Host: ' + hostname, 'Ledger: ' + ledger, 'Inspect: ' + command], 'rows': rows, 'ledger': ledger},
+            'footer': ['The daily digest lists this until it clears. No further mail means it cleared.',
+                       'Server logs: journalctl -u ' + SERVICE]}
 
 
 def write_status(work, state):
@@ -1731,49 +1643,19 @@ def finding_identity(finding):
     return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
 
 
-def notification_fingerprint(kind, findings, error, skipped):
-    """Keep action changes; ignore image/replica churn, ordering and clock ticks."""
-    rows = {json.dumps({'identity': finding_identity(f),
-                        **{k: f.get(k) for k in ('severity', 'fixed', 'fixState')},
-                        'knownExploited': bool(f.get('knownExploited')), 'overdue': bool(f.get('overdue'))},
-                       sort_keys=True) for f in findings}
-    return hashlib.sha256(json.dumps([kind, sorted(rows), error, sorted(set(skipped))],
-                                     sort_keys=True).encode()).hexdigest() if kind else None
-
-
-def prior_notification_fingerprint(previous):
-    notified = previous.get('notifiedFingerprint')
-    if previous.get('notificationIdentityVersion') == 2 or not notified:
-        return notified
-    old_kind = ('error' if previous.get('error') else 'findings' if previous.get('findings')
-                else 'incomplete' if previous.get('skipped') else None)
-    old_rows = previous.get('findings') or []
-    old_skips = previous.get('skipped') or []
-    legacy = hashlib.sha256(json.dumps([old_kind, old_rows, previous.get('error'), old_skips],
-                                      sort_keys=True).encode()).hexdigest() if old_kind else None
-    # Migrate only an acknowledged exact old report. A failed delivery must
-    # remain retryable, even if its last saved report contains new findings.
-    if notified == legacy:
-        return notification_fingerprint(old_kind, old_rows, previous.get('error'), old_skips)
-    return notified
-
-
-def prior_immediate_fingerprint(previous):
-    acknowledged = prior_notification_fingerprint(previous)
-    if previous.get('notificationIdentityVersion') == 3:
-        return acknowledged
-    rows, skipped, error = previous.get('findings', []), previous.get('skipped', []), previous.get('error')
-    old_kind = 'error' if error else 'findings' if rows else 'incomplete' if skipped else None
-    if acknowledged == notification_fingerprint(old_kind, rows, error, skipped):
-        rows = [f for f in rows if immediate_finding(f)]
-        kind = 'error' if error else 'findings' if rows else 'incomplete' if skipped else None
-        return notification_fingerprint(kind, rows, error, skipped) if kind else None
-    return acknowledged
+def prior_urgent_notified(previous):
+    """Identities the owner has already been told about."""
+    if 'urgentNotified' in previous:
+        return set(previous['urgentNotified'])
+    # Migration: an accepted old report already announced its urgent findings.
+    if previous.get('notifiedFingerprint') and not previous.get('mailError'):
+        return {finding_identity(f) for f in previous.get('findings', []) if urgent_finding(f)}
+    return set()
 
 
 def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_SOURCE, cloudflare=None,
           chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False, host_packages=False):
-    """Mail new or changed abnormalities; healthy and unchanged runs stay silent."""
+    """Keep the full ledger. Mail only a crash or a new urgent finding; the digest has the rest."""
     now = now or dt.datetime.now(dt.timezone.utc)
     try:
         previous = json.loads((work / STATUS_NAME).read_text())
@@ -1789,14 +1671,6 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
     findings = report['findings'] if report else []
     skipped = report['skipped'] if report else []
     hostname = socket.gethostname()
-    kind, subject = None, None
-    if error:
-        kind, subject = 'error', '[Hatchkit] Update watch failed — ' + hostname
-    elif findings:
-        kind, subject = 'findings', ('[Hatchkit] Update watch: ' + str(len(findings)) + ' finding'
-                                     + ('' if len(findings) == 1 else 's') + ' — ' + hostname)
-    elif skipped:
-        kind, subject = 'incomplete', '[Hatchkit] Update watch could not check everything — ' + hostname
     first_seen = {identity: started for identity, started in (previous.get('findingFirstSeen') or {}).items()
                   if now - dt.datetime.fromisoformat(started) < dt.timedelta(days=180)}
     # Migrate clocks from earlier identity schemes without granting a fresh
@@ -1838,26 +1712,23 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
             if old.get('dueAt'):
                 finding['dueAt'] = min(dt.datetime.fromisoformat(finding['dueAt']), dt.datetime.fromisoformat(old['dueAt'])).isoformat(timespec='seconds')
             finding['overdue'] = now >= dt.datetime.fromisoformat(finding['dueAt'])
-    immediate = [f for f in findings if immediate_finding(f)]
     review = [f for f in findings if not immediate_finding(f) and not current_assessment(f, now)]
-    kind = 'error' if error else 'findings' if immediate else 'incomplete' if skipped else None
-    fingerprint = notification_fingerprint(kind, immediate, error, skipped)
-    prior_notified = prior_immediate_fingerprint(previous)
-    week = weekly_review_key(now)
-    last_week = previous.get('lastWeeklyReviewKey')
-    # An acknowledged old daily digest already served this week's review.
-    # Upgrading the monitor must not send the same inventory again.
-    if not last_week and previous.get('notificationIdentityVersion') != 3 and previous.get('checkedAt') and previous.get('notifiedFingerprint') and not previous.get('mailError'):
-        last_week = acknowledged_review_week(previous, now)
-    weekly_due = bool(review and week and week != last_week and not error)
+    acknowledged = prior_urgent_notified(previous)
+    urgent = [f for f in findings if urgent_finding(f)]
+    new_urgent = [f for f in urgent if finding_identity(f) not in acknowledged]
+    if not error:
+        # A finding that clears and returns is new again. A crash clears nothing.
+        acknowledged &= {finding_identity(f) for f in urgent}
+    error_print = hashlib.sha256(error.encode()).hexdigest() if error else None
     state = {'checkedAt': now.isoformat(timespec='seconds'), 'ok': not error and not findings and not skipped,
              'error': error, 'services': [{'service': s['service'], 'version': s['version'],
                                            'latest': (s['latest'] or {}).get('version')}
                                           for s in (report or {}).get('services', [])],
              'findings': findings, 'skipped': skipped, 'mailed': None, 'messageId': None,
-             'notifiedFingerprint': prior_notified if kind else None,
-             'notificationIdentityVersion': 3,
-             'lastWeeklyReviewKey': last_week,
+             'notificationIdentityVersion': 4,
+             'urgentNotified': sorted(acknowledged),
+             'notifiedErrorFingerprint': previous.get('notifiedErrorFingerprint') if error else None,
+             'lastWeeklyReviewKey': previous.get('lastWeeklyReviewKey'),
              'lastWeeklyReviewAt': previous.get('lastWeeklyReviewAt'),
              'unreviewedPackageMatches': len(review),
              'assessedPackageMatches': sum(current_assessment(f, now) for f in findings),
@@ -1867,39 +1738,28 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
     if report and 'githubFeeds' in report:
         state['githubFeeds'] = report['githubFeeds']
     mail_error = None
-    urgent_last = previous.get('lastImmediateNotifiedAt', previous.get('lastNotifiedAt'))
-    overdue_reminder = any(f.get('overdue') for f in immediate) and (
-        not urgent_last or now - dt.datetime.fromisoformat(urgent_last) >= dt.timedelta(hours=24))
     state['lastNotifiedAt'] = previous.get('lastNotifiedAt')
-    state['lastImmediateNotifiedAt'] = urgent_last
-    immediate_due = bool(kind and (fingerprint != prior_notified or overdue_reminder))
-    if immediate_due or weekly_due:
-        if weekly_due and not immediate_due:
-            subject = '[Hatchkit] Weekly package review — ' + hostname
-            state['notificationCategory'] = 'Weekly package review'
-        if kind == 'findings':
-            old_ids = {finding_identity(f) for f in previous.get('findings', [])}
-            new_ids = {finding_identity(f) for f in immediate} - old_ids
-            category = ('Initial inventory' if not previous.get('checkedAt') else
-                        'New advisories' if new_ids else
-                        'Overdue review' if overdue_reminder else 'Advisory changes')
-            subject = '[Hatchkit] Update watch: ' + category + ('; coverage incomplete' if skipped else '') + ' — ' + hostname
-            state['notificationCategory'] = category
-        if immediate_due and kind == 'incomplete':
-            subject = '[Hatchkit] Update watch could not check everything — ' + hostname
-        body_report = dict(report, findings=immediate + (review if weekly_due else []),
-                           weeklyPackageReview=weekly_due) if report else None
-        body = mail_body(body_report, error)
+    subject, body, kind = None, None, None
+    if error and error_print != previous.get('notifiedErrorFingerprint'):
+        kind = 'error'
+        subject = '[Hatchkit] ' + hostname + ': update watch failed'
+        body = {'title': 'Update watch failed', 'host': hostname,
+                'sections': {'unchecked': [{'what': 'The update watch could not finish: ' + error + '.',
+                                            'command': 'journalctl -u ' + SERVICE + ' -n 50'}]},
+                'footer': ['The previous ledger is kept. Its deadlines keep running.']}
+    elif new_urgent:
+        kind = 'findings'
+        subject = '[Hatchkit] ' + hostname + ': new urgent finding'
+        body = urgent_document(new_urgent, hostname)
+    if kind:
         try:
             state['messageId'] = send(mail_settings(config), subject, body)
-            state['mailed'] = kind or 'weekly-review'
-            if immediate_due:
-                state['notifiedFingerprint'] = fingerprint
-                state['lastImmediateNotifiedAt'] = now.isoformat(timespec='seconds')
-            if weekly_due:
-                state['lastWeeklyReviewKey'] = week
-                state['lastWeeklyReviewAt'] = now.isoformat(timespec='seconds')
+            state['mailed'] = kind
             state['lastNotifiedAt'] = now.isoformat(timespec='seconds')
+            if kind == 'error':
+                state['notifiedErrorFingerprint'] = error_print
+            else:
+                state['urgentNotified'] = sorted(acknowledged | {finding_identity(f) for f in new_urgent})
         except Exception as failure:  # SMTP errors may echo login details; keep the type only
             mail_error = failure if isinstance(failure, WatchError) else type(failure).__name__
             state['mailError'] = str(mail_error)
@@ -1916,20 +1776,23 @@ def load(payload, key, name):
 def failure_notice(hostname, unit):
     """Name the failed producer; partial work is never reported as no checks."""
     if unit == SERVICE:
-        subject = '[Hatchkit] Update watch did not finish — ' + hostname
-        body = ('The scheduled update watch failed or stopped before finishing. '
-                'This run may contain partial checks; inspect its last report and service logs.\n')
+        title = 'Update watch did not finish'
+        what = ('The scheduled update watch failed or stopped before finishing. '
+                'This run may contain partial checks; inspect its last report and service logs.')
+        notes = []
     elif unit == 'hatchkit-image-vulnerabilities.service':
-        subject = '[Hatchkit] Final image scan did not finish — ' + hostname
-        body = ('The final image scan failed or stopped before publishing a complete result. '
-                'Any previous complete image ledger is retained; partial results do not establish current coverage.\n\n'
-                'A deployment during a scan can invalidate its image inventory. The image timer retries '
-                'within 15 minutes plus up to one minute of jitter. Investigate if the next attempt also fails.\n'
-                'Latest attempt: /var/lib/hatchkit-backups/image-vulnerability-attempt.json\n')
+        title = 'Final image scan did not finish'
+        what = ('The final image scan failed or stopped before publishing a complete result. '
+                'Any previous complete image ledger is retained; partial results do not establish current coverage.')
+        notes = ['A deployment during a scan can invalidate its image inventory. The image timer retries '
+                 'within 15 minutes plus up to one minute of jitter. Investigate if the next attempt also fails.',
+                 'Latest attempt: /var/lib/hatchkit-backups/image-vulnerability-attempt.json']
     else:
         raise WatchError('Failure notification origin is not recognized')
-    return subject, body + ('\nInspect: hatchkit host updates --json\n'
-                            'Server logs: journalctl -u ' + unit + '\n')
+    return '[Hatchkit] ' + hostname + ': ' + title[0].lower() + title[1:], {
+        'title': title, 'host': hostname,
+        'sections': {'unchecked': [{'what': what, 'command': 'journalctl -u ' + unit + ' -n 50'}]},
+        'notes': notes, 'footer': ['Inspect: hatchkit host updates --host ' + hostname + ' --json']}
 
 
 def main(payload=None):
@@ -1955,14 +1818,14 @@ def main(payload=None):
     work.mkdir(mode=0o700, parents=True, exist_ok=True)
     hostname = socket.gethostname()
     if args.action == 'test':
-        message_id = send_email(mail_settings(config), '[Hatchkit] Update watch alert test — ' + hostname,
-                                'Update watch alerts are configured for this address.\n\n'
-                                'This is a test. The scheduled check mails when a shared service (Coolify, Traefik, '
-                                'Plausible CE, Listmonk, Uptime Kuma, GlitchTip, ClickHouse) runs a version that a '
-                                'high or critical upstream advisory covers, when Coolify auto-update fails, when '
-                                'Cloudflare changes the IP ranges the origin firewalls allow, and when it could not '
-                                'check something. Healthy and unchanged runs stay silent.\n'
-                                + MAIL_FOOTER)
+        message_id = send_email(mail_settings(config), '[Hatchkit] ' + hostname + ': test mail', {
+            'title': 'Test mail', 'host': hostname,
+            'intro': 'Update watch alerts reach this address. Nothing failed.\n\n'
+                     'A new known-exploited finding, a new critical finding with explicitly affected internet exposure '
+                     'and a crashed check mail at once. Everything else that is open goes in one daily digest. '
+                     'A day with nothing open sends no mail.',
+            'footer': ['Inspect: hatchkit host updates --host ' + hostname + ' --json',
+                       'Server logs: journalctl -u ' + SERVICE]})
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return
     if args.action == 'failed':

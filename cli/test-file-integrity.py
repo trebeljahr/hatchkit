@@ -40,6 +40,30 @@ class FileIntegrityAlerts(unittest.TestCase):
                 self.assertEqual(integrity.check(), 1)
                 self.assertEqual(len(messages), 2)
             self.assertNotIn('another-change', str(messages))
+            self.assertIn('[Hatchkit]', messages[0][1])
+            self.assertEqual(messages[0][2]['sections']['needs'][0]['command'].split()[:2], ['sudo', 'less'])
+
+    def test_the_same_diff_never_repeats_after_a_day(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'aide.db').write_text('fixture baseline')
+            messages = []
+            fake_alerts = types.SimpleNamespace(send_email=lambda *args: messages.append(args) or 'fixture-message')
+            def run(argv, **kwargs):
+                kwargs['stdout'].write('File: /etc/fixture\n SHA256: same\n')
+                return subprocess.CompletedProcess(argv, 4)
+            original = Path.read_text
+            def read(path, *args, **kwargs):
+                if str(path) == '/etc/hatchkit-backups/config.json':
+                    return json.dumps({'alerts': {'fixture': True}})
+                return original(path, *args, **kwargs)
+            with patch.object(integrity, 'WORK', root), patch.object(integrity, 'STATUS', root / 'status.json'), patch.object(integrity.subprocess, 'run', side_effect=run), patch.object(Path, 'read_text', read), patch.dict(sys.modules, {'alerts': fake_alerts}), contextlib.redirect_stdout(io.StringIO()):
+                integrity.check()
+                status = json.loads((root / 'status.json').read_text())
+                status['lastSentAt'] = '2020-01-01T00:00:00+00:00'
+                (root / 'status.json').write_text(json.dumps(status))
+                integrity.check()
+            self.assertEqual(len(messages), 1)
 
 
 if __name__ == '__main__':

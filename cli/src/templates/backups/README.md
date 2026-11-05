@@ -247,11 +247,30 @@ Re-run `alerts` after rotating SES credentials or changing the destination.
 A failed backup systemd unit starts `hatchkit-backup-alerts.service` immediately.
 The hourly `hatchkit-backup-alerts.timer` also checks for failed/missing project
 captures, captures older than 36 hours, and an inactive daily backup timer.
-Newly registered projects are included automatically. Unchanged issues trigger
-at most one reminder per 24 hours. Changes trigger a new alert; recovery sends
-one confirmation. Normal success sends no mail. SMTP failures leave the alert
-retryable at the next hourly check. `alert-test` sends one clearly labeled test
-without changing backup results or the alert's failure/recovery state.
+Newly registered projects are included automatically. A new failure mails at
+once; a restore-drill issue waits for the digest. Open issues repeat in the daily
+digest and leave it when they clear, so no further mail means an issue cleared.
+Normal success sends no mail. SMTP failures leave the alert retryable at the next
+hourly check. `alert-test` sends one clearly labeled test without changing backup
+results or the alert's failure state.
+
+### Daily digest
+
+The same hourly service runs `ops_digest.py`, so a host with alert mail needs no
+new unit. At about 09:00 Sydney time it reads the status files of the backup, update
+watch, host integrity and file integrity checks and sends at most one mail. A day
+with nothing open sends none. A failed send retries at the next hourly run. The state
+is `digest-status.json`; it holds no findings. The independent monitor reports a
+digest that fails or stops running.
+
+Unreviewed scanner matches cause a digest only for the weekly review, after 09:00 on
+Monday in Sydney. A new vendor-blocked item causes one digest, then waits for that
+review. Any other open item appears daily.
+
+`hatchkit_mail.py` renders every Hatchkit alert: text plus HTML, the shared theme,
+and the icon as a CID part. `security-controller/mail-core.mjs` is its Worker copy;
+`cli/test-ops-digest.py` checks that both produce the same bytes. Each host sends its
+own digest because package findings do not cross the Worker's metadata boundary.
 
 `backup status` includes alert configuration, last accepted notification/check,
 alert timer state, and whether the alert service itself failed. Acceptance by
@@ -259,7 +278,7 @@ SMTP is not proof of inbox delivery. This monitor runs on the backup host;
 whole-host outages and loss of outbound connectivity need external monitoring.
 
 The host config may also be set manually with
-`"alerts": {"enabled": true, "to": "owner@example.com", "from": "Backup <noreply@mail.example.com>", "smtpFile": "/etc/hatchkit-backups/alert-smtp.json"}`.
+`"alerts": {"enabled": true, "to": "owner@example.com", "from": "Hatchkit Alerts <noreply@mail.example.com>", "smtpFile": "/etc/hatchkit-backups/alert-smtp.json"}`.
 The private SMTP JSON contains `host`, `port`, `username`, `password`, and
 `tls` (`starttls` or `tls`, both with certificate validation).
 

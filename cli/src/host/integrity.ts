@@ -493,7 +493,7 @@ units=pathlib.Path('/etc/systemd/system')
 names=('host-integrity.py','hatchkit-host-integrity.service','hatchkit-host-integrity.timer','hatchkit-host-integrity-failed.service','hatchkit-host-integrity-quick.service','hatchkit-host-integrity-quick.timer','hatchkit-host-integrity-quick-failed.service')
 if sorted(payload['files'])!=sorted(names):
  fail('unexpected installer files')
-if not (opt/'alerts.py').exists() or not (opt/'runner.py').exists():
+if not (opt/'alerts.py').exists() or not (opt/'hatchkit_mail.py').exists() or not (opt/'runner.py').exists():
  fail('the backup runner is not installed; run hatchkit backup install first')
 try:
  config=json.loads(pathlib.Path('/etc/hatchkit-backups/config.json').read_text())
@@ -571,7 +571,7 @@ export async function installHostIntegrity(dryRun: boolean, host: BackupHost = b
     ...result,
     schedule:
       "quick process/file checks every five minutes; daily 05:00 UTC (+ up to 15 min), CPU averaged over the following hour",
-    mail: "through the backup-alert SMTP; new or changed abnormalities only; healthy and unchanged runs stay silent",
+    mail: "through the backup-alert SMTP; new or changed abnormalities at once, open ones in the daily digest; days with nothing open stay silent",
     nextSteps: (dryRun
       ? ["Install: hatchkit host integrity install"]
       : [
@@ -617,8 +617,8 @@ when it finds something. hatchkit doctor runs the same scan.
 
 install puts the script next to the backup runner (/opt/hatchkit-backups) with
 a quick timer every five minutes, plus a daily timer (05:00 UTC) that averages
-CPU over one hour. New or changed abnormalities send mail; healthy and unchanged
-runs stay silent. Mail goes
+CPU over one hour. New or changed abnormalities mail at once and open ones
+repeat in the daily digest; days with nothing open stay silent. Mail goes
 through the backup-alert SMTP (hatchkit backup alerts). It refuses a host
 without the backup runner or its alert mail, and runs one read-only scan
 before it writes. --dry-run runs only that scan and prints what the first

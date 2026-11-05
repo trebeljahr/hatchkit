@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {sanitize,issuesFor,pendingFor,sweep,CHECKS} from './src/templates/security-controller/worker-core.mjs';
+import {sanitize,issuesFor,pendingFor,sweep,CHECKS,issueKind,DIGEST_UTC_HOUR} from './src/templates/security-controller/worker-core.mjs';
 const now=Date.parse('2026-10-23T04:00:00Z');
 const healthy={schema:1,checks:Object.fromEntries(Object.keys(CHECKS).map(k=>[k,{checkedAt:new Date(now).toISOString(),ok:true,complete:true,findings:0}]))};
 const clean=sanitize({...healthy,secret:'MUST_NOT_LEAVE_HOST'},now);
@@ -35,12 +35,51 @@ await sweep(env,now+2);assert.equal(sent,1);
 data.set('hosts/ops-vps.json',clean);fail=true;await assert.rejects(sweep(env,now+3));
 fail=false;await sweep(env,now+4);assert.equal(sent,2);
 // Partial recovery stays quiet; recurrence and failed delivery remain actionable.
-const twoProblems=structuredClone(clean);twoProblems.checks.files.ok=false;twoProblems.checks.backups.ok=false;
+const twoProblems=structuredClone(clean);twoProblems.checks.process.ok=false;twoProblems.checks.process.findings=1;twoProblems.checks.backups.ok=false;twoProblems.checks.backups.findings=1;
 data.set('hosts/ops-vps.json',twoProblems);await sweep(env,now+5);assert.equal(sent,3);
-const oneProblem=structuredClone(twoProblems);oneProblem.checks.backups.ok=true;
+const oneProblem=structuredClone(twoProblems);oneProblem.checks.backups.ok=true;oneProblem.checks.backups.findings=0;
 data.set('hosts/ops-vps.json',oneProblem);await sweep(env,now+6);assert.equal(sent,3);
 data.set('hosts/ops-vps.json',twoProblems);fail=true;await assert.rejects(sweep(env,now+7));
 fail=false;await sweep(env,now+8);assert.equal(sent,4);await sweep(env,now+9);assert.equal(sent,4);
+data.set('hosts/ops-vps.json',clean);await sweep(env,now+10);assert.equal(sent,5);
+// Only a dark check repeats on its own; host findings repeat in the host digest.
+assert.equal(issueKind('h: publisher missing for more than 20 minutes'),'dark');
+assert.equal(issueKind('h: images scan failed or stalled'),'dark');
+assert.equal(issueKind('h: process needs attention (2 finding(s))'),'alert');
+assert.equal(issueKind('h: backups needs attention (1 finding(s))'),'alert');
+assert.equal(issueKind('h: images check incomplete'),'digest');
+assert.equal(issueKind('h: file integrity reported changes or failed; inspect its local status'),'digest');
+assert.equal(issueKind('h: alert mail or the daily digest failed; inspect its local status'),'dark');
+{
+ // Incomplete coverage and AIDE changes wait for one daily mail. Delivery retries.
+ const quiet=structuredClone(clean);quiet.checks.images.complete=false;quiet.checks.files.ok=false;
+ const at=hour=>Date.UTC(2026,9,23,hour,0,0);
+ const store=new Map();const put=(host,row,time)=>{store.set(`hosts/${host}.json`,{...row,receivedAt:new Date(time).toISOString(),checks:Object.fromEntries(Object.entries(row.checks).map(([k,v])=>[k,{...v,checkedAt:new Date(time).toISOString()}]))});};
+ let mails=[],broken=false;
+ const local={STATE:{get:async k=>store.has(k)?{json:async()=>structuredClone(store.get(k))}:null,put:async(k,v)=>store.set(k,JSON.parse(v))},EMAIL:{send:async m=>{if(broken)throw Error('delivery failed');mails.push(m);return{messageId:'m'};}},MAIL_FROM:'security@example.com',MAIL_TO:'owner@example.com'};
+ const tick=async time=>{put('app-vps',clean,time);put('ops-vps',quiet,time);return sweep(local,time);};
+ await tick(at(4));await tick(at(5));assert.equal(mails.length,0);
+ broken=true;await assert.rejects(tick(at(DIGEST_UTC_HOUR)));broken=false;
+ await tick(at(DIGEST_UTC_HOUR)+60000);assert.equal(mails.length,1);
+ assert.match(mails[0].subject,/^\[Hatchkit\] VPS monitor: 1 needs you, 1 not checked$/);
+ assert.match(mails[0].text,/Not checked\n-+\n1\. ops-vps: images check incomplete/);
+ assert.match(mails[0].html,/cid:hatchkit-icon/);
+ await tick(at(DIGEST_UTC_HOUR)+120000);assert.equal(mails.length,1);
+ store.delete('hosts/ops-vps.json');put('app-vps',clean,at(23));await sweep(local,at(23));assert.equal(mails.length,2);
+ assert.match(mails[1].text,/Needs you[\s\S]*publisher missing/);
+ assert.doesNotMatch(mails[1].subject,/ATTENTION|URGENT/);
+}
+{
+ // The raw message: real alternatives, the icon as a related part, fixed identity headers.
+ const {rawMessage,renderMail}=await import('./src/templates/security-controller/mail-core.mjs');
+ const raw=rawMessage({from:'security@example.com',to:'owner@example.com',subject:'[Hatchkit] VPS monitor: 1 needs you',...renderMail({title:'VPS monitor',sections:{needs:[{what:'Größe',command:'x'}]}}),id:'fixed',boundary:'b'});
+ assert.match(raw,/^From: Hatchkit Alerts <security@example\.com>\r\n/);
+ assert.match(raw,/\r\nMessage-ID: <fixed@example\.com>\r\n/);
+ assert.match(raw,/\r\nAuto-Submitted: auto-generated\r\n/);
+ assert.match(raw,/Content-Type: multipart\/alternative; boundary="alt-b"/);
+ assert.ok(raw.indexOf('text/plain')<raw.indexOf('multipart/related')&&raw.indexOf('multipart/related')<raw.indexOf('image/png'));
+ assert.throws(()=>rawMessage({from:'a@b',to:'c',subject:'x\r\nBcc: y',text:'t',html:'h'}),/invalid mail header/);
+}
 console.log('External freshness, metadata boundary, quiet healthy runs and delivery retry passed.');
 const {default:api}=await import('./src/templates/security-controller/worker-core.mjs');
 const liveEnv={...env,DEDICATED_PING_KEY:'a'.repeat(43),SHARED_PING_KEY:'b'.repeat(43),READER_KEY:'c'.repeat(43)};

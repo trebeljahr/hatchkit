@@ -1,5 +1,5 @@
 [Unit]
-Description=Check Hatchkit backup health hourly
+Description=Check Hatchkit backup health and the daily digest hourly
 
 [Timer]
 OnCalendar=hourly

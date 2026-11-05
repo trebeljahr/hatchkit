@@ -19,6 +19,8 @@ else
   install -m 600 config.json /etc/hatchkit-backups/config.json
 fi
 install -m 700 alerts.py /opt/hatchkit-backups/alerts.py
+install -m 700 hatchkit_mail.py /opt/hatchkit-backups/hatchkit_mail.py
+install -m 700 ops_digest.py /opt/hatchkit-backups/ops_digest.py
 install -m 700 runner.py /opt/hatchkit-backups/runner.py
 install -m 700 register.py /opt/hatchkit-backups/register.py
 install -m 700 recovery.py /opt/hatchkit-backups/recovery.py

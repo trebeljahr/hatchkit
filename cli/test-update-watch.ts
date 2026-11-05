@@ -38,6 +38,7 @@ for (const file of [
   "test-database-guard.py",
   "test-database-egress.py",
   "test-file-integrity.py",
+  "test-ops-digest.py",
   "src/templates/docker-discovery/test-metadata-guard.py",
 ]) {
   const python = spawnSync("python3", [file], { stdio: "inherit" });

@@ -26,6 +26,8 @@ from unittest.mock import patch
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE / 'src/templates/update-watch'))
+sys.path.insert(0, str(HERE / 'src/templates/backups'))
+from hatchkit_mail import text_of
 uw = __import__('update-watch')
 
 SERVICES = json.loads((HERE / 'src/templates/update-watch/update-watch-services.json').read_text())
@@ -63,8 +65,8 @@ def flagged(key, version):
 
 class FailureRouting(unittest.TestCase):
     def test_failure_handlers_name_the_actual_producer_without_claiming_zero_checks(self):
-        for unit, expected in [(uw.SERVICE, 'Update watch did not finish'),
-                               ('hatchkit-image-vulnerabilities.service', 'Final image scan did not finish')]:
+        for unit, expected in [(uw.SERVICE, 'update watch did not finish'),
+                               ('hatchkit-image-vulnerabilities.service', 'final image scan did not finish')]:
             with self.subTest(unit=unit), tempfile.TemporaryDirectory() as directory:
                 sent = []
                 config = {'alerts': {'enabled': True, 'to': 'fixture@example.test',
@@ -80,7 +82,8 @@ class FailureRouting(unittest.TestCase):
                     uw.main({'services': SERVICES, 'cloudflare': CLOUDFLARE})
                 self.assertEqual(len(sent), 1)
                 subject, body = sent[0]
-                self.assertEqual(subject, '[Hatchkit] ' + expected + ' — fixture-host')
+                self.assertEqual(subject, '[Hatchkit] fixture-host: ' + expected)
+                body = text_of(body)
                 self.assertIn('journalctl -u ' + unit, body)
                 self.assertNotIn('Nothing was checked', body)
                 if unit != uw.SERVICE:
@@ -538,148 +541,164 @@ class Check(unittest.TestCase):
         return uw.check(FakeDocker(host, execs), SERVICES, uw.Feeds(feeds, get=get), self.work, self.config,
                         self.send, NOW, str(self.source))
 
-    def test_cloudflare_change_is_mailed(self):
+    def urgent(self, **extra):
+        return {'kind': 'image-package', 'service': 'image', 'id': 'CVE-2026-1234', 'name': 'pkg', 'version': '1',
+                'fixed': '1.1', 'severity': 'high', 'containers': ['app'], 'knownExploited': True,
+                'summary': 'scanner match', **extra}
+
+    def check_rows(self, rows, when, skipped=(), send=None):
+        with patch.object(uw, 'scan', side_effect=lambda *a, **k: {'services': [], 'findings': [dict(r) for r in rows], 'skipped': list(skipped)}):
+            return uw.check(None, [], None, self.work, self.config, send or self.send, when)[0]
+
+    def test_cloudflare_change_waits_for_the_digest_and_stays_in_the_ledger(self):
         feeds = dict(FEEDS)
         feeds[uw.CLOUDFLARE_IPS] = cloudflare_answer('1' * 32, add=('198.51.100.0/22',))
         state, _ = uw.check(FakeDocker(NEW_HOST), SERVICES, uw.Feeds(feeds, get=offline), self.work, self.config,
                             self.send, NOW, str(self.source), CLOUDFLARE, DEDICATED_CHAIN.get)
-        self.assertEqual(state['mailed'], 'findings')
-        body = self.sent[-1][2]
-        self.assertIn('Cloudflare changed its IP ranges (etag ' + '1' * 32, body)
-        self.assertIn('Chain HATCHKIT-CF on this host does not match', body)
-        state, _ = uw.check(FakeDocker(NEW_HOST), SERVICES, uw.Feeds(FEEDS, get=offline), self.work, self.config,
-                            self.send, NOW, str(self.source), CLOUDFLARE, DEDICATED_CHAIN.get)
         self.assertIsNone(state['mailed'])
+        self.assertEqual(self.sent, [])
+        summaries = ' '.join(f['summary'] for f in state['findings'])
+        self.assertIn('Cloudflare changed its IP ranges (etag ' + '1' * 32, summaries)
+        self.assertIn('Chain HATCHKIT-CF on this host does not match', summaries)
 
-    def test_changed_findings_mail_and_green_runs_stay_silent(self):
+    def test_direct_findings_are_recorded_without_immediate_mail_and_green_clears(self):
         state, error = self.run_check(OLD_HOST, OLD_EXECS)
         self.assertIsNone(error)
-        self.assertEqual(state['mailed'], 'findings')
-        settings, subject, body = self.sent[-1]
-        self.assertIn('Update watch:', subject)
-        self.assertEqual(settings['from'], 'Hatchkit Update Watch <backup@example.com>')
-        self.assertIn('GHSA-mhcv-h7gf-57cf critical, fixed in 3.2.1', body)
-        self.assertNotIn(SECRET, body)
+        self.assertIsNone(state['mailed'])
+        self.assertEqual(self.sent, [])
         stored = json.loads((self.work / uw.STATUS_NAME).read_text())
         self.assertFalse(stored['ok'])
-        self.run_check(OLD_HOST, OLD_EXECS)
-        self.assertEqual(len(self.sent), 1)
+        self.assertIn('GHSA-mhcv-h7gf-57cf critical, fixed in 3.2.1', json.dumps(stored['findings']))
+        self.assertNotIn(SECRET, json.dumps(stored))
         state, _ = self.run_check(NEW_HOST)
         self.assertIsNone(state['mailed'])
         self.assertTrue(state['ok'])
-        state, _ = self.run_check(NEW_HOST)
-        self.assertIsNone(state['mailed'])
-        self.assertEqual(len(self.sent), 1)
 
-    def test_incomplete_run_mails_what_it_could_not_check(self):
+    def test_incomplete_run_records_what_it_could_not_check_for_the_digest(self):
         def unreachable(url):
             raise uw.FeedError('could not read ' + url.split('?')[0])
         state, _ = self.run_check(NEW_HOST[1:2], feeds={}, get=unreachable)
         self.assertFalse(state['ok'])
-        self.assertEqual(state['mailed'], 'incomplete')
-        subject, body = self.sent[-1][1:]
-        self.assertIn('could not check everything', subject)
-        self.assertIn('Not checked this run:', body)
-        self.assertIn('Traefik: could not read https://api.github.com/repos/traefik/traefik/', body)
+        self.assertIsNone(state['mailed'])
+        self.assertEqual(self.sent, [])
+        self.assertIn('Traefik: could not read https://api.github.com/repos/traefik/traefik/', json.dumps(state['skipped']))
 
-    def test_recurrence_and_mail_failure_retry(self):
-        self.run_check(OLD_HOST, OLD_EXECS)
-        self.run_check(NEW_HOST)
-        self.run_check(OLD_HOST, OLD_EXECS)
+    def test_new_known_exploited_finding_mails_once_and_recurrence_and_failure_retry(self):
+        rows = [self.urgent()]
+        first = self.check_rows(rows, NOW)
+        self.assertEqual(first['mailed'], 'findings')
+        subject, body = self.sent[-1][1:]
+        self.assertEqual(subject, '[Hatchkit] ' + uw.socket.gethostname() + ': new urgent finding')
+        text = text_of(body)
+        self.assertIn('Known exploited', text)
+        self.assertIn('Deadline: ', text)
+        self.assertIn('Fix reported: 1.1', text)
+        self.assertNotIn('KNOWN EXPLOITED', text)
+        self.assertNotIn('OVERDUE', text)
+        # Unchanged, overdue and changed repeats belong to the digest.
+        self.check_rows(rows, NOW + dt.timedelta(hours=1))
+        self.assertTrue(self.check_rows(rows, NOW + dt.timedelta(hours=25))['findings'][0]['overdue'])
+        self.check_rows([self.urgent(fixed='1.2')], NOW + dt.timedelta(hours=26))
+        self.assertEqual(len(self.sent), 1)
+        self.check_rows([], NOW + dt.timedelta(hours=27))
+        self.check_rows(rows, NOW + dt.timedelta(hours=28))
         self.assertEqual(len(self.sent), 2)
-        self.run_check(NEW_HOST)
+        self.check_rows([], NOW + dt.timedelta(hours=29))
         def refuse(*args):
             raise OSError('private SMTP details')
-        uw.check(FakeDocker(OLD_HOST, OLD_EXECS), SERVICES, uw.Feeds(FEEDS, get=offline), self.work,
-                 self.config, refuse, NOW, str(self.source))
-        self.run_check(OLD_HOST, OLD_EXECS)
+        failed = self.check_rows(rows, NOW + dt.timedelta(hours=30), send=refuse)
+        self.assertEqual(failed['mailError'], 'OSError')
+        self.assertNotIn('private SMTP', json.dumps(failed))
+        self.check_rows(rows, NOW + dt.timedelta(hours=31))
         self.assertEqual(len(self.sent), 3)
 
-    def test_failed_scan_mails_the_safe_reason_only(self):
+    def test_only_critical_explicitly_affected_internet_exposure_bypasses_the_digest(self):
+        row = self.urgent(knownExploited=False, applicability='affected', exposure='internet')
+        self.check_rows([dict(row, severity='high')], NOW)
+        self.check_rows([dict(row, severity='critical', applicability=None)], NOW + dt.timedelta(hours=1))
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.check_rows([dict(row, severity='critical')], NOW + dt.timedelta(hours=2))['mailed'], 'findings')
+        self.assertIn('Explicitly affected internet exposure', text_of(self.sent[-1][2]))
+
+    def test_exploitation_appearing_on_an_old_finding_is_new_and_keeps_its_clock(self):
+        row = self.urgent(knownExploited=False, severity='high')
+        first = self.check_rows([row], NOW)
+        self.assertEqual(self.sent, [])
+        later = self.check_rows([dict(row, knownExploited=True)], NOW + dt.timedelta(hours=2))
+        self.assertEqual(later['mailed'], 'findings')
+        self.assertEqual(later['findings'][0]['firstSeenAt'], first['findings'][0]['firstSeenAt'])
+
+    def test_failed_scan_mails_once_with_the_safe_reason_only(self):
         def broken(args, timeout=60):
             raise RuntimeError('docker said ' + SECRET)
-        state, _ = uw.check(broken, SERVICES, uw.Feeds(FEEDS, get=offline), self.work, self.config, self.send, NOW,
-                            str(self.source))
-        self.assertEqual(state['error'], 'RuntimeError')
-        self.assertNotIn(SECRET, self.sent[-1][2])
+        check = lambda: uw.check(broken, SERVICES, uw.Feeds(FEEDS, get=offline), self.work, self.config, self.send, NOW,
+                                 str(self.source))[0]
+        state = check()
+        self.assertEqual((state['error'], state['mailed']), ('RuntimeError', 'error'))
+        self.assertNotIn(SECRET, text_of(self.sent[-1][2]))
+        self.assertEqual(self.sent[-1][1], '[Hatchkit] ' + uw.socket.gethostname() + ': update watch failed')
+        check()
+        self.assertEqual(len(self.sent), 1)
+
+    def test_scan_crash_does_not_reannounce_an_acknowledged_urgent_finding(self):
+        rows = [self.urgent()]
+        self.check_rows(rows, NOW)
+        with patch.object(uw, 'scan', side_effect=RuntimeError('crash')):
+            uw.check(None, [], None, self.work, self.config, self.send, NOW + dt.timedelta(hours=1))
+        self.check_rows(rows, NOW + dt.timedelta(hours=2))
+        self.assertEqual(len(self.sent), 2)  # the urgent mail and the crash mail
 
     def test_mail_failure_is_recorded_without_its_message(self):
         def refuse(settings, subject, body):
             raise OSError('535 auth failed for ' + SECRET)
-        state, error = uw.check(FakeDocker(OLD_HOST, OLD_EXECS), SERVICES, uw.Feeds(FEEDS, get=offline), self.work,
-                                self.config, refuse, NOW, str(self.source))
+        state = self.check_rows([self.urgent()], NOW, send=refuse)
         self.assertEqual(state['mailError'], 'OSError')
-        self.assertIsNotNone(error)
+        self.assertNotIn(SECRET, json.dumps(state))
 
-    def test_overdue_finding_alerts_once_after_its_deadline(self):
-        def report():
-            return {'services': [], 'findings': [{'kind': 'advisory', 'service': 'host-docker',
-                    'id': 'GHSA-test', 'severity': 'critical', 'summary': 'A real test finding'}], 'skipped': []}
-        def check(when):
-            with patch.object(uw, 'scan', side_effect=lambda *a, **kw: report()):
-                return uw.check(None, [], None, self.work, self.config, self.send, when)[0]
-        self.assertFalse(check(NOW)['findings'][0]['overdue'])
-        check(NOW + dt.timedelta(hours=1))
-        self.assertEqual(len(self.sent), 1)
-        self.assertTrue(check(NOW + dt.timedelta(hours=24))['findings'][0]['overdue'])
-        self.assertEqual(len(self.sent), 2)
-        check(NOW + dt.timedelta(hours=25))
-        self.assertEqual(len(self.sent), 2)
+    def test_old_state_migrates_without_resending_an_acknowledged_urgent_finding(self):
+        row = self.urgent()
+        previous = {'checkedAt': NOW.isoformat(), 'findings': [row], 'skipped': [], 'error': None,
+                    'notificationIdentityVersion': 3, 'notifiedFingerprint': 'accepted',
+                    'lastWeeklyReviewKey': '2026-W43', 'lastWeeklyReviewAt': NOW.isoformat()}
+        (self.work / uw.STATUS_NAME).write_text(json.dumps(previous))
+        current = self.check_rows([row], NOW + dt.timedelta(hours=1))
+        self.assertIsNone(current['mailed'])
+        self.assertEqual(self.sent, [])
+        self.assertEqual(current['lastWeeklyReviewKey'], '2026-W43')
+        (self.work / uw.STATUS_NAME).write_text(json.dumps({**previous, 'mailError': 'OSError'}))
+        self.assertEqual(self.check_rows([row], NOW + dt.timedelta(hours=2))['mailed'], 'findings')
+
+    def test_overdue_clock_keeps_running_without_a_repeat_mail(self):
+        rows = [{'kind': 'advisory', 'service': 'host-docker', 'id': 'GHSA-test', 'severity': 'critical', 'summary': 'A real test finding'}]
+        self.assertFalse(self.check_rows(rows, NOW)['findings'][0]['overdue'])
+        self.assertTrue(self.check_rows(rows, NOW + dt.timedelta(hours=24))['findings'][0]['overdue'])
+        self.assertEqual(self.sent, [])
 
     def test_large_ledger_and_image_rebuild_preserve_all_deadlines(self):
         rows = [{'kind':'image-package','service':'sha256:old','id':'CVE-'+str(n),
                  'name':'pkg','version':'1.0','containers':['app-20261023T010000'],
                  'severity':'critical','summary':'fixed available'} for n in range(250)]
-        def check(when):
-            with patch.object(uw,'scan',side_effect=lambda *a,**kw:{'services':[], 'findings':[dict(r)for r in rows], 'skipped':[]}):
-                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
-        first=check(NOW)
+        first = self.check_rows(rows, NOW)
         self.assertEqual(len(first['findings']),250)
         self.assertEqual(len(first['findingFirstSeen']),250)
-        self.assertIn('250 distinct scanner advisories',self.sent[-1][2])
-        self.assertIn('Full finding ledger:',self.sent[-1][2])
         for r in rows:
             r['service']='sha256:new';r['containers']=['app-20261024T010000']
-        rebuilt=check(NOW+dt.timedelta(hours=24))
+        rebuilt = self.check_rows(rows, NOW+dt.timedelta(hours=24))
+        self.assertEqual(len(rebuilt['findings']),250)
         self.assertTrue(all(r['overdue']for r in rebuilt['findings']))
         self.assertEqual(first['findingFirstSeen'],rebuilt['findingFirstSeen'])
-        sent=len(self.sent);check(NOW+dt.timedelta(hours=25));self.assertEqual(len(self.sent),sent)
-        check(NOW+dt.timedelta(hours=48));self.assertEqual(len(self.sent),sent)
-        check(NOW+dt.timedelta(days=7));self.assertEqual(len(self.sent),sent+1)
+        self.assertEqual(self.sent, [])
 
-    def test_weekly_unreviewed_digest_stays_quiet_on_daily_overdue_and_new_matches(self):
-        rows=[{'kind':'image-package','service':'image','id':'CVE-2026-test','name':'zlib','version':'1',
-               'fixed':'2','severity':'critical','containers':['opaque-id'],
-               'containerDisplayNames':['example-site'],'summary':'scanner match'}]
-        def check(when,skipped=()):
-            with patch.object(uw,'scan',side_effect=lambda *a,**k:{'services':[],'findings':[dict(r) for r in rows],'skipped':list(skipped)}):
-                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
-        first=check(NOW)
-        self.assertEqual(first['mailed'],'weekly-review')
-        self.assertIn('Weekly package review',self.sent[-1][1])
-        self.assertIn('example-site: zlib 1 → reported fix floors 2',self.sent[-1][2])
-        self.assertNotIn('opaque-id',self.sent[-1][2]);self.assertNotIn('OVERDUE',self.sent[-1][2])
-        rows.append({**rows[0],'id':'CVE-2026-another'})
-        later=check(NOW+dt.timedelta(days=1))
-        self.assertTrue(later['findings'][0]['overdue']);self.assertEqual(len(self.sent),1)
-        check(NOW+dt.timedelta(days=6));self.assertEqual(len(self.sent),1)
-        check(NOW+dt.timedelta(days=7));self.assertEqual(len(self.sent),2)
-        check(NOW+dt.timedelta(days=7,hours=4));self.assertEqual(len(self.sent),2)
-        rows.clear();check(NOW+dt.timedelta(days=14));self.assertEqual(len(self.sent),2)
-
-    def test_still_affected_package_upgrade_keeps_clock_and_weekly_gate(self):
+    def test_still_affected_package_upgrade_keeps_clock(self):
         row={'kind':'image-package','service':'old-image','id':'CVE-2026-test','name':'mariadb-server',
              'version':'10.11.14','severity':'high','containers':['kuma'],'summary':'scanner match'}
-        def check(when):
-            with patch.object(uw,'scan',side_effect=lambda *a,**k:{'services':[],'findings':[dict(row)],'skipped':[]}):
-                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
-        first=check(NOW);sent=len(self.sent)
+        first = self.check_rows([row], NOW)
         row.update(version='10.11.19',service='new-image')
-        later=check(NOW+dt.timedelta(hours=73))
+        later = self.check_rows([row], NOW+dt.timedelta(hours=73))
         self.assertEqual(later['findings'][0]['version'],'10.11.19')
         self.assertEqual(later['findings'][0]['firstSeenAt'],first['findings'][0]['firstSeenAt'])
         self.assertEqual(later['findings'][0]['dueAt'],first['findings'][0]['dueAt'])
-        self.assertTrue(later['findings'][0]['overdue']);self.assertEqual(len(self.sent),sent)
+        self.assertTrue(later['findings'][0]['overdue'])
 
     def test_version_identity_migration_merges_exploitation_and_earliest_deadline(self):
         base={'kind':'image-package','service':'image','id':'CVE-2026-test','name':'pkg',
@@ -697,47 +716,7 @@ class Check(unittest.TestCase):
             self.assertEqual(dt.datetime.fromisoformat(found['firstSeenAt']),NOW-dt.timedelta(hours=80))
             self.assertLessEqual(dt.datetime.fromisoformat(found['dueAt']),dt.datetime.fromisoformat(older['dueAt']))
 
-    def test_exploitation_and_lost_coverage_bypass_weekly_gate_without_repeating_raw_inventory(self):
-        row={'kind':'image-package','service':'image','id':'CVE-2026-test','name':'pkg','version':'1',
-             'severity':'critical','containers':['app'],'summary':'scanner match'}
-        def check(when,skipped=()):
-            with patch.object(uw,'scan',side_effect=lambda *a,**k:{'services':[],'findings':[dict(row)],'skipped':list(skipped)}):
-                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
-        check(NOW)
-        check(NOW+dt.timedelta(hours=1),['Image scan failed'])
-        self.assertEqual(len(self.sent),2);self.assertIn('could not check everything',self.sent[-1][1])
-        self.assertNotIn('scanner match',self.sent[-1][2])
-        row['knownExploited']=True
-        urgent=check(NOW+dt.timedelta(hours=2))
-        self.assertEqual(urgent['mailed'],'findings');self.assertEqual(len(self.sent),3)
-        self.assertIn('KNOWN EXPLOITED',self.sent[-1][2])
-        check(NOW+dt.timedelta(hours=3));self.assertEqual(len(self.sent),3)
-
-    def test_failed_weekly_delivery_retries_without_advancing_week(self):
-        row={'kind':'image-package','service':'image','id':'CVE-test','name':'pkg','version':'1','severity':'high','summary':'test'}
-        with patch.object(uw,'scan',side_effect=lambda *a,**k:{'services':[],'findings':[dict(row)],'skipped':[]}):
-            failed,error=uw.check(None,[],None,self.work,self.config,lambda *a:(_ for _ in ()).throw(OSError(SECRET)),NOW)
-            self.assertIsNotNone(error);self.assertIsNone(failed['lastWeeklyReviewKey'])
-            self.assertNotIn(SECRET,json.dumps(failed))
-            sent,error=uw.check(None,[],None,self.work,self.config,self.send,NOW+dt.timedelta(hours=1))
-            self.assertIsNone(error);self.assertEqual(sent['mailed'],'weekly-review')
-            self.assertIsNotNone(sent['lastWeeklyReviewKey'])
-
-    def test_old_acknowledged_daily_digest_migrates_without_an_extra_inventory_mail(self):
-        row={'kind':'image-package','service':'image','id':'CVE-test','name':'pkg','version':'1','severity':'critical','summary':'test'}
-        previous={'checkedAt':NOW.isoformat(),'findings':[row],'skipped':[],'error':None,
-                  'notificationIdentityVersion':2,'lastNotifiedAt':NOW.isoformat(),
-                  'notifiedFingerprint':uw.notification_fingerprint('findings',[row],None,[])}
-        (self.work/uw.STATUS_NAME).write_text(json.dumps(previous))
-        with patch.object(uw,'scan',return_value={'services':[],'findings':[dict(row)],'skipped':[]}):
-            current,_=uw.check(None,[],None,self.work,self.config,self.send,NOW+dt.timedelta(hours=25))
-        self.assertIsNone(current['mailed']);self.assertEqual(self.sent,[])
-        self.assertEqual(current['lastWeeklyReviewKey'],uw.weekly_review_key(NOW))
-
-    def test_week_boundary_uses_sydney_and_name_lookup_reads_only_a_display_label(self):
-        before=dt.datetime(2026,10,25,21,59,tzinfo=dt.timezone.utc) # Monday 08:59 AEDT
-        after=before+dt.timedelta(minutes=1)
-        self.assertIsNone(uw.weekly_review_key(before));self.assertEqual(uw.weekly_review_key(after),'2026-W44')
+    def test_name_lookup_reads_only_a_display_label(self):
         calls=[]
         def docker(argv):
             calls.append(argv)
@@ -745,64 +724,18 @@ class Check(unittest.TestCase):
         self.assertEqual(uw.workload_display_names(docker),{'opaque-id':'chess-server'})
         self.assertEqual(calls[1],['inspect','--format','{{json .Name}}\t{{json (index .Config.Labels "coolify.serviceName")}}','id'])
 
-    def test_migration_counts_the_actual_delivery_week_and_never_an_unacknowledged_report(self):
-        row={'kind':'image-package','service':'image','id':'CVE-test','name':'pkg','version':'1','severity':'critical','summary':'test'}
-        previous={'checkedAt':NOW.isoformat(),'lastNotifiedAt':NOW.isoformat(),'findings':[row],'skipped':[],'error':None,
-                  'notifiedFingerprint':uw.notification_fingerprint('findings',[row],None,[])}
-        self.assertEqual(uw.acknowledged_review_week(previous,NOW+dt.timedelta(days=7)),'2026-W43')
-        early=dt.datetime(2026,10,25,21,0,tzinfo=dt.timezone.utc) # Monday 08:00 AEDT
-        previous['lastNotifiedAt']=early.isoformat()
-        self.assertIsNone(uw.weekly_review_key(early))
-        self.assertEqual(uw.acknowledged_review_week(previous,early),'2026-W44')
-        previous['findings'].append({**row,'id':'CVE-unsent'})
-        self.assertIsNone(uw.acknowledged_review_week(previous,early))
-
-    def test_weekly_candidates_merge_advisories_for_the_same_installed_package(self):
-        row={'kind':'image-package','service':'image','id':'CVE-one','name':'grpc','version':'1.8.22',
-             'fixed':'1.9.16','containers':['app'],'containerDisplayNames':['uptime-kuma']}
-        lines=uw.weekly_package_review([row,{**row,'id':'CVE-two','fixed':'1.13.6'},
-                                        {**row,'id':'CVE-three','fixed':'1.9.16, 1.13.6'}])
-        entries=[line for line in lines if line.startswith('- ')]
-        self.assertEqual(entries,['- uptime-kuma: grpc 1.8.22 → reported fix floors 1.9.16 / 1.13.6'])
-
-    def test_package_mail_groups_replicas_aliases_fixes_and_urgent_workloads(self):
-        row={'kind':'image-package','service':'sha256:old','id':'GHSA-test',
-             'aliases':['CVE-2026-1234'],'name':'pkg','version':'1','fixed':'1.1',
-             'severity':'high','containers':['web','worker'],'summary':'package match'}
-        rows=[dict(row),{**row,'id':'CVE-2026-1234','aliases':[]},
-              {**row,'containers':['urgent'],'knownExploited':True,'overdue':True,'fixed':None}]
-        body=uw.mail_body({'findings':rows,'skipped':[]},None)
-        self.assertLess(body.index('- urgent:'),body.index('- web, worker:'))
-        self.assertIn('web, worker: 1 distinct advisories; 1 package fixes reported',body)
-        self.assertIn('KNOWN EXPLOITED; OVERDUE',body)
-        self.assertIn('applicability and application reachability still need review',body)
-
-    def test_subject_distinguishes_inventory_new_overdue_and_changed_findings(self):
-        rows=[{'kind':'advisory','service':'host-docker','id':'GHSA-test','severity':'critical','summary':'test'}]
-        def check(when):
-            with patch.object(uw,'scan',side_effect=lambda *a,**kw:{'services':[],'findings':[dict(r)for r in rows],'skipped':[]}):
-                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
-        self.assertEqual(check(NOW)['notificationCategory'],'Initial inventory')
-        self.assertEqual(check(NOW+dt.timedelta(hours=24))['notificationCategory'],'Overdue review')
-        rows[0]['fixed']='1.1'
-        self.assertEqual(check(NOW+dt.timedelta(hours=25))['notificationCategory'],'Advisory changes')
-        rows.append({**rows[0],'id':'GHSA-another'})
-        self.assertEqual(check(NOW+dt.timedelta(hours=26))['notificationCategory'],'New advisories')
-
-    def test_rebuild_and_replica_changes_are_quiet_but_a_new_fix_is_actionable(self):
+    def test_rebuild_and_replica_changes_keep_the_clock(self):
         rows=[{'kind':'image-package','service':'sha256:old','id':'CVE-2026-1234',
                'name':'pkg','version':'1','severity':'high','summary':'test','fixed':None,
                'containers':['app-old']}]
-        def check(when):
-            with patch.object(uw,'scan',side_effect=lambda *a,**kw:{'services':[], 'findings':[dict(r)for r in rows], 'skipped':[]}):
-                return uw.check(None,[],None,self.work,self.config,self.send,when)[0]
-        first=check(NOW)
+        first = self.check_rows(rows, NOW)
         rows[0]['service']='sha256:new';rows[0]['containers']=['app-renamed','another-replica']
         rows.append(dict(rows[0]))
-        check(NOW+dt.timedelta(hours=1));self.assertEqual(len(self.sent),1)
+        self.check_rows(rows, NOW+dt.timedelta(hours=1))
         for row in rows:row['fixed']='1.1'
-        check(NOW+dt.timedelta(hours=2));self.assertEqual(len(self.sent),1)
-        self.assertEqual(first['findings'][0]['dueAt'],check(NOW+dt.timedelta(hours=3))['findings'][0]['dueAt'])
+        later = self.check_rows(rows, NOW+dt.timedelta(hours=2))
+        self.assertEqual(first['findings'][0]['dueAt'],later['findings'][0]['dueAt'])
+        self.assertEqual(self.sent,[])
 
     def test_unavailable_exploitation_feed_cannot_extend_existing_urgent_deadline(self):
         row={'kind':'image-package','service':'image','id':'CVE-2026-1234','name':'pkg',
@@ -814,6 +747,7 @@ class Check(unittest.TestCase):
             next_run,_=uw.check(None,[],None,self.work,self.config,self.send,NOW+dt.timedelta(hours=1))
         self.assertTrue(next_run['findings'][0]['knownExploited'])
         self.assertEqual(first['findings'][0]['dueAt'],next_run['findings'][0]['dueAt'])
+        self.assertEqual(len(self.sent),1)
 
     def test_vendor_review_priority_has_24_hour_deadline_without_claiming_exploitation(self):
         row={'kind':'advisory','service':'host-tailscale','id':'TS-2026-014','name':'Tailscale',
@@ -824,17 +758,6 @@ class Check(unittest.TestCase):
         self.assertEqual(dt.datetime.fromisoformat(first['findings'][0]['dueAt']),NOW+dt.timedelta(hours=24))
         self.assertEqual(first['findings'][0]['dueAt'],again['findings'][0]['dueAt'])
         self.assertFalse(first['findings'][0].get('knownExploited'))
-
-    def test_notification_identity_upgrade_does_not_resend_acknowledged_ledger(self):
-        row={'kind':'image-package','service':'image','id':'CVE-2026-1234','name':'pkg',
-             'version':'1','severity':'high','summary':'test'}
-        with patch.object(uw,'scan',side_effect=lambda *a,**kw:{'services':[],'findings':[dict(row)],'skipped':[]}):
-            first,_=uw.check(None,[],None,self.work,self.config,self.send,NOW)
-            first.pop('notificationIdentityVersion')
-            first['notifiedFingerprint']=__import__('hashlib').sha256(json.dumps(['findings',first['findings'],None,[]],sort_keys=True).encode()).hexdigest()
-            (self.work/uw.STATUS_NAME).write_text(json.dumps(first))
-            uw.check(None,[],None,self.work,self.config,self.send,NOW+dt.timedelta(hours=1))
-        self.assertEqual(len(self.sent),1)
 
     def test_monitor_upgrade_migrates_legacy_deadline_without_resetting_it(self):
         old={'kind':'image-package','service':'sha256:old','id':'CVE-old','name':'pkg',
@@ -851,7 +774,8 @@ class Check(unittest.TestCase):
 
     def test_unconfigured_mail_is_a_safe_error(self):
         self.config = {}
-        state, error = self.run_check(OLD_HOST, OLD_EXECS)
+        with patch.object(uw, 'scan', return_value={'services': [], 'findings': [self.urgent()], 'skipped': []}):
+            state, error = uw.check(None, [], None, self.work, self.config, self.send, NOW)
         self.assertIn('backup alert mail is not configured', state['mailError'])
         self.assertIsNotNone(error)
 
@@ -1116,7 +1040,7 @@ class HostRuntimeCoverage(unittest.TestCase):
                'name':'pkg','version':'1','severity':'high','summary':'test'}]
         with tempfile.TemporaryDirectory()as root, patch.object(uw,'image_package_findings',return_value=(rows,[])):
             feed=uw.Feeds({uw.KEV_URL:{'dateReleased':NOW.isoformat(),'count':1,'vulnerabilities':[{'cveID':'CVE-2026-1234'}]}},get=offline)
-            result=uw.scan(FakeDocker([]),[],feed,source=root,image_packages=True,kev=True)
+            result=uw.scan(FakeDocker([]),[],feed,now=NOW,source=root,image_packages=True,kev=True)
             self.assertTrue(result['findings'][0]['knownExploited'])
             feed=uw.Feeds({},get=lambda url: (_ for _ in ()).throw(uw.FeedError('feed unavailable')))
             result=uw.scan(FakeDocker([]),[],feed,source=root,kev=True)

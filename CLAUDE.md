@@ -117,7 +117,7 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   names the image does not explain, new files in /tmp, /var/tmp, /dev/shm,
   >50 % of a core, outbound peers outside private ranges and Cloudflare).
   Also a `doctor` row. `install [--dry-run]` adds a daily timer that mails
-  findings through the backup-alert SMTP (production write; ask first).
+  new findings through the backup-alert SMTP (production write; ask first).
   Exceptions: `/etc/hatchkit-backups/host-integrity.json` on the host. See
   `cli/src/host/integrity.ts`.
 - `hatchkit host updates [--host <name>] [--json]`: read-only; the running
@@ -126,7 +126,12 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   advisories and latest release, plus Coolify's failing auto-update and
   Cloudflare IP ranges that drifted from `HATCHKIT-CF` / Hetzner firewalls /
   the pinned snapshot. One `doctor` row. `install --host <name> [--dry-run]` adds a weekly timer that
-  mails findings (production write; ask first). See `cli/src/host/updates.ts`.
+  records findings for the daily digest and mails only a crash or a new urgent
+  finding (production write; ask first). See `cli/src/host/updates.ts`.
+- Alert mail: `cli/src/templates/backups/ops_digest.py` builds one digest per host
+  inside the hourly backup-alerts service. `hatchkit_mail.py` and
+  `security-controller/mail-core.mjs` render the same bytes;
+  `cli/test-ops-digest.py` pins that, the gating and the size cap.
 - `hatchkit audit cloudflare [--json] [--hours <n>]`: read-only check of the
   Cloudflare account against what hatchkit created: tokens it has no record
   of (by id), audit-log entries by the operator token outside a recorded

@@ -1,5 +1,5 @@
 [Unit]
-Description=Email failed or overdue Hatchkit backup alerts
+Description=Mail new Hatchkit backup failures and the daily digest
 Wants=network-online.target
 After=network-online.target
 

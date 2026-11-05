@@ -6,7 +6,7 @@ const CONFIGURE = `import fcntl,json,os,pathlib,subprocess,sys
 os.umask(0o077)
 payload=json.load(sys.stdin)
 root=pathlib.Path('/etc/hatchkit-backups')
-if not pathlib.Path('/opt/hatchkit-backups/alerts.py').exists() or not pathlib.Path('/etc/systemd/system/hatchkit-backup-alerts.timer').exists():
+if not pathlib.Path('/opt/hatchkit-backups/alerts.py').exists() or not pathlib.Path('/opt/hatchkit-backups/hatchkit_mail.py').exists() or not pathlib.Path('/etc/systemd/system/hatchkit-backup-alerts.timer').exists():
  raise SystemExit('Install the current backup bundle first')
 with (root/'.register.lock').open('w') as lock:
  fcntl.flock(lock,fcntl.LOCK_EX)
@@ -17,7 +17,7 @@ with (root/'.register.lock').open('w') as lock:
  temp.write_text(json.dumps(payload['smtp'])+'\\n')
  temp.chmod(0o600)
  temp.replace(smtp_path)
- config['alerts']={'enabled':True,'to':payload['to'],'from':'Hatchkit Backups <'+payload['from']+'>','smtpFile':str(smtp_path)}
+ config['alerts']={'enabled':True,'to':payload['to'],'from':'Hatchkit Alerts <'+payload['from']+'>','smtpFile':str(smtp_path)}
  temp=root/'config.json.tmp'
  temp.write_text(json.dumps(config,indent=2)+'\\n')
  temp.chmod(0o600)

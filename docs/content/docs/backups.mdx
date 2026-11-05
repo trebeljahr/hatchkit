@@ -74,7 +74,7 @@ hatchkit backup alerts --host backup-host --to owner@example.com --from alerts@e
 hatchkit backup alert-test --host backup-host
 ```
 
-Apply the reviewed alerts command without `--dry-run` before sending the test. The sender must be verified in SES. Hourly checks report missing, failed, or stale captures after 36 hours and inactive timers. Unchanged issues repeat at most daily; recovery sends one confirmation.
+Apply the reviewed alerts command without `--dry-run` before sending the test. The sender must be verified in SES. Hourly checks report missing, failed, or stale captures after 36 hours and inactive timers. A new failed capture mails at once. Open issues then repeat in the host's [daily digest](./operations#alert-mail). When an issue clears, it leaves the digest.
 
 When a database moves, preview `backup update-source --project NAME --source SOURCE --container NEW --dry-run`. Only a running container with the same engine is accepted. Use `--remove` for a deliberately retired source. `backup deregister --project NAME --dry-run` removes a project from scheduling while retaining snapshots.
 

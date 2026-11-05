@@ -132,7 +132,7 @@ class Assessments(unittest.TestCase):
         rows, skipped = self.apply()
         started = (NOW-dt.timedelta(days=5)).isoformat();due = (NOW-dt.timedelta(days=2)).isoformat()
         previous = {'checkedAt': NOW.isoformat(), 'findings': [dict(ROW, firstSeenAt=started, dueAt=due)],
-                    'lastWeeklyReviewKey': uw.weekly_review_key(NOW), 'notificationIdentityVersion': 3}
+                    'lastWeeklyReviewKey': '2026-W43', 'notificationIdentityVersion': 3}
         (self.root/uw.STATUS_NAME).write_text(json.dumps(previous))
         sent = []
         with patch.object(uw, 'scan', return_value={'services': [], 'findings': rows, 'skipped': skipped}):
@@ -141,17 +141,22 @@ class Assessments(unittest.TestCase):
         self.assertEqual(state['assessedPackageMatches'], 1);self.assertEqual(state['unreviewedPackageMatches'], 0)
         self.assertEqual(state['findings'][0]['firstSeenAt'], started);self.assertEqual(state['findings'][0]['dueAt'], due)
 
-    def test_expired_review_loses_coverage_immediately_with_week_already_acknowledged(self):
+    def test_expired_review_loses_coverage_and_reaches_the_digest_as_not_checked(self):
         when = NOW+dt.timedelta(days=7)
         rows, skipped = self.apply(now=when)
-        previous = {'checkedAt': when.isoformat(), 'findings': [], 'notificationIdentityVersion': 3,
-                    'lastWeeklyReviewKey': uw.weekly_review_key(when)}
-        (self.root/uw.STATUS_NAME).write_text(json.dumps(previous))
+        (self.root/uw.STATUS_NAME).write_text(json.dumps({'checkedAt': when.isoformat(), 'findings': [], 'lastWeeklyReviewKey': '2026-W44'}))
         sent = []
-        with patch.object(uw, 'scan', return_value={'services': [], 'findings': rows, 'skipped': skipped}), patch.object(uw, 'mail_settings', return_value={}):
+        with patch.object(uw, 'scan', return_value={'services': [], 'findings': rows, 'skipped': skipped}):
             state, error = uw.check(None, [], None, self.root, {}, lambda *a: sent.append(a), when)
-        self.assertIsNone(error);self.assertEqual(len(sent), 1)
-        self.assertEqual(state['mailed'], 'incomplete');self.assertIn('expired', sent[0][2])
+        self.assertIsNone(error);self.assertEqual(sent, [])
+        self.assertIn('expired', json.dumps(state['skipped']))
+        # The digest treats a skip as active, so the weekly gate cannot hide it.
+        sys.path.insert(0, str(Path(__file__).parent/'src/templates/backups'))
+        import ops_digest
+        digests = []
+        ops_digest.run({'alerts': {'enabled': True}}, self.root, lambda *a: digests.append(a) or 'id', 'fixture-host', when, (), self.root/'no-units')
+        self.assertEqual(len(digests), 1)
+        self.assertTrue(any('expired' in item['what'] for item in digests[0][2]['sections']['unchecked']))
 
 
 

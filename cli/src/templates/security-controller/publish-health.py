@@ -26,6 +26,19 @@ def aggregate(name,projects,time_key):
  return {'checkedAt':min(times)if complete else None,'ok':complete and all(r.get('ok')is True for r in selected),
          'complete':complete,'findings':sum(r.get('ok')is not True for r in selected)}
 
+def digest_failing(cfg,now=None):
+ """Most mail now goes through the digest, so a dead digest is a coverage failure."""
+ module=pathlib.Path('/opt/hatchkit-backups/ops_digest.py')
+ if not (cfg.get('alerts')or{}).get('enabled')or not module.exists():return False
+ now=now or dt.datetime.now(dt.timezone.utc)
+ row=read('digest-status.json')
+ try:
+  if row.get('mailError'):return True
+  return (now-dt.datetime.fromisoformat(row['checkedAt'])).total_seconds()>3*3600
+ except (KeyError,TypeError,ValueError):
+  # A fresh install has no result until its first hourly run.
+  return now.timestamp()-module.stat().st_mtime>3*3600
+
 def image_metadata(images,progress,now=None):
  now=now or dt.datetime.now(dt.timezone.utc)
  row={'checkedAt':images.get('checkedAt'),'ok':images.get('complete')is True and not images.get('errors'),
@@ -117,8 +130,9 @@ def metadata(diagnostics=None):
  advisory=read('update-watch-status.json')
  # The host watcher/triage owns vulnerability notifications. This independent
  # monitor owns coverage and failed delivery, not a second copy of its ledger.
- checks['advisory']['ok']=checks['advisory']['complete'] and not advisory.get('mailError')
- checks['advisory']['findings']=int(bool(advisory.get('mailError')))
+ delivery_failed=bool(advisory.get('mailError'))or digest_failing(cfg)
+ checks['advisory']['ok']=checks['advisory']['complete'] and not delivery_failed
+ checks['advisory']['findings']=int(delivery_failed)
  if not {'host-docker','host-containerd','host-runc','host-tailscale'}<={r.get('service')for r in advisory.get('services',[])}:
   checks['advisory']['complete']=False
  images=read('image-vulnerability-status.json')

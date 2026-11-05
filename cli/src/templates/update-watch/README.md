@@ -1,3 +1,13 @@
+# Alert mail
+
+The watcher writes the full ledger on every run and mails only a crash or a new
+urgent finding: known exploited, or critical with explicitly affected internet
+exposure. An urgent finding announced once is announced again only if it clears and
+returns. Everything else reaches the owner through the host's daily digest
+(`backups/ops_digest.py`). Advisory changes and overdue repeats no longer send their
+own mail. This changes when mail is sent, not what is recorded: deadlines never reset,
+and skipped checks appear under Not checked and bypass the weekly review gate.
+
 # Reviewed image applicability
 
 Runtime trust checks probe actual `php -v` and `php-fpm -v`, separately from
@@ -81,7 +91,7 @@ invalidate the review. The current fleet's trusted host-admin UIDs are 0/1000;
 review that predicate before adapting it to another host.
 
 A current assessment leaves its raw matches visible and removes them from the
-unreviewed weekly maintenance queue. Expiry or a changed live boundary becomes
+unreviewed weekly maintenance queue (the digest's weekly review). Expiry or a changed live boundary becomes
 incomplete coverage and bypasses the weekly gate. Resolved findings do not leave
 stale-review alerts behind. Known exploitation and explicitly affected internet
 exposure always bypass assessments. Add a separately reviewed predicate for a

@@ -1,7 +1,11 @@
 // Only fixed health metadata crosses this boundary. No app logs, records or secrets.
+import {renderMail,summaryLine} from './mail-core.mjs';
 export const HOSTS = ['app-vps', 'ops-vps'];
 export const CHECKS = {process: 15*60, full: 28*3600, advisory: 8*3600,
   images: 36*3600, files: 28*3600, backups: 36*3600, restore: 9*86400};
+// 09:00 in Sydney during daylight time, near the hosts' own digests. Coverage
+// that is only incomplete waits for this hour; a dark check does not wait.
+export const DIGEST_UTC_HOUR = 22;
 const iso = ms => new Date(ms).toISOString();
 export function sanitize(body, now=Date.now()) {
   if (!body || typeof body !== 'object' || !body.checks || body.schema !== 1) throw new Error('invalid heartbeat');
@@ -47,9 +51,36 @@ export function issuesFor(host, heartbeat, now=Date.now()) {
     else if (!c.ok && !c.findings) issues.push(name === 'files'
       ? `${host}: file integrity reported changes or failed; inspect its local status`
       : `${host}: ${name} check unsuccessful; inspect its local status`);
+    else if (name === 'advisory' && !c.ok) issues.push(`${host}: alert mail or the daily digest failed; inspect its local status`);
     else if (!c.ok) issues.push(`${host}: ${name} needs attention (${c.findings} finding(s))`);
   }
   return issues;
+}
+/** dark: a check stopped reporting. alert: mail now, the host digest repeats it. digest: can wait a day. */
+export function issueKind(issue) {
+  if (/ incomplete$|file integrity reported changes|: files needs attention/.test(issue)) return 'digest';
+  if (/publisher missing|missing or overdue|failed or stalled|unsuccessful|daily digest failed/.test(issue)) return 'dark';
+  return 'alert';
+}
+const MONITOR_FOOTER='The monitor runs outside the VPSs and receives only timestamps and counts. No application records or logs are included.';
+function issueCommand(issue) {
+  const host=issue.split(':')[0];
+  if(/publisher missing/.test(issue))return `tailscale ssh ${host} systemctl status hatchkit-health-publisher.timer`;
+  if(/backups|restore/.test(issue))return `hatchkit backup status --host ${host} --json`;
+  if(/process|full|file integrity|files/.test(issue))return `hatchkit host integrity --host ${host} --json`;
+  if(/advisory|images|digest/.test(issue))return `hatchkit host updates --host ${host} --json`;
+  return 'hatchkit doctor --json';
+}
+export function monitorDocument(urgent,quiet,recovered) {
+  const item=issue=>({what:issue,command:issueCommand(issue)});
+  const needs=[...urgent,...quiet.filter(issue=>!issue.endsWith(' incomplete'))].map(item);
+  const unchecked=quiet.filter(issue=>issue.endsWith(' incomplete')).map(item);
+  if(recovered&&!needs.length&&!unchecked.length)return {title:'VPS checks recovered',intro:'Monitoring coverage recovered on both VPSs. Vulnerability findings remain in the separate patch ledger.',footer:[MONITOR_FOOTER]};
+  return {title:'VPS monitor',sections:{needs,unchecked},footer:[MONITOR_FOOTER,'Use Tailscale to investigate.']};
+}
+export function monitorSubject(urgent,quiet) {
+  if(!urgent.length&&!quiet.length)return '[Hatchkit] VPS monitor: checks recovered';
+  return `[Hatchkit] VPS monitor: ${summaryLine(monitorDocument(urgent,quiet,false))}`;
 }
 async function authorized(actual, expected) {
   if (!actual || !expected || actual.length > 200) return false;
@@ -75,21 +106,23 @@ export async function sweep(env, now=Date.now()) {
     issues.push(...issuesFor(host,heartbeat,now));pending.push(...pendingFor(host,heartbeat,now));
   }
   const previous=await jsonObject(env.STATE,'sweep.json') || {};
-  const added=issues.some(issue=>!(previous.issues || []).includes(issue));
-  const unacknowledged=issues.some(issue=>!(previous.notifiedIssues || []).includes(issue));
-  const reminder=issues.length && (!previous.lastMailedAt || now-Date.parse(previous.lastMailedAt)>=86400000);
-  const state={checkedAt:iso(now),ok:!issues.length&&!pending.length,issues,pending,lastMailedAt:previous.lastMailedAt || null,notifiedIssues:previous.notifiedIssues || []};
-  const shouldDeliver=!!((issues.length && (added || unacknowledged || previous.deliveryPending || reminder)) ||
-    (!issues.length && !pending.length && previous.notifiedIssues?.length));
+  const urgent=issues.filter(issue=>issueKind(issue)!=='digest'),quiet=issues.filter(issue=>issueKind(issue)==='digest');
+  const added=urgent.some(issue=>!(previous.issues || []).includes(issue));
+  const unacknowledged=urgent.some(issue=>!(previous.notifiedIssues || []).includes(issue));
+  const reminder=urgent.some(issue=>issueKind(issue)==='dark') && (!previous.lastMailedAt || now-Date.parse(previous.lastMailedAt)>=86400000);
+  const digestDue=quiet.length>0 && new Date(now).getUTCHours()===DIGEST_UTC_HOUR &&
+    (!previous.lastDigestAt || now-Date.parse(previous.lastDigestAt)>=20*3600000);
+  const recovered=!urgent.length && !pending.length && previous.notifiedIssues?.length>0;
+  const state={checkedAt:iso(now),ok:!issues.length&&!pending.length,issues,pending,lastMailedAt:previous.lastMailedAt || null,lastDigestAt:previous.lastDigestAt || null,notifiedIssues:previous.notifiedIssues || []};
+  const shouldDeliver=!!(added || unacknowledged || reminder || digestDue || recovered || (issues.length && previous.deliveryPending));
   state.deliveryPending=shouldDeliver;
   // Save the attempted sweep before delivery; a failed delivery must remain retryable.
   await env.STATE.put('sweep.json',JSON.stringify(state));
   if(shouldDeliver) {
-    const sent=await env.EMAIL.send({from:env.MAIL_FROM,to:env.MAIL_TO,
-      subject:issues.length ? '[Hatchkit] VPS security checks need attention' : '[Hatchkit] VPS checks recovered',
-      text:(issues.length ? issues.map(s=>'- '+s).join('\n') : 'Monitoring coverage recovered on both VPSs. Vulnerability findings remain in the separate patch ledger.')+
-        '\n\nThe monitor runs outside the VPSs. Use Tailscale to investigate. No application records or logs are included.'});
-    state.lastMailedAt=iso(now);state.notifiedIssues=issues;state.messageId=sent?.messageId || null;
+    const doc=monitorDocument(urgent,quiet,recovered);
+    const sent=await env.EMAIL.send({from:env.MAIL_FROM,to:env.MAIL_TO,subject:monitorSubject(urgent,quiet),...renderMail(doc)});
+    state.lastMailedAt=iso(now);state.notifiedIssues=urgent;state.messageId=sent?.messageId || null;
+    if(quiet.length)state.lastDigestAt=iso(now);
     state.deliveryPending=false;
   }
   await env.STATE.put('sweep.json',JSON.stringify(state));
@@ -109,7 +142,7 @@ export default {
     if(url.pathname==='/test' && request.method==='POST' && await authorized(bearer,env.READER_KEY)) {
       const last=await jsonObject(env.STATE,'mail-test.json');
       if(last && Date.now()-Date.parse(last.sentAt)<3600000)return new Response('Rate limited',{status:429});
-      await env.EMAIL.send({from:env.MAIL_FROM,to:env.MAIL_TO,subject:'[Hatchkit] Independent VPS alert test',text:'The independent VPS freshness monitor can send alerts. This test includes no application records or logs.'});
+      await env.EMAIL.send({from:env.MAIL_FROM,to:env.MAIL_TO,subject:'[Hatchkit] VPS monitor: test mail',...renderMail({title:'Test mail',host:'VPS monitor',intro:'The independent VPS monitor can send alerts. Nothing failed.',footer:[MONITOR_FOOTER]})});
       await env.STATE.put('mail-test.json',JSON.stringify({sentAt:iso(Date.now())}));
       return Response.json({sent:true});
     }

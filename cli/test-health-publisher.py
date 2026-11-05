@@ -3,6 +3,24 @@ from unittest.mock import patch
 p=pathlib.Path(__file__).parent/'src/templates/security-controller/publish-health.py'
 spec=importlib.util.spec_from_file_location('pub',p);pub=importlib.util.module_from_spec(spec);spec.loader.exec_module(pub)
 class PublisherBoundary(unittest.TestCase):
+ def test_a_dead_or_failing_digest_is_a_coverage_failure_without_exporting_detail(self):
+  now=pub.dt.datetime(2026,11,5,12,tzinfo=pub.dt.timezone.utc)
+  cfg={'alerts':{'enabled':True}}
+  fresh={'checkedAt':(now-pub.dt.timedelta(hours=1)).isoformat()}
+  old={'checkedAt':(now-pub.dt.timedelta(hours=4)).isoformat()}
+  with tempfile.TemporaryDirectory() as folder:
+   module=pathlib.Path(folder)/'ops_digest.py';module.write_text('fixture')
+   real=pathlib.Path
+   with patch.object(pub.pathlib,'Path',side_effect=lambda v:real(module) if v=='/opt/hatchkit-backups/ops_digest.py' else real(v)):
+    with patch.object(pub,'read',return_value=fresh):
+     self.assertFalse(pub.digest_failing(cfg,now))
+     self.assertFalse(pub.digest_failing({},now))
+    with patch.object(pub,'read',return_value=old):self.assertTrue(pub.digest_failing(cfg,now))
+    with patch.object(pub,'read',return_value={**fresh,'mailError':'OSError'}):self.assertTrue(pub.digest_failing(cfg,now))
+    # A fresh install gets its first hourly run; an old module without a result does not.
+    with patch.object(pub,'read',return_value={}):
+     self.assertFalse(pub.digest_failing(cfg,pub.dt.datetime.fromtimestamp(module.stat().st_mtime,pub.dt.timezone.utc)))
+     self.assertTrue(pub.digest_failing(cfg,pub.dt.datetime.fromtimestamp(module.stat().st_mtime+4*3600,pub.dt.timezone.utc)))
  def test_guard_operation_is_local_diagnostic_metadata_not_external_payload(self):
   rows={'host-integrity-quick-status.json':{'checkedAt':'2026-10-28T07:00:00Z','ok':True},
         'database-guard-status.json':{'checkedAt':'2026-10-28T07:00:00Z','ok':False,'complete':False,'error':'TimeoutExpired','failedOperation':'docker-inspect','argv':'PRIVATE_VALUE'}}

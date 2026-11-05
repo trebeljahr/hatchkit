@@ -18,6 +18,8 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ### Changed
 
+- Hatchkit alert mail is one branded system. Each host sends one daily digest, with sections for Needs you, Fixed automatically, Waiting on vendor and Not checked, plus a copy section for an LLM. A day with nothing open sends no mail. Only a new known-exploited finding, a failed backup, a host-integrity finding or new AIDE difference, a dark or crashed check, and a new critical finding with explicitly affected internet exposure mail at once. Ledgers, deadlines and coverage are unchanged. Reinstall the backup bundle before the update-watch and host-integrity scripts, and include `mail-core.mjs` when deploying the monitor Worker.
+
 - Host update watch runs every four hours and tracks host engines, container Node/certificate checks, CISA KEV, and final-image package findings. Critical/known-exploited deadlines use 24 hours; other high findings use 72 hours. First-seen deadlines survive rebuilds, and overdue findings can repeat daily.
 - Host update installation also enables daily final-image scans and requires a separately installed, verified Grype binary. AIDE, loaded kernel-audit checks, and independent-monitoring templates extend maintained host operations. Their entry points and deployment limits are documented.
 - New backup policies retain 30 verified generations; existing policies retain their configured count. Weekly isolated native restore drills report missing or stale results after nine days. Protected-recovery planning remains separate from backup copying and production recovery.

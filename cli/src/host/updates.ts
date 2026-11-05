@@ -24,8 +24,8 @@
  *    run would otherwise spend the host's 60 unauthenticated requests an
  *    hour). One doctor row covers every host.
  *  - `hatchkit host updates install --host <name>` puts it next to the
- *    backup runner with a four-hour timer that mails findings through the
- *    backup-alert SMTP; overdue findings receive daily reminders.
+ *    backup runner with a four-hour timer that records findings for the daily
+ *    digest and mails only a crash or a new urgent finding.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -668,7 +668,7 @@ if sorted(payload['files'])!=sorted(names):
  fail('unexpected installer files')
 if not pathlib.Path('/usr/local/bin/grype').is_file():
  fail('Install a pinned, signature-verified Grype release at /usr/local/bin/grype before enabling final-image checks')
-if not (opt/'alerts.py').exists():
+if not (opt/'alerts.py').exists() or not (opt/'hatchkit_mail.py').exists():
  fail('the backup runner is not installed; run hatchkit backup install first')
 try:
  config=json.loads(pathlib.Path('/etc/hatchkit-backups/config.json').read_text())
@@ -751,7 +751,7 @@ export async function installUpdateWatch(host: BackupHost, dryRun: boolean) {
     backupHost: host.name,
     ...result,
     schedule: "every 4 hours UTC (+ up to 15 min)",
-    mail: "through the backup-alert SMTP; new or changed abnormalities plus daily overdue reminders; healthy runs stay silent",
+    mail: "through the backup-alert SMTP; a crash or new urgent finding at once, the rest in one daily digest; days with nothing open stay silent",
     nextSteps: dryRun
       ? [`Install: hatchkit host updates install --host ${host.name}`]
       : [
@@ -799,9 +799,10 @@ on a finding. hatchkit doctor shows the same as one row.
 
 install puts the script next to the backup runner (/opt/hatchkit-backups) with
 a four-hour advisory timer plus a daily Grype final-image scan. Installation requires
-a verified Grype binary. Findings are mailed through the backup-alert
-SMTP (hatchkit backup alerts). New or changed findings trigger mail; overdue
-findings receive daily reminders. Healthy runs stay silent. Installation
+a verified Grype binary. Mail goes through the backup-alert SMTP (hatchkit
+backup alerts). A crash or a new urgent finding mails at once: known exploited,
+or critical with explicitly affected internet exposure. Everything else goes in
+the host's daily digest; days with nothing open stay silent. Installation
 refuses a host without the backup runner or its alert mail, and runs one
 read-only scan before it writes. --dry-run runs only that scan and prints what
 the first mail would list. uninstall removes both scripts and their timers.

@@ -42,16 +42,21 @@ def check():
     if issue:
         # Hash the private diff to detect changed incidents without sending file contents.
         fingerprint = finding_fingerprint(log)
-        last = previous.get('lastSentAt')
-        due = not last or now - dt.datetime.fromisoformat(last) >= dt.timedelta(hours=24)
+        # The same diff is not news: it stays in the daily digest until reviewed.
         state.update({k: previous[k] for k in ('lastSentAt', 'notifiedFingerprint') if k in previous})
-        if fingerprint != previous.get('notifiedFingerprint') or due:
+        if fingerprint != previous.get('notifiedFingerprint'):
             try:
                 sys.path.insert(0, '/opt/hatchkit-backups')
                 from alerts import send_email
                 config = json.loads(Path('/etc/hatchkit-backups/config.json').read_text())
-                state['messageId'] = send_email(config['alerts'], '[Hatchkit] File integrity needs attention — ' + socket.gethostname(),
-                    issue + '.\nHost access remains Tailscale-only.\nLog: ' + str(log) + '\n')
+                host = socket.gethostname()
+                state['messageId'] = send_email(config['alerts'], '[Hatchkit] ' + host + ': file changes to review', {
+                    'title': 'File changes to review', 'host': host,
+                    'sections': {'needs': [{'what': issue + '.',
+                                            'detail': 'Review each change. Hatchkit never accepts a new baseline itself.',
+                                            'command': 'sudo less ' + str(log)}]},
+                    'footer': ['The daily digest lists this until it clears. No further mail means it cleared.',
+                               'Server access remains Tailscale-only.']})
                 state.update(lastSentAt=state['checkedAt'], notifiedFingerprint=fingerprint)
             except Exception as error:
                 state['mailError'] = type(error).__name__
