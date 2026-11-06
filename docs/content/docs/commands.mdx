@@ -356,7 +356,7 @@ hatchkit add raptor-runner search-console        # verify domain + add Search Co
 | `email` | Cloudflare Email Routing rules | no env; DNS MX/SPF/DMARC + forwarding rules |
 | `search-console` | Google Search Console domain property | no env; DNS TXT verification |
 
-| `stripe` | Per-project Stripe keys + a webhook endpoint per mode | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` |
+| `stripe` | Per-project Stripe keys + a webhook endpoint per mode, in the project's own Stripe account (organization key + `stripe.accounts`, else the project's key) | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` |
 
 `stripe` and `signing` are standalone targets — run them by name; they are not part of `all`.
 
@@ -945,6 +945,8 @@ hatchkit destroy PROJECT
 ```
 
 `--recipe` prints rollback steps without executing them. Destroy reads the create/adopt run ledger and reverses recorded actions. Steps can delete local files, repositories, provider resources, or Terraform infrastructure. The command asks per step unless `--yes` is supplied. Review each step and its stored identity before proceeding.
+
+`create`, `adopt`, `add <project> stripe` and `stripe sync` record each Stripe webhook endpoint they create. Destroy deletes these endpoints by id, in the account that holds them, and removes their keychain entries. Stripe products and prices stay.
 
 Destroy has broader effects than `remove`. SES identity entries can refer to an identity reused during provisioning; review its ownership and skip that deletion when it must stay. A ledger is the undo record, not a substitute for data backups. Review [backup and recovery coverage](./backups) before deleting a stateful deployment.
 

@@ -63,6 +63,7 @@
     "test:lead-magnet": "node scripts/test.mjs test-lead-magnet.ts",
     "test:paid-unlock": "node scripts/test.mjs test-paid-unlock.ts",
     "test:stripe-sync": "node scripts/test.mjs test-stripe-sync.ts",
+    "test:stripe-webhook-account": "node scripts/test.mjs test-stripe-webhook-account.ts",
     "test:image-runtime": "node scripts/test.mjs test-image-runtime.ts",
     "test:traefik-drain": "node scripts/test.mjs test-traefik-drain.ts",
     "test:runtime-carry-volume": "node scripts/test.mjs test-runtime-carry-volume.ts",

@@ -143,6 +143,37 @@ export async function resolveSyncClient(
   );
 }
 
+/** Every key that may hold a webhook endpoint hatchkit made for this
+ *  project, in the order to try them when looking one up by id: the
+ *  project's own account (`resolveSyncClient`), then the master key from
+ *  `hatchkit config add stripe`. Before 2026-11-07 the starter webhook
+ *  was created with that master key, in the master's account, so
+ *  rename-domain and destroy still find those older endpoints. Never
+ *  prompts; an empty list means no key is stored. */
+export async function resolveWebhookClients(
+  project: string,
+  mode: StripeMode,
+  account: string | undefined,
+): Promise<Array<{ client: StripeClient; label: string }>> {
+  const out: Array<{ client: StripeClient; label: string }> = [];
+  try {
+    const { client, label } = await resolveSyncClient(project, mode, account);
+    out.push({ client, label });
+  } catch {
+    // No project key and no usable organization key: try the master.
+  }
+  const master = await getSecret(
+    mode === "test" ? SECRET_KEYS.stripeMasterTestSecretKey : SECRET_KEYS.stripeMasterLiveSecretKey,
+  );
+  if (master && !out.some(({ client }) => client.secretKey === master && !client.context)) {
+    out.push({
+      client: { secretKey: master, fetch: fetchOverride },
+      label: `the ${mode} master key`,
+    });
+  }
+  return out;
+}
+
 function printSteps(result: StripeSyncResult, dryRun: boolean): void {
   const colors = {
     create: chalk.green,
@@ -277,6 +308,29 @@ async function runSync(args: Args): Promise<void> {
       accounts: { ...manifest.stripe?.accounts, [mode]: account },
     };
     writeManifest(projectDir, manifest);
+  }
+
+  // Destroy deletes the endpoint. Recorded when hatchkit made it: created
+  // now, or kept with the id hatchkit stored when it created it (so a
+  // re-run also records an endpoint from before sync wrote the ledger).
+  if (!dryRun && result.webhook.id && result.webhook.url && result.webhook.secretKnown) {
+    const { appendLedgerStep } = await import("../utils/run-ledger.js");
+    try {
+      appendLedgerStep(manifest.name, {
+        kind: "stripeWebhook",
+        mode,
+        endpoint: "unlock",
+        endpointId: result.webhook.id,
+        url: result.webhook.url,
+        ...(usesAccount && account ? { account } : {}),
+      });
+    } catch (err) {
+      console.warn(
+        chalk.yellow(
+          `  ! ${(err as Error).message}. \`hatchkit destroy ${manifest.name}\` will not delete webhook ${result.webhook.id}.`,
+        ),
+      );
+    }
   }
 
   let secretFile = "";

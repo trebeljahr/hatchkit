@@ -1226,7 +1226,12 @@ export const stepStripeWebhook: StepFn = async (ctx) => {
   let changed = 0;
 
   for (const mode of ["test", "live"] as const) {
-    const res = await updateStripeProjectWebhookUrl(manifest.name, mode, url);
+    const res = await updateStripeProjectWebhookUrl(
+      manifest.name,
+      mode,
+      url,
+      manifest.stripe?.accounts?.[mode],
+    );
     if (res.result === "updated") {
       changed += 1;
       detail.push(`${mode}: ${res.endpointId} → ${url}`);

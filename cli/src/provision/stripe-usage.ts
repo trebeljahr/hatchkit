@@ -17,6 +17,8 @@ export const STRIPE_USAGE = `
                        A created webhook secret goes to the keychain and to
                        .dev.vars / .env.development.local (test) or
                        .env.production (live, server runtime). Live asks first.
+                       The webhook goes on the project's run ledger, so
+                       \`hatchkit destroy\` deletes it (products stay).
 
     ${chalk.cyan("org-key --mode test|live")}
                        Store a Stripe organization API key (restricted: Products,

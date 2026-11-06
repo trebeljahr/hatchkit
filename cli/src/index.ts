@@ -1374,11 +1374,21 @@ async function handleAdd(): Promise<void> {
     }
     const serverEnvDir = resolveServerEnvDir(projectDir);
     const { wireStripeForProject } = await import("./provision/stripe-wiring.js");
+    const { appendLedgerStep } = await import("./utils/run-ledger.js");
     const result = await wireStripeForProject({
       projectName: manifest.name,
       domain: manifest.domain,
       serverEnvDir,
       envLabelPrefix: relative(projectDir, serverEnvDir) || ".",
+      accounts: manifest.stripe?.accounts,
+      // `hatchkit destroy` deletes the endpoints this run creates.
+      onLedgerStep: (step) => {
+        try {
+          appendLedgerStep(manifest.name, step);
+        } catch (err) {
+          console.log(chalk.yellow(`  ! ${(err as Error).message}`));
+        }
+      },
     });
     persistDeferredSteps(
       projectDir,
@@ -3025,12 +3035,13 @@ async function handleCreate(): Promise<void> {
       }
 
       // Stripe: walk the user through pasting per-project keys (sk + pk
-      // for test + live), auto-mint a webhook endpoint per mode using
-      // the master keys, and persist:
+      // for test + live), create a webhook endpoint per mode in the
+      // project's own account (its key, or the organization key), and
+      // persist:
       //   · sandbox creds  → .env.development.local (plaintext, gitignored)
       //   · live creds     → .env.production  (dotenvx-encrypted)
-      // Webhook endpoint ids are tracked in keychain so destroy can
-      // reach them later. Skipped for static (no server runtime).
+      // Each created endpoint goes on the run ledger so destroy deletes
+      // it. Skipped for static (no server runtime).
       //
       // Optional throughout: skipping the key prompts (or a Stripe API
       // failure) writes CHANGE_ME placeholders + a recipe comment and
@@ -3048,10 +3059,8 @@ async function handleCreate(): Promise<void> {
           domain: config.domain,
           serverEnvDir: join(appDir, "packages/server"),
           envLabelPrefix: "packages/server",
+          onLedgerStep: (step) => ledger?.record(step),
         });
-        for (const account of stripeResult.webhookKeychainAccounts) {
-          ledger?.record({ kind: "keychain", account });
-        }
         if (stripeResult.configured) {
           configuredSteps.push("Stripe (payments)");
           resolvedStepKeys.push(STANDALONE_STEP_KEYS.stripe);
@@ -5637,6 +5646,9 @@ function printHelp(topic?: HelpTopic): void {
     - dotenvx private key in keychain          ${chalk.dim("keytar deletePassword")}
     - GlitchTip / Plausible / Listmonk + SES ${chalk.dim("DELETE")} per-vendor
     - Coolify app / project / database         ${chalk.dim("DELETE /api/v1/...")}
+    - Stripe webhook endpoints                 ${chalk.dim("DELETE /v1/webhook_endpoints/<id>")}
+                                                (also from add … stripe and stripe sync;
+                                                in the project's account; products stay)
 
     adopt-only (fine-grained, never wider than what adopt itself wrote):
     - .hatchkit.json + .env.keys               ${chalk.dim("rm")}

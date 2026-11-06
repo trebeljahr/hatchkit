@@ -124,6 +124,23 @@ export type LedgerStep =
   | { kind: "tfvars"; path: string }
   | { kind: "coolifyEnv"; path: string }
   | { kind: "keychain"; account: string }
+  /** A Stripe webhook endpoint hatchkit created: the starter's
+   *  `/api/stripe/webhook` (create, adopt, `hatchkit add <project>
+   *  stripe`) or the paid-unlock `/api/unlock/webhook` (`hatchkit stripe
+   *  sync`). `account` is the `acct_…` an organization key wrote to
+   *  (sent as `Stripe-Context`); absent when the project's own key
+   *  wrote. Undo deletes the endpoint by id in that account (404 is
+   *  "already gone"), then the keychain entries for its id and signing
+   *  secret while they still name this endpoint. Products and prices
+   *  are never removed. */
+  | {
+      kind: "stripeWebhook";
+      mode: "test" | "live";
+      endpoint: "starter" | "unlock";
+      endpointId: string;
+      url: string;
+      account?: string;
+    }
   | { kind: "terraformApplied"; stackDir: string; tfvarsPath: string }
   | { kind: "coolifyProject"; uuid: string }
   | { kind: "coolifyApp"; uuid: string }
@@ -430,6 +447,23 @@ export function rewriteLedgerStepPathBasenames(
   });
   if (rewritten > 0) writeFileSync(path, JSON.stringify(data, null, 2));
   return rewritten;
+}
+
+/** Record one step for a command that runs after create/adopt (e.g.
+ *  `hatchkit stripe sync`), so `hatchkit destroy` undoes it too. Starts
+ *  a ledger when the project has none; skips a step already recorded.
+ *  Throws instead of overwriting a ledger file it cannot read, which
+ *  would lose every other recorded step. */
+export function appendLedgerStep(name: string, step: LedgerStep): void {
+  const existing = RunLedger.load(name);
+  if (!existing && existsSync(ledgerPath(name))) {
+    throw new Error(`run ledger ${ledgerPath(name)} is unreadable; not recording ${step.kind}`);
+  }
+  const ledger = existing ?? RunLedger.start(name);
+  const same = JSON.stringify(step);
+  if (ledger.steps.some((s) => JSON.stringify(s) === same)) return;
+  ledger.record(step);
+  if (!existing) ledger.complete();
 }
 
 /** Read every persisted ledger file in the runs dir. Used by the

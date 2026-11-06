@@ -3067,11 +3067,13 @@ export async function ensureStripe(): Promise<StripeConfig> {
   console.log(chalk.yellow("\n  Stripe is not configured yet. Let's set it up."));
   console.log(
     chalk.dim(
-      "  Hatchkit needs ONE secret key per mode (test/sandbox + live) — used\n" +
-        "  ONLY to create webhook endpoints automatically when you scaffold a\n" +
-        "  project. These master keys are NEVER copied into a project's .env.\n" +
-        "  Per-project API keys are collected separately at `hatchkit create` /\n" +
-        "  `hatchkit adopt` time so each project's blast radius stays scoped.\n",
+      "  Hatchkit asks for ONE master key per mode (test/sandbox + live). A\n" +
+        "  master key turns on Stripe wiring for that mode, and lets rename-domain\n" +
+        "  and destroy reach webhook endpoints older hatchkit versions created\n" +
+        "  with it. It is NEVER copied into a project's .env. Per-project API keys\n" +
+        "  are collected at `hatchkit create` / `hatchkit adopt` time, and each\n" +
+        "  project's webhook is created in its own account with them (or with\n" +
+        "  the organization key: `hatchkit stripe org-key`).\n",
     ),
   );
   tokenHint(

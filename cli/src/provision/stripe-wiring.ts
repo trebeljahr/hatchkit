@@ -22,7 +22,7 @@
 
 import { join } from "node:path";
 import chalk from "chalk";
-import { SECRET_KEYS } from "../utils/secrets.js";
+import type { LedgerStep } from "../utils/run-ledger.js";
 import { type DeferredStep, classifyOptionalStepError, deferralForStripe } from "./deferrals.js";
 
 export interface WireStripeArgs {
@@ -34,6 +34,12 @@ export interface WireStripeArgs {
   /** Label prefix used in console output, e.g. `packages/server`.
    *  Defaults to the directory name. */
   envLabelPrefix?: string;
+  /** The manifest's `stripe.accounts`: with an organization key stored,
+   *  the webhook is created in that account via `Stripe-Context`. */
+  accounts?: { test?: string; live?: string };
+  /** Called the moment a webhook endpoint exists (see `ledgerSteps`), so
+   *  the caller's ledger holds it even if a later step throws. */
+  onLedgerStep?: (step: LedgerStep) => void;
 }
 
 export interface WireStripeResult {
@@ -42,15 +48,15 @@ export interface WireStripeResult {
   /** Present when no mode was configured — carries the follow-up
    *  command for the end-of-run summary and `.hatchkit.json`. */
   deferred?: DeferredStep;
-  /** Keychain accounts holding webhook endpoint ids created by this
-   *  run. The caller records them on its run ledger so `destroy` /
-   *  rollback can reach the endpoints later. */
-  webhookKeychainAccounts: string[];
+  /** `stripeWebhook` entries for the endpoints this run created. The
+   *  caller records them on its run ledger so `destroy` / rollback
+   *  deletes them in the account they were created in. */
+  ledgerSteps: LedgerStep[];
 }
 
 export async function wireStripeForProject(args: WireStripeArgs): Promise<WireStripeResult> {
   const labelPrefix = args.envLabelPrefix ?? args.serverEnvDir;
-  const webhookKeychainAccounts: string[] = [];
+  const ledgerSteps: LedgerStep[] = [];
 
   try {
     const { provisionStripeProject, renderStripeEnv, renderStripeSkipComment } = await import(
@@ -61,6 +67,13 @@ export async function wireStripeForProject(args: WireStripeArgs): Promise<WireSt
     const result = await provisionStripeProject({
       projectName: args.projectName,
       domain: args.domain,
+      accounts: args.accounts,
+      // Collected the moment each endpoint exists, so a failure in the
+      // other mode still hands the caller what to record.
+      onLedgerStep: (step) => {
+        ledgerSteps.push(step);
+        args.onLedgerStep?.(step);
+      },
     });
 
     const devEnvPath = devLocalEnvPath(args.serverEnvDir);
@@ -74,11 +87,6 @@ export async function wireStripeForProject(args: WireStripeArgs): Promise<WireSt
       }
       const pairs = parseEnvLines(renderStripeEnv(result.test));
       writeDevEnv(devEnvPath, pairs);
-      // Only record the webhook ledger entry when we actually touched
-      // Stripe's API — skipped runs leave nothing to undo.
-      if (result.test.kind === "configured") {
-        webhookKeychainAccounts.push(SECRET_KEYS.stripeProjectWebhookId(args.projectName, "test"));
-      }
       console.log(
         chalk.green(
           result.test.kind === "skipped"
@@ -93,9 +101,6 @@ export async function wireStripeForProject(args: WireStripeArgs): Promise<WireSt
       }
       const pairs = parseEnvLines(renderStripeEnv(result.live));
       writeProdEnv(prodEnvPath, pairs);
-      if (result.live.kind === "configured") {
-        webhookKeychainAccounts.push(SECRET_KEYS.stripeProjectWebhookId(args.projectName, "live"));
-      }
       console.log(
         chalk.green(
           result.live.kind === "skipped"
@@ -107,10 +112,10 @@ export async function wireStripeForProject(args: WireStripeArgs): Promise<WireSt
 
     const configured =
       result.test?.kind === "configured" || result.live?.kind === "configured" || false;
-    if (configured) return { configured: true, webhookKeychainAccounts };
+    if (configured) return { configured: true, ledgerSteps };
     return {
       configured: false,
-      webhookKeychainAccounts,
+      ledgerSteps,
       deferred: deferralForStripe({
         project: args.projectName,
         kind: "declined",
@@ -130,7 +135,7 @@ export async function wireStripeForProject(args: WireStripeArgs): Promise<WireSt
     );
     return {
       configured: false,
-      webhookKeychainAccounts,
+      ledgerSteps,
       deferred: deferralForStripe({
         project: args.projectName,
         kind: outcome.kind,

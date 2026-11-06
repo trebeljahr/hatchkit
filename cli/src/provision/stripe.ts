@@ -11,6 +11,15 @@
  * What hatchkit can auto-provision (one resource per mode):
  *   POST /v1/webhook_endpoints  → returns whsec_… signing secret
  *
+ * The endpoint is created in the project's own Stripe account, the one
+ * its events come from: with the organization key and `Stripe-Context:
+ * <acct_…>` when `.hatchkit.json` names the account (`stripe.accounts`),
+ * else with the project's own key pasted below. Same resolution as
+ * `hatchkit stripe sync` (`resolveSyncClient`). Before 2026-11-07 the
+ * master key created it, in the master's account, so a per-project
+ * sandbox never received its events; rename-domain and destroy still
+ * find those older endpoints through the master key.
+ *
  * What hatchkit MUST collect from the user (Stripe API doesn't allow
  * minting these programmatically — only the dashboard does):
  *   · per-project secret key (sk_test/sk_live or rk_test/rk_live)
@@ -33,8 +42,17 @@
 import { input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { confirmPastedSecret, ensureStripe } from "../config.js";
-import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { type StripeClient, StripeError, stripeRequest } from "../paid-unlock/core.js";
+import type { LedgerStep } from "../utils/run-ledger.js";
+import {
+  SECRET_KEYS,
+  type StripeWebhookEndpoint,
+  deleteSecret,
+  getSecret,
+  setSecret,
+} from "../utils/secrets.js";
 import { type Step, runSteps } from "../utils/step-runner.js";
+import { resolveSyncClient, resolveWebhookClients } from "./stripe-sync-cli.js";
 
 /** CHANGE_ME_<KEY> values the starter looks for to log a "Stripe is
  *  unconfigured" warning at boot. Kept in a single export so the
@@ -73,6 +91,13 @@ export interface StripeModeCredentials {
   webhookSecret: string;
   webhookEndpointId: string;
   webhookUrl: string;
+  /** True when this run created the endpoint; false when it reused the
+   *  one cached in the keychain. Only a created endpoint is recorded on
+   *  the run ledger by this run. */
+  webhookCreated: boolean;
+  /** The `acct_…` the organization key wrote to; absent when the
+   *  project's own key created the endpoint (or it was reused). */
+  webhookAccount?: string;
 }
 
 /** User opted out of providing Stripe keys for this mode at scaffold
@@ -100,6 +125,15 @@ export interface ProvisionStripeProjectOptions {
   /** Force re-prompting per-project keys even if hatchkit has them
    *  cached in keychain from a previous run. */
   reprompt?: boolean;
+  /** The project's Stripe account per mode (`.hatchkit.json`
+   *  `stripe.accounts`). With an organization key stored, the webhook
+   *  is created there through `Stripe-Context`; otherwise the project's
+   *  own key creates it in its own account. */
+  accounts?: { test?: string; live?: string };
+  /** Called right after a webhook endpoint is created, with its
+   *  `stripeWebhook` run-ledger entry, so destroy can delete it even if
+   *  a later step fails. Reused (cached) endpoints are not reported. */
+  onLedgerStep?: (step: LedgerStep) => void;
 }
 
 export interface ProvisionStripeProjectResult {
@@ -179,9 +213,10 @@ export async function provisionStripeProject(
       `  Hatchkit provisions Stripe in two modes per project:\n` +
         `    TEST/sandbox → .env.development.local (plaintext, gitignored)\n` +
         `    LIVE         → .env.production  (dotenvx-encrypted)\n` +
-        `  Webhook signing secrets are auto-minted using your master keys;\n` +
-        `  per-project app keys (sk + pk) you'll paste below — Stripe doesn't\n` +
-        `  expose an API to mint those automatically.\n`,
+        `  Per-project app keys (sk + pk) you'll paste below — Stripe doesn't\n` +
+        `  expose an API to mint those automatically. Hatchkit then creates the\n` +
+        `  webhook endpoint in that project's own account (with its key, or the\n` +
+        `  organization key when .hatchkit.json names the account).\n`,
     ),
   );
 
@@ -193,7 +228,8 @@ export async function provisionStripeProject(
       domain: opts.domain,
       events: opts.events ?? DEFAULT_STRIPE_EVENTS,
       mode: "test",
-      masterSecretKey: master.testSecretKey,
+      account: opts.accounts?.test,
+      onLedgerStep: opts.onLedgerStep,
       reprompt: opts.reprompt ?? false,
     });
   } else {
@@ -212,7 +248,8 @@ export async function provisionStripeProject(
       domain: opts.domain,
       events: opts.events ?? DEFAULT_STRIPE_EVENTS,
       mode: "live",
-      masterSecretKey: master.liveSecretKey,
+      account: opts.accounts?.live,
+      onLedgerStep: opts.onLedgerStep,
       reprompt: opts.reprompt ?? false,
     });
   } else {
@@ -233,10 +270,9 @@ interface ProvisionModeArgs {
   domain: string;
   events: string[];
   mode: StripeMode;
-  /** Master secret key for THIS mode — used to call POST
-   *  /v1/webhook_endpoints. Distinct from the per-project sk pasted by
-   *  the user; the master is hatchkit's own wiring credential. */
-  masterSecretKey: string;
+  /** The project's `acct_…` for this mode, if `.hatchkit.json` names it. */
+  account?: string;
+  onLedgerStep?: (step: LedgerStep) => void;
   reprompt: boolean;
 }
 
@@ -277,6 +313,8 @@ async function provisionMode(args: ProvisionModeArgs): Promise<StripeModeOutcome
 
   let webhookSecret: string;
   let webhookEndpointId: string;
+  let webhookCreated = false;
+  let webhookAccount: string | undefined;
   const webhookUrl = `https://${args.domain}/api/stripe/webhook`;
 
   if (!args.reprompt && cachedWebhookSecret && cachedWebhookId) {
@@ -284,16 +322,30 @@ async function provisionMode(args: ProvisionModeArgs): Promise<StripeModeOutcome
     webhookEndpointId = cachedWebhookId;
     console.log(chalk.dim(`  · ${info.label} webhook reused from cache (${webhookEndpointId})`));
   } else {
-    console.log(chalk.dim(`  Creating ${info.label} webhook → ${webhookUrl}`));
+    // The project's account: organization key + Stripe-Context when the
+    // manifest names the account, else the key pasted above.
+    const target = await resolveSyncClient(args.projectName, args.mode, args.account);
+    console.log(chalk.dim(`  Creating ${info.label} webhook → ${webhookUrl} (${target.label})`));
     const created = await createStripeWebhook({
       projectName: args.projectName,
       url: webhookUrl,
       events: args.events,
       mode: args.mode,
-      masterSecretKey: args.masterSecretKey,
+      client: target.client,
+      keyLabel: target.label,
     });
     webhookSecret = created.signingSecret;
     webhookEndpointId = created.endpointId;
+    webhookCreated = true;
+    if (target.usesAccount) webhookAccount = target.client.context;
+    args.onLedgerStep?.({
+      kind: "stripeWebhook",
+      mode: args.mode,
+      endpoint: "starter",
+      endpointId: webhookEndpointId,
+      url: webhookUrl,
+      ...(webhookAccount ? { account: webhookAccount } : {}),
+    });
     await setSecret(
       SECRET_KEYS.stripeProjectWebhookSecret(args.projectName, args.mode),
       webhookSecret,
@@ -313,6 +365,8 @@ async function provisionMode(args: ProvisionModeArgs): Promise<StripeModeOutcome
     webhookSecret,
     webhookEndpointId,
     webhookUrl,
+    webhookCreated,
+    ...(webhookAccount ? { webhookAccount } : {}),
   };
 }
 
@@ -366,7 +420,9 @@ export async function collectPerProjectKeys(args: CollectKeysArgs): Promise<Coll
           `    1. Open ${chalk.cyan(info.apiKeysUrl)} (must be in LIVE mode)\n` +
           `    2. Click 'Create restricted key', name it ${chalk.cyan(args.projectName)}\n` +
           `    3. Grant: Charges Write, Customers Write, PaymentIntents Write,\n` +
-          `       Subscriptions Write, Checkout Sessions Write, Billing Portal Sessions Write\n` +
+          `       Subscriptions Write, Checkout Sessions Write, Billing Portal Sessions Write,\n` +
+          `       Webhook Endpoints Write (hatchkit creates the webhook with this key\n` +
+          `       unless you stored an organization key: hatchkit stripe org-key)\n` +
           `    4. (You can also paste your account-wide sk_live but the blast\n` +
           `       radius will be larger.)\n`,
       ),
@@ -466,31 +522,42 @@ interface CreateWebhookArgs {
   url: string;
   events: string[];
   mode: StripeMode;
-  masterSecretKey: string;
+  /** Writes to the project's account (see `resolveSyncClient`). */
+  client: StripeClient;
+  keyLabel: string;
 }
 
 async function createStripeWebhook(args: CreateWebhookArgs): Promise<{
   endpointId: string;
   signingSecret: string;
 }> {
-  const body = new URLSearchParams();
-  body.set("url", args.url);
-  body.set("description", `hatchkit: ${args.projectName} (${args.mode})`);
-  for (const ev of args.events) body.append("enabled_events[]", ev);
-
-  const res = await fetch("https://api.stripe.com/v1/webhook_endpoints", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${args.masterSecretKey}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: body.toString(),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Stripe create webhook failed (${args.mode}): HTTP ${res.status} ${text}`);
+  let data: { id?: string; secret?: string };
+  try {
+    data = await stripeRequest<{ id?: string; secret?: string }>(
+      args.client,
+      "POST",
+      "/v1/webhook_endpoints",
+      {
+        url: args.url,
+        description: `hatchkit: ${args.projectName} (${args.mode})`,
+        enabled_events: args.events,
+      },
+    );
+  } catch (err) {
+    if (err instanceof StripeError && (err.status === 401 || err.status === 403)) {
+      throw new Error(
+        `Stripe create webhook failed (${args.mode}, ${args.keyLabel}): ${err.message}. ` +
+          `The key needs Webhook Endpoints: Write; or store an organization key ` +
+          `(hatchkit stripe org-key --mode ${args.mode}) and the project's acct_… under ` +
+          `stripe.accounts.${args.mode} in .hatchkit.json.`,
+      );
+    }
+    throw err;
   }
-  const data = (await res.json()) as { id: string; secret: string };
+  if (!data.id || !data.secret)
+    throw new Error(
+      `Stripe created the ${args.mode} webhook but returned no id or signing secret.`,
+    );
   return { endpointId: data.id, signingSecret: data.secret };
 }
 
@@ -557,31 +624,85 @@ export function renderStripeSkipComment(mode: StripeMode, envFileLabel: string):
   ];
 }
 
-/** Delete the webhook endpoint hatchkit registered for `project` in
- *  `mode`. Returns "deleted" on success, "not-found" if the endpoint
- *  was already removed. Used by `hatchkit destroy <project>`. */
+function webhookKeychain(project: string, mode: StripeMode, endpoint: StripeWebhookEndpoint) {
+  return endpoint === "unlock"
+    ? {
+        id: SECRET_KEYS.stripeProjectUnlockWebhookId(project, mode),
+        secret: SECRET_KEYS.stripeProjectUnlockWebhookSecret(project, mode),
+      }
+    : {
+        id: SECRET_KEYS.stripeProjectWebhookId(project, mode),
+        secret: SECRET_KEYS.stripeProjectWebhookSecret(project, mode),
+      };
+}
+
+/** Thrown when no Stripe key that could reach the endpoint is stored. */
+export class NoStripeKeyError extends Error {
+  constructor(project: string, mode: StripeMode) {
+    super(`No ${mode} Stripe key stored for ${project} (project key, organization key or master)`);
+    this.name = "NoStripeKeyError";
+  }
+}
+
+/** Delete one webhook endpoint hatchkit created, by its id, in the
+ *  project's account (organization key + `account`, else the project's
+ *  own key), then in the master key's account, where endpoints made
+ *  before 2026-11-07 live. "not-found" when no key finds it. Throws
+ *  NoStripeKeyError when no key is stored at all. */
+export async function deleteStripeWebhookEndpoint(args: {
+  project: string;
+  mode: StripeMode;
+  endpointId: string;
+  account?: string;
+}): Promise<"deleted" | "not-found"> {
+  const clients = await resolveWebhookClients(args.project, args.mode, args.account);
+  if (clients.length === 0) throw new NoStripeKeyError(args.project, args.mode);
+  const path = `/v1/webhook_endpoints/${encodeURIComponent(args.endpointId)}`;
+  for (const { client } of clients) {
+    try {
+      await stripeRequest(client, "DELETE", path);
+      return "deleted";
+    } catch (err) {
+      if (err instanceof StripeError && err.status === 404) continue;
+      throw err;
+    }
+  }
+  return "not-found";
+}
+
+/** Drop the keychain id + signing secret of a deleted endpoint, but only
+ *  while they still name it: a later run may have stored another one. */
+export async function forgetStripeWebhook(
+  project: string,
+  mode: StripeMode,
+  endpoint: StripeWebhookEndpoint,
+  endpointId: string,
+): Promise<void> {
+  const keys = webhookKeychain(project, mode, endpoint);
+  if ((await getSecret(keys.id)) !== endpointId) return;
+  await deleteSecret(keys.secret);
+  await deleteSecret(keys.id);
+}
+
+/** Delete the webhook endpoint whose id hatchkit stored for `project`
+ *  in `mode` (the starter's by default), and forget its id + secret.
+ *  "not-found" when no id is stored or Stripe no longer has it. */
 export async function deleteStripeProjectWebhook(
   project: string,
   mode: StripeMode,
+  opts: { endpoint?: StripeWebhookEndpoint; account?: string } = {},
 ): Promise<"deleted" | "not-found"> {
-  const master = await ensureStripe();
-  const masterKey = mode === "test" ? master.testSecretKey : master.liveSecretKey;
-  if (!masterKey) {
-    return "not-found";
-  }
-  const endpointId = await getSecret(SECRET_KEYS.stripeProjectWebhookId(project, mode));
+  const endpoint = opts.endpoint ?? "starter";
+  const endpointId = await getSecret(webhookKeychain(project, mode, endpoint).id);
   if (!endpointId) return "not-found";
-
-  const res = await fetch(`https://api.stripe.com/v1/webhook_endpoints/${endpointId}`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${masterKey}` },
+  const result = await deleteStripeWebhookEndpoint({
+    project,
+    mode,
+    endpointId,
+    account: opts.account,
   });
-  if (res.status === 404) return "not-found";
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Stripe delete webhook failed: HTTP ${res.status} ${text}`);
-  }
-  return "deleted";
+  await forgetStripeWebhook(project, mode, endpoint, endpointId);
+  return result;
 }
 
 /**
@@ -597,47 +718,43 @@ export async function deleteStripeProjectWebhook(
  * swap and the redeploy fails signature verification. Updating in place
  * has no such window and needs no env rewrite.
  *
- * Returns "not-found" when the master key for the mode isn't configured
- * or the endpoint id isn't in the keychain (nothing hatchkit created,
- * nothing hatchkit should move), and "unchanged" when Stripe already
+ * The endpoint is looked up by id in the project's account (`account`
+ * is the manifest's `stripe.accounts[mode]`, used with the organization
+ * key), then in the master key's account for endpoints made before
+ * 2026-11-07; the update goes to the account that has it.
+ *
+ * Returns "not-found" when no Stripe key is stored, the endpoint id
+ * isn't in the keychain (nothing hatchkit created, nothing hatchkit
+ * should move) or no account has it, and "unchanged" when Stripe already
  * holds the target URL — so re-running a cutover is free.
  */
 export async function updateStripeProjectWebhookUrl(
   project: string,
   mode: StripeMode,
   url: string,
+  account?: string,
 ): Promise<{ result: "updated" | "unchanged" | "not-found"; endpointId?: string }> {
-  const master = await ensureStripe();
-  const masterKey = mode === "test" ? master.testSecretKey : master.liveSecretKey;
-  if (!masterKey) return { result: "not-found" };
-
   const endpointId = await getSecret(SECRET_KEYS.stripeProjectWebhookId(project, mode));
   if (!endpointId) return { result: "not-found" };
+  const clients = await resolveWebhookClients(project, mode, account);
+  if (clients.length === 0) return { result: "not-found" };
 
-  const current = await fetch(`https://api.stripe.com/v1/webhook_endpoints/${endpointId}`, {
-    headers: { Authorization: `Bearer ${masterKey}` },
-  });
-  if (current.status === 404) return { result: "not-found", endpointId };
-  if (!current.ok) {
-    const text = await current.text().catch(() => "");
-    throw new Error(`Stripe read webhook failed (${mode}): HTTP ${current.status} ${text}`);
+  const path = `/v1/webhook_endpoints/${encodeURIComponent(endpointId)}`;
+  for (const { client } of clients) {
+    let existing: { url?: string };
+    try {
+      existing = await stripeRequest<{ url?: string }>(client, "GET", path);
+    } catch (err) {
+      if (err instanceof StripeError && err.status === 404) continue;
+      throw new Error(`Stripe read webhook failed (${mode}): ${(err as Error).message}`);
+    }
+    if (existing.url === url) return { result: "unchanged", endpointId };
+    try {
+      await stripeRequest(client, "POST", path, { url });
+    } catch (err) {
+      throw new Error(`Stripe update webhook failed (${mode}): ${(err as Error).message}`);
+    }
+    return { result: "updated", endpointId };
   }
-  const existing = (await current.json()) as { url?: string };
-  if (existing.url === url) return { result: "unchanged", endpointId };
-
-  const body = new URLSearchParams();
-  body.set("url", url);
-  const res = await fetch(`https://api.stripe.com/v1/webhook_endpoints/${endpointId}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${masterKey}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: body.toString(),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Stripe update webhook failed (${mode}): HTTP ${res.status} ${text}`);
-  }
-  return { result: "updated", endpointId };
+  return { result: "not-found", endpointId };
 }

@@ -24,7 +24,13 @@ import { CoolifyApi } from "../utils/coolify-api.js";
 import { dockerLogoutViaSsh } from "../utils/coolify-ssh.js";
 import { exec } from "../utils/exec.js";
 import { type LedgerStep, RunLedger, loadAllLedgers } from "../utils/run-ledger.js";
-import { deleteSecret, getCloudflareTokenValue } from "../utils/secrets.js";
+import {
+  SECRET_KEYS,
+  deleteSecret,
+  getCloudflareTokenValue,
+  getSecret,
+  parseStripeWebhookIdAccount,
+} from "../utils/secrets.js";
 import { ghSecretDelete } from "./gh-actions-secrets.js";
 
 /** Pull the R2 admin token from the OS keychain. Used by rollback
@@ -313,8 +319,32 @@ function recipeFor(step: LedgerStep, ledgerName: string): string | null {
       return `gh repo delete ${shellEscape(step.repo)} --yes`;
     case "scaffold":
       return `rm -rf ${shellEscape(step.path)}`;
-    case "keychain":
-      return `security delete-generic-password -s hatchkit -a ${shellEscape(step.account)}`;
+    case "keychain": {
+      const cmd = `security delete-generic-password -s hatchkit -a ${shellEscape(step.account)}`;
+      const webhook = parseStripeWebhookIdAccount(step.account);
+      if (!webhook) return cmd;
+      return `${chalk.dim(
+        `# manual: delete the Stripe ${webhook.mode} webhook endpoint whose id this entry holds (Stripe dashboard → Developers → Webhooks, in the project's account or, if older, the master key's)`,
+      )}\n${cmd}`;
+    }
+    case "stripeWebhook": {
+      const keys =
+        step.endpoint === "unlock"
+          ? [
+              SECRET_KEYS.stripeProjectUnlockWebhookId(ledgerName, step.mode),
+              SECRET_KEYS.stripeProjectUnlockWebhookSecret(ledgerName, step.mode),
+            ]
+          : [
+              SECRET_KEYS.stripeProjectWebhookId(ledgerName, step.mode),
+              SECRET_KEYS.stripeProjectWebhookSecret(ledgerName, step.mode),
+            ];
+      return [
+        chalk.dim(
+          `# manual: delete Stripe ${step.mode} webhook ${step.endpointId} (${step.url})${step.account ? ` in ${step.account}` : ""} — Stripe dashboard → Developers → Webhooks`,
+        ),
+        ...keys.map((k) => `security delete-generic-password -s hatchkit -a ${shellEscape(k)}`),
+      ].join("\n");
+    }
     case "manifest":
       return `rm ${shellEscape(step.path)}`;
     case "dotenvxKeysFile":
@@ -622,8 +652,14 @@ export function describeStep(step: LedgerStep): string {
       return `remove ${chalk.cyan(step.path)}`;
     case "coolifyEnv":
       return `remove ${chalk.cyan(step.path)}`;
-    case "keychain":
-      return `delete keychain entry ${chalk.cyan(step.account)}`;
+    case "keychain": {
+      const webhook = parseStripeWebhookIdAccount(step.account);
+      return webhook
+        ? `delete Stripe ${webhook.mode} webhook + keychain entry ${chalk.cyan(step.account)}`
+        : `delete keychain entry ${chalk.cyan(step.account)}`;
+    }
+    case "stripeWebhook":
+      return `delete Stripe ${step.mode} webhook ${chalk.cyan(step.endpointId)} (${step.url})`;
     case "terraformApplied":
       return `terraform destroy in ${chalk.cyan(step.stackDir)}`;
     case "coolifyApp":
@@ -755,6 +791,37 @@ export async function undoProvisionedStep(
   return undoStep(step, ledgerName);
 }
 
+/** Delete a Stripe webhook endpoint hatchkit created, by id, in the
+ *  account it was created in (provision/stripe.ts), then its keychain id
+ *  and signing secret. A missing key keeps the ledger entry. */
+async function undoStripeWebhook(
+  project: string,
+  step: Extract<LedgerStep, { kind: "stripeWebhook" }>,
+): Promise<"done" | "not-found"> {
+  const { NoStripeKeyError, deleteStripeWebhookEndpoint, forgetStripeWebhook } = await import(
+    "../provision/stripe.js"
+  );
+  let result: "deleted" | "not-found";
+  try {
+    result = await deleteStripeWebhookEndpoint({
+      project,
+      mode: step.mode,
+      endpointId: step.endpointId,
+      account: step.account,
+    });
+  } catch (err) {
+    if (err instanceof NoStripeKeyError) {
+      throw new RollbackSkip(err.message, [
+        `Delete webhook ${step.endpointId} by hand: Stripe dashboard → Developers → Webhooks${step.account ? ` (account ${step.account})` : ""}.`,
+        `Or store a key (hatchkit stripe org-key --mode ${step.mode}) and re-run hatchkit destroy ${project}.`,
+      ]);
+    }
+    throw err;
+  }
+  await forgetStripeWebhook(project, step.mode, step.endpoint, step.endpointId);
+  return result === "deleted" ? "done" : "not-found";
+}
+
 async function undoStep(
   step: LedgerStep,
   ledgerName: string,
@@ -793,9 +860,26 @@ async function undoStep(
       return "done";
     }
     case "keychain": {
+      // create/adopt recorded the starter webhook this way before the
+      // `stripeWebhook` kind: the entry holds the endpoint id, and the
+      // endpoint goes first so the id is not lost while it still exists.
+      const webhook = parseStripeWebhookIdAccount(step.account);
+      const endpointId = webhook ? await getSecret(step.account) : null;
+      if (webhook && endpointId) {
+        await undoStripeWebhook(webhook.project, {
+          kind: "stripeWebhook",
+          mode: webhook.mode,
+          endpoint: webhook.endpoint,
+          endpointId,
+          url: "(id from the keychain)",
+        });
+        return "done";
+      }
       const ok = await deleteSecret(step.account);
       return ok ? "done" : "not-found";
     }
+    case "stripeWebhook":
+      return undoStripeWebhook(ledgerName, step);
     case "terraformApplied": {
       // We need the same env vars `runTerraform` used. Re-derive from
       // the user's saved DNS config; if creds aren't there anymore,

@@ -306,6 +306,25 @@ export async function clearAllSecrets(): Promise<void> {
   for (const entry of entries) await deleteSecret(entry.account);
 }
 
+/** Which hatchkit Stripe webhook: the starter's `/api/stripe/webhook` or
+ *  the paid-unlock `/api/unlock/webhook` from `hatchkit stripe sync`. */
+export type StripeWebhookEndpoint = "starter" | "unlock";
+
+/** The keychain account that holds a Stripe webhook endpoint id, parsed.
+ *  Lets rollback recognise the `keychain` ledger entries create/adopt
+ *  wrote for the starter webhook before the `stripeWebhook` kind. */
+export function parseStripeWebhookIdAccount(
+  account: string,
+): { project: string; mode: "test" | "live"; endpoint: StripeWebhookEndpoint } | null {
+  const m = account.match(/^stripe:project:(.+):(test|live):(webhook-id|unlock-webhook-id)$/);
+  if (!m) return null;
+  return {
+    project: m[1],
+    mode: m[2] as "test" | "live",
+    endpoint: m[3] === "unlock-webhook-id" ? "unlock" : "starter",
+  };
+}
+
 /** Move every per-project secret from `oldName` to `newName` in the OS
  *  keychain. Used by `hatchkit rename-project --keys`.
  *

@@ -273,6 +273,7 @@ export function fakeStripe(options: { now?: () => number } = {}) {
         return respond(200, { id: endpoint.id, deleted: true });
       }
       if (method === "POST") {
+        if (params.url) endpoint.url = params.url;
         if (params.enabled_events) endpoint.enabled_events = params.enabled_events;
         if (params.disabled === "false") endpoint.status = "enabled";
       }

@@ -1707,19 +1707,28 @@ async function scanStripe(input: InventoryInput, expected: boolean): Promise<Sca
     });
     return { provider, findings, skipped };
   }
-  // Probe each mode that has a stored master key.
+  // Probe each mode that has a stored master key. Endpoints live in the
+  // project's own account (its key; created since 2026-11-07) or the
+  // master's (older), so both are searched.
+  const { resolveWebhookClients } = await import("./provision/stripe-sync-cli.js");
+  const { stripeRequest } = await import("./paid-unlock/core.js");
   for (const mode of ["test", "live"] as const) {
     const key = mode === "test" ? cfg.testSecretKey : cfg.liveSecretKey;
     if (!key) continue;
     try {
-      const res = await fetch("https://api.stripe.com/v1/webhook_endpoints?limit=100", {
-        headers: { Authorization: `Bearer ${key}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as {
-        data?: Array<{ id?: string; url?: string; status?: string }>;
-      };
-      const matches = (body.data ?? []).filter(
+      const clients = input.name
+        ? await resolveWebhookClients(input.name, mode, undefined)
+        : [{ client: { secretKey: key }, label: `the ${mode} master key` }];
+      const seen = new Map<string, { id?: string; url?: string; status?: string }>();
+      let total = 0;
+      for (const { client } of clients) {
+        const body = await stripeRequest<{
+          data?: Array<{ id?: string; url?: string; status?: string }>;
+        }>(client, "GET", "/v1/webhook_endpoints", { limit: 100 });
+        total += (body.data ?? []).length;
+        for (const w of body.data ?? []) seen.set(w.id ?? `${seen.size}`, w);
+      }
+      const matches = [...seen.values()].filter(
         (w) => typeof w.url === "string" && w.url.includes(input.domain ?? ""),
       );
       if (matches.length === 0) {
@@ -1729,7 +1738,7 @@ async function scanStripe(input: InventoryInput, expected: boolean): Promise<Sca
           identity: `${mode} mode`,
           status: "missing",
           expected,
-          detail: `no webhook endpoint with URL containing ${input.domain} (${(body.data ?? []).length} endpoint(s) in ${mode} mode)`,
+          detail: `no webhook endpoint with URL containing ${input.domain} (${total} endpoint(s) in ${mode} mode)`,
         });
       } else {
         for (const w of matches) {

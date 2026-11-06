@@ -3186,6 +3186,10 @@ async function executePlan(
             const result = await provisionStripeProject({
               projectName: plan.name,
               domain: plan.domain,
+              accounts: state.existingManifest?.stripe?.accounts,
+              // Recorded the moment each endpoint exists, so destroy
+              // deletes it in the account it was created in.
+              onLedgerStep: (step) => ledger.record(step),
             });
             const devLabel = relative(state.projectDir, devEnvPath);
             const prodLabel = relative(state.projectDir, prodEnvPath);
@@ -3196,12 +3200,6 @@ async function executePlan(
               }
               const pairs = parseEnvLines(renderStripeEnv(result.test));
               writeDevEnv(devEnvPath, pairs);
-              if (result.test.kind === "configured") {
-                ledger.record({
-                  kind: "keychain",
-                  account: SECRET_KEYS.stripeProjectWebhookId(plan.name, "test"),
-                });
-              }
               console.log(
                 chalk.green(
                   result.test.kind === "skipped"
@@ -3216,12 +3214,6 @@ async function executePlan(
               }
               const pairs = parseEnvLines(renderStripeEnv(result.live));
               writeProdEnv(prodEnvPath, pairs);
-              if (result.live.kind === "configured") {
-                ledger.record({
-                  kind: "keychain",
-                  account: SECRET_KEYS.stripeProjectWebhookId(plan.name, "live"),
-                });
-              }
               console.log(
                 chalk.green(
                   result.live.kind === "skipped"

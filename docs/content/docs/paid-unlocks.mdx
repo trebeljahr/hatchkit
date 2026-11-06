@@ -106,6 +106,8 @@ Each project should have its own Stripe account, so one project's key cannot rea
 - **Organization key** (recommended): `hatchkit stripe org-key --mode test|live` stores a restricted organization key (Products, Prices and Webhook Endpoints write). Sync sends `Stripe-Context: <acct_…>`, so every write lands in the project's account. Pass `--account acct_…` once; it is saved in `.hatchkit.json` under `stripe.accounts`.
 - **Project key**: without an organization key, sync uses the project's own key from `hatchkit add <project> stripe`.
 
+`hatchkit add <project> stripe`, `create` and `adopt` pick the key the same way for the starter's `/api/stripe/webhook`. With an organization key, they use the account in `stripe.accounts`. Without one, the project's own key creates the endpoint in its own account. A restricted project key then needs Webhook Endpoints write.
+
 The runtime uses a separate restricted key of the project's account: Checkout Sessions write, Customer portal write, PaymentIntents write, Subscriptions write, Charges read, Disputes read, Prices read. The customer portal needs a saved configuration in the Stripe dashboard before "manage" works in live mode.
 
 ### The webhook secret
@@ -121,7 +123,7 @@ Test mode creates no endpoint unless you pass `--webhook-url`. Locally, `stripe 
 
 If the keychain lost the secret of an existing endpoint, sync says so. `--recreate-webhook` deletes and recreates the endpoint; deploy the new secret right after.
 
-`hatchkit destroy` does not remove the paid-unlock webhook or the Stripe products. Archive them in the Stripe dashboard when a project ends.
+Sync records each webhook endpoint it creates in the project's run ledger. `hatchkit destroy` deletes that endpoint by its id, in the same account. Destroy keeps the Stripe products and prices. Archive them in the Stripe dashboard when a project ends.
 
 Sync pins `Stripe-Version: 2025-03-31.basil`. `HATCHKIT_STRIPE_API_VERSION` overrides it for sync, and the runtime's optional `STRIPE_API_VERSION` setting overrides it there.
 
