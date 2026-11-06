@@ -560,11 +560,26 @@ class Detectors(unittest.TestCase):
         self.fx.process(11, 'node', '/usr/local/bin/node', b, netns='net:[77]')
         self.fx.process(12, 'node', '/usr/local/bin/node', c, netns='net:[77]')
         sample = hi.peer_sample(self.fx.host(), self.fx.containers)
-        self.assertEqual(list(sample), ['net:[77]'])
+        self.assertEqual(list(sample), ['host-network:' + a, 'net:[77]'])
         self.assertEqual([x['name'] for x in sample['net:[77]']['containers']], ['b', 'c'])
+        self.assertEqual(sample['host-network:' + a]['connections'], {})
         report = self.scan(0)
-        self.assertIn('Outbound peers not checked (host network): host-net', report['skipped'])
+        self.assertFalse(any('host network' in s for s in report['skipped']))
         self.assertIn('CPU not measured: the window was under 5 s.', report['skipped'])
+
+    def test_host_network_container_is_checked_by_the_sockets_it_holds(self):
+        a = self.fx.container('beszel-agent', 'henrygd/beszel-agent:0.21.1', 20, network='host')
+        # The host table holds the agent's dial-out and the host's own; only the agent's counts.
+        (self.fx.proc / '1' / 'net' / 'tcp').write_text(tcp_table([
+            ('01', ('10.0.0.2', 40000), ('203.0.113.47', 3333), '50'),
+            ('01', ('10.0.0.2', 40001), ('5.6.7.8', 443), '51'),
+            ('01', ('100.64.0.30', 40002), ('100.64.0.20', 45876), '52')]))
+        self.fx.process(20, 'beszel-agent', '/agent', a, netns='net:[1]', fds={3: '50', 4: '52'})
+        sample = hi.peer_sample(self.fx.host(), self.fx.containers)
+        self.assertEqual(sorted(sample['host-network:' + a]['connections'].values()), ['50', '52'])
+        findings, _ = hi.outbound_peers([sample, sample], 60, {}, hi.socket_owner(self.fx.host(), hi.read_processes(self.fx.host())))
+        self.assertEqual([(f['container'], f['peer'], f['process']) for f in findings],
+                         [('beszel-agent', '203.0.113.47:3333', 'beszel-agent')])
 
     def test_attacker_chosen_names_are_escaped(self):
         cid = self.fx.container('app', 'alpine:3.20', 10, argv0=('sh',))

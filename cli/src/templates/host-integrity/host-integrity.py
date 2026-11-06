@@ -370,27 +370,64 @@ def netns(host, pid):
         return None
 
 
-def on_host_network(host, containers):
-    host_ns = netns(host, 1)
-    return [c for c in containers if c['network'] == 'host' or netns(host, c['pid']) == host_ns]
+def read_tcp(host, pid):
+    rows = []
+    for name, v6 in (('tcp', False), ('tcp6', True)):
+        try:
+            rows += parse_tcp((host.proc / str(pid) / 'net' / name).read_text(), v6)
+        except OSError:
+            pass
+    return rows
+
+
+def socket_inodes_by_container(host, ids):
+    """Container id -> socket inodes its processes hold. Reads only cgroup and fd links."""
+    held = {cid: set() for cid in ids}
+    for entry in host.proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cid = container_id((entry / 'cgroup').read_text())
+        except OSError:
+            continue
+        if cid not in held:
+            continue
+        try:
+            fds = list((entry / 'fd').iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                link = os.readlink(fd)
+            except OSError:
+                continue
+            if link.startswith('socket:[') and link.endswith(']'):
+                held[cid].add(link[8:-1])
+    return held
 
 
 def peer_sample(host, containers):
-    """Outbound connections per container network namespace. The host's own is skipped."""
+    """Outbound connections per container network namespace. The host's own
+    connections are not checked. A container on the host network has no table
+    of its own, so it gets the host's connections whose socket one of its own
+    processes holds."""
     host_ns = netns(host, 1)
     sample = {}
+    hosted = [c for c in containers if c['network'] == 'host' or (netns(host, c['pid']) or host_ns) == host_ns]
+    if hosted:
+        table = outbound(read_tcp(host, 1))
+        held = socket_inodes_by_container(host, {c['id'] for c in hosted})
+        for container in hosted:
+            mine = held.get(container['id'], set())
+            sample['host-network:' + container['id']] = {
+                'containers': [container], 'hostNetwork': True,
+                'connections': {key: inode for key, inode in table.items() if inode in mine}}
     for container in containers:
         ns = netns(host, container['pid'])
         if not ns or ns == host_ns or container['network'] == 'host':
             continue
         if ns not in sample:
-            rows = []
-            for name, v6 in (('tcp', False), ('tcp6', True)):
-                try:
-                    rows += parse_tcp((host.proc / str(container['pid']) / 'net' / name).read_text(), v6)
-                except OSError:
-                    pass
-            sample[ns] = {'containers': [], 'connections': outbound(rows)}
+            sample[ns] = {'containers': [], 'connections': outbound(read_tcp(host, container['pid']))}
         sample[ns]['containers'].append(container)
     return sample
 
@@ -837,9 +874,6 @@ def scan(host, window, site, only=None):
         cpu = cpu_hogs(containers, usage, elapsed, site)
         if unmeasured:
             skipped.append('CPU not measured (started or restarted inside the window): ' + ', '.join(unmeasured))
-    hosted = on_host_network(host, containers)
-    if hosted:
-        skipped.append('Outbound peers not checked (host network): ' + ', '.join(c['name'] for c in hosted))
 
     deleted, deleted_notes = deleted_binaries(processes, containers, replaced_on_disk(host))
     odd, odd_notes = unexpected_processes(processes, containers, site, layers, mounts)
@@ -856,7 +890,7 @@ def scan(host, window, site, only=None):
         'processes': len(processes),
         'cpuTop': [{'container': names[cid], 'percent': round(p, 1)} for cid, p in top],
         'outboundConnections': sum(len(ns['connections']) for ns in samples[-1].values()),
-        'networkNamespaces': len(samples[-1]),
+        'networkNamespaces': sum(not ns.get('hostNetwork') for ns in samples[-1].values()),
         'peerSamples': len(samples),
         'findings': findings,
         'skipped': skipped,

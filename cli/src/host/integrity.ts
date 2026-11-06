@@ -100,7 +100,7 @@ export interface IntegrityReport {
   peerSamples: number;
   findings: IntegrityFinding[];
   /** Checks that could not run this time (a docker diff failed, a container
-   *  restarted inside the CPU window, host networking). */
+   *  restarted inside the CPU window). */
   skipped: string[];
   notes: string[];
   siteFile: string | null;
