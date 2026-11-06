@@ -26,7 +26,7 @@
  * Run: `pnpm --filter hatchkit run test:paid-unlock`.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -997,6 +997,7 @@ await test("restore answers before it looks anything up", async () => {
   assert.equal(h.mail.length, 1);
 });
 
+rmSync(root, { recursive: true, force: true });
 const failed = Object.entries(results).filter(([, ok]) => !ok);
 console.log(
   `\npaid-unlock: ${Object.keys(results).length - failed.length}/${Object.keys(results).length} passed`,

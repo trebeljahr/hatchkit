@@ -25,7 +25,7 @@
  * Run: `pnpm --filter hatchkit run test:stripe-sync`.
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyPaidUnlock, parseMajorAmount } from "./src/features/paid-unlock/index.ts";
@@ -550,6 +550,7 @@ await test("--json live needs --yes; an unused --account is not saved", async ()
   }
 });
 
+rmSync(root, { recursive: true, force: true });
 const failed = Object.entries(results).filter(([, ok]) => !ok);
 console.log(
   `\nstripe-sync: ${Object.keys(results).length - failed.length}/${Object.keys(results).length} passed`,
