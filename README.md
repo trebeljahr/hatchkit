@@ -1,16 +1,18 @@
 # hatchkit
 
-> Start a TypeScript app on a server you own, without redoing the setup for every project.
+> Start a TypeScript app on a server you own, with its services and secrets wired by one command.
 
 [![npm](https://img.shields.io/npm/v/hatchkit.svg)](https://www.npmjs.com/package/hatchkit)
 [![CI](https://github.com/trebeljahr/hatchkit/actions/workflows/ci.yml/badge.svg)](https://github.com/trebeljahr/hatchkit/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Every new product needs the same groundwork before its first feature. You create a GitHub repo, DNS records, a server and a deploy pipeline, then wire up error tracking, analytics, email and encrypted secrets. By hand, that means another round through each provider's dashboard for every project, and no two projects end up wired the same way.
+Every new product needs the same groundwork before its first feature. You create a GitHub repo, DNS records, a server and a deploy pipeline. You add error tracking, analytics and email. Then you copy each new secret from a provider dashboard into an env file, the server and CI. By hand, that is another round through every provider for every project, and no two projects end up wired the same way.
 
-Hatchkit does that setup from the terminal. Run `hatchkit setup` once, and it stores your provider tokens in the OS keychain. Then `hatchkit create` asks for a name, a domain, the features you want and a deploy target. It scaffolds the app, creates the GitHub repo, writes the DNS records and deploys to Coolify. The server can be a new Hetzner box or one you already run.
+Hatchkit does that setup from the terminal. Run `hatchkit setup` once to store your provider tokens in the OS keychain. Then `hatchkit create` asks for a name, a domain, the features you want and a deploy target. It scaffolds the app, creates the GitHub repo, writes the DNS records and deploys to Coolify. The server can be a new Hetzner box or one you already run. For the services you pick, it creates the project's GlitchTip DSN, Plausible site, Listmonk API user, Coolify database and R2 bucket token.
 
-The same CLI looks after the project afterwards. `hatchkit doctor` checks every provider with read-only calls and prints the fix for each failure. `hatchkit sync` brings domains, env and deploy secrets back in line with the project manifest, and `hatchkit backup` configures snapshots and tests restores. Everything it creates lives in your own accounts. There is no hosted hatchkit service.
+None of the secrets those steps produce passes through your clipboard. Hatchkit encrypts them into `.env.production` with dotenvx, so the file is safe to commit. The private key goes to your OS keychain, the Coolify app and GitHub Actions. Each Coolify app also gets its own deploy secret in GitHub, so the repo never holds a Coolify API token.
+
+The same CLI looks after the project afterwards. `hatchkit sync` pushes env and deploy-secret changes, `hatchkit secrets rotate` replaces a leaked DSN or token, and `hatchkit backup` tests restores. `hatchkit doctor` checks every provider with read-only calls and prints the fix for each failure. Everything it creates lives in your own accounts. There is no hosted hatchkit service.
 
 **Docs:** [hatchkit.trebeljahr.com](https://hatchkit.trebeljahr.com/) · **npm:** [`hatchkit`](https://www.npmjs.com/package/hatchkit)
 
