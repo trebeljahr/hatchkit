@@ -1885,6 +1885,33 @@ def load(payload, key, name):
     return json.loads((Path(__file__).resolve().parent / name).read_text())
 
 
+IMAGE_UNIT = 'hatchkit-image-vulnerabilities.service'
+IMAGE_FAILURES = 'image-vulnerability-failures.json'
+
+
+def image_failure_due(work, now=None):
+    """Mail on the second image-scan failure in a row, once per streak; a complete scan ends it."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    try:
+        streak = json.loads((work / IMAGE_FAILURES).read_text())
+        last = dt.datetime.fromisoformat(streak['lastFailedAt'])
+    except (OSError, ValueError, KeyError, TypeError):
+        streak, last = {}, None
+    try:
+        succeeded = dt.datetime.fromisoformat(
+            json.loads((work / 'image-vulnerability-status.json').read_text())['checkedAt'].replace('Z', '+00:00'))
+    except (OSError, ValueError, KeyError, TypeError):
+        succeeded = None
+    if last is None or (succeeded and succeeded > last):
+        streak = {'count': 0, 'mailed': False}
+    streak['count'] += 1
+    streak['lastFailedAt'] = now.isoformat(timespec='seconds')
+    due = streak['count'] >= 2 and not streak['mailed']
+    streak['mailed'] = streak['mailed'] or due
+    (work / IMAGE_FAILURES).write_text(json.dumps(streak) + '\n')
+    return due
+
+
 def failure_notice(hostname, unit):
     """Name the failed producer; partial work is never reported as no checks."""
     if unit == SERVICE:
@@ -1896,8 +1923,8 @@ def failure_notice(hostname, unit):
         title = 'Final image scan did not finish'
         what = ('The final image scan failed or stopped before publishing a complete result. '
                 'Any previous complete image ledger is retained; partial results do not establish current coverage.')
-        notes = ['A deployment during a scan can invalidate its image inventory. The image timer retries '
-                 'within 15 minutes plus up to one minute of jitter. Investigate if the next attempt also fails.',
+        notes = ['It failed twice in a row with no complete scan between. A single failure (often a deployment '
+                 'during the scan, which invalidates its image inventory) is retried within 15 minutes and mails nothing.',
                  'Latest attempt: /var/lib/hatchkit-backups/image-vulnerability-attempt.json']
     else:
         raise WatchError('Failure notification origin is not recognized')
@@ -1942,6 +1969,9 @@ def main(payload=None):
         return
     if args.action == 'failed':
         subject, body = failure_notice(hostname, args.failed_unit)
+        if args.failed_unit == IMAGE_UNIT and not image_failure_due(work):
+            print(json.dumps({'sent': False, 'held': 'first failure in a row; the timer retries within 15 minutes'}))
+            return
         message_id = send_email(mail_settings(config), subject, body)
         print(json.dumps({'sent': True, 'messageId': message_id}))
         return

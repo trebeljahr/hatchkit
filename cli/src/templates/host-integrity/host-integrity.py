@@ -53,6 +53,11 @@ TEMP_DIRS = ('/tmp', '/var/tmp', '/dev/shm')
 SITE_FILE = '/etc/hatchkit-backups/host-integrity.json'
 BACKUP_CONFIG = '/etc/hatchkit-backups/config.json'
 STATUS_NAME = 'host-integrity-status.json'
+# What was mailed, shared by the daily and the five-minute scan so one finding
+# mails once, not once per scan and again whenever the set around it grows.
+NOTIFIED_NAME = 'host-integrity-notified.json'
+MAIL_COOLDOWN = dt.timedelta(minutes=30)  # new findings after a mail wait, then go out together
+SNAPSHOT_SKIPS = ('cpu', 'outbound-peer')  # a zero-window scan cannot see these
 TIMER = 'hatchkit-host-integrity.timer'
 SERVICE = 'hatchkit-host-integrity.service'
 QUICK_SERVICE = 'hatchkit-host-integrity-quick.service'
@@ -1006,19 +1011,27 @@ def utc_now():
     return dt.datetime.now(dt.timezone.utc)
 
 
+# Process IDs, CPU samples, file stamps and overflow counts change without
+# creating a new incident; a rewritten temp file once mailed every 5 minutes.
+# `allow` is derived from the CPU sample, so it moves with it.
+VOLATILE = ('summary', 'pid', 'pids', 'percent', 'windowSeconds', 'modified', 'size', 'allow', 'overflow')
+
+
+def stable(value):
+    if isinstance(value, dict):
+        return {k: stable(v) for k, v in value.items() if k not in VOLATILE}
+    if isinstance(value, list):
+        return sorted((stable(v) for v in value), key=lambda v: json.dumps(v, sort_keys=True))
+    return value
+
+
 def notification_fingerprint(kind, findings, error):
-    # Process IDs, CPU samples, file stamps and overflow counts change without
-    # creating a new incident; a rewritten temp file once mailed every 5 minutes.
-    # `allow` is derived from the CPU sample, so it moves with it.
-    volatile = ('summary', 'pid', 'pids', 'percent', 'windowSeconds', 'modified', 'size', 'allow', 'overflow')
-    def stable(value):
-        if isinstance(value, dict):
-            return {k: stable(v) for k, v in value.items() if k not in volatile}
-        if isinstance(value, list):
-            return sorted((stable(v) for v in value), key=lambda v: json.dumps(v, sort_keys=True))
-        return value
     body = json.dumps(stable([kind, findings, error]), sort_keys=True)
     return hashlib.sha256(body.encode()).hexdigest()
+
+
+def finding_identity(finding):
+    return hashlib.sha256(json.dumps(stable(finding), sort_keys=True).encode()).hexdigest()[:32]
 
 
 def check(host, work, config, send, clock=utc_now, window=CHECK_WINDOW, status_name=STATUS_NAME):
@@ -1052,6 +1065,17 @@ def check(host, work, config, send, clock=utc_now, window=CHECK_WINDOW, status_n
         kind, subject = 'findings', ('[Hatchkit] ' + hostname + ': ' + str(len(findings)) + ' host integrity finding'
                                      + ('' if len(findings) == 1 else 's'))
     fingerprint = notification_fingerprint(kind, findings, error) if kind else None
+    try:
+        notified = json.loads((work / NOTIFIED_NAME).read_text())
+        known, last_mail = dict(notified['identities']), notified.get('lastMailAt')
+    except (OSError, ValueError, KeyError, TypeError):
+        known, last_mail = {}, None
+    current = {finding_identity(f): f.get('detector') for f in findings}
+    if report:
+        # A finding is forgotten (and may mail again) once a scan that can see it no longer reports it.
+        known = {i: d for i, d in known.items() if i in current or (window == 0 and d in SNAPSHOT_SKIPS)}
+    fresh = sorted(set(current) - set(known))
+    cooling = last_mail and finished - dt.datetime.fromisoformat(last_mail) < MAIL_COOLDOWN
     state = {'checkedAt': finished.isoformat(timespec='seconds'),
              'startedAt': started.isoformat(timespec='seconds'), 'ok': not error and not findings,
              'error': error, 'containers': report and report['containers'],
@@ -1059,16 +1083,26 @@ def check(host, work, config, send, clock=utc_now, window=CHECK_WINDOW, status_n
              'skipped': (report or {}).get('skipped', []), 'mailed': None, 'messageId': None,
              'notifiedFingerprint': previous.get('notifiedFingerprint') if kind else None}
     mail_error = None
-    if kind and fingerprint != previous.get('notifiedFingerprint'):
+    if kind == 'error':
+        due = fingerprint != previous.get('notifiedFingerprint')
+    else:
+        due = bool(fresh) and not cooling
+        if fresh and cooling:
+            state['mailHeldUntil'] = (dt.datetime.fromisoformat(last_mail) + MAIL_COOLDOWN).isoformat(timespec='seconds')
+    if kind and due:
         body = mail_document(report, error, hostname)
         try:
             state['messageId'] = send(mail_settings(config), subject, body)
             state['mailed'] = kind
             state['notifiedFingerprint'] = fingerprint
+            if kind == 'findings':
+                known.update(current)
+                last_mail = finished.isoformat(timespec='seconds')
         except Exception as failure:  # SMTP errors may echo login details; keep the type only
             mail_error = failure if isinstance(failure, IntegrityError) else type(failure).__name__
             state['mailError'] = str(mail_error)
     write_status(work, state, status_name)
+    write_status(work, {'identities': known, 'lastMailAt': last_mail}, NOTIFIED_NAME)
     return state, mail_error
 
 

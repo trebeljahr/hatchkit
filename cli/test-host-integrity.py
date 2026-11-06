@@ -615,6 +615,7 @@ class Check(unittest.TestCase):
         self.config = {'alerts': {'enabled': True, 'to': 'owner@example.test', 'from': 'Hatchkit Backups <backup@example.test>',
                                   'smtpFile': '/etc/hatchkit-backups/alert-smtp.json'}}
         self.sent = []
+        self.hour = 0
 
     def tearDown(self):
         self.directory.cleanup()
@@ -623,16 +624,18 @@ class Check(unittest.TestCase):
         self.sent.append((settings, subject, body))
         return '<id-%d>' % len(self.sent)
 
-    def run_check(self, scan=None, error=None, send=None):
-        # The timer starts at 05:00; the scan takes its hour.
-        times = iter([dt.datetime(2026, 10, 19, 5, tzinfo=dt.timezone.utc),
-                      dt.datetime(2026, 10, 19, 6, 0, 13, tzinfo=dt.timezone.utc)])
+    def run_check(self, scan=None, error=None, send=None, window=hi.CHECK_WINDOW, status_name=hi.STATUS_NAME, minutes=60):
+        # The first timer run starts at 05:00 and takes its hour; each later run starts `minutes` after the last.
+        start = dt.datetime(2026, 10, 19, 5, tzinfo=dt.timezone.utc) + dt.timedelta(minutes=self.hour)
+        self.hour += minutes
+        times = iter([start, start + dt.timedelta(hours=1, seconds=13)])
         def fake(host, window, site, only=None):
             if error:
                 raise error
             return scan
         with patch.object(hi, 'scan', side_effect=fake), patch.object(hi, 'read_site', return_value={}):
-            return hi.check(None, self.work, self.config, send or self.send, clock=lambda: next(times))
+            return hi.check(None, self.work, self.config, send or self.send, clock=lambda: next(times),
+                            window=window, status_name=status_name)
 
     def report(self, findings):
         return {'containers': 31, 'cpuWindowSeconds': 3600, 'findings': findings}
@@ -672,6 +675,33 @@ class Check(unittest.TestCase):
         cpu = {'detector': 'cpu', 'container': 'app', 'limit': 50, 'summary': 'cpu'}
         self.run_check(self.report([dict(cpu, percent=61, allow={'cpuLimits': {'app*': 80}})]))
         self.run_check(self.report([dict(cpu, percent=88, allow={'cpuLimits': {'app*': 100}})]))
+        self.assertEqual(len(self.sent), 2)
+
+    def test_a_growing_burst_waits_for_the_cooldown_and_goes_out_once(self):
+        def temp(path):
+            return {'detector': 'temp-file', 'container': 'coolify', 'path': path, 'summary': path}
+        quick = dict(window=0, status_name='host-integrity-quick-status.json', minutes=5)
+        self.run_check(self.report([temp('/tmp/a.php')]), **quick)
+        self.run_check(self.report([temp('/tmp/a.php'), temp('/tmp/b.php')]), **quick)
+        state, _ = self.run_check(self.report([temp('/tmp/a.php'), temp('/tmp/b.php'), temp('/tmp/c.php')]), **quick)
+        self.assertEqual((len(self.sent), state['mailed']), (1, None))
+        self.assertIn('mailHeldUntil', state)
+        for _ in range(5):
+            self.run_check(self.report([temp('/tmp/a.php'), temp('/tmp/b.php'), temp('/tmp/c.php')]), **quick)
+        self.assertEqual(len(self.sent), 2)
+        self.assertIn('3 host integrity findings', self.sent[1][1])
+
+    def test_the_daily_scan_does_not_repeat_what_the_quick_scan_mailed(self):
+        finding = {'detector': 'temp-file', 'container': 'coolify', 'path': '/tmp/x.php', 'summary': 'x'}
+        cpu = {'detector': 'cpu', 'container': 'app', 'limit': 50, 'summary': 'cpu'}
+        self.run_check(self.report([finding]), window=0, status_name='host-integrity-quick-status.json', minutes=5)
+        self.run_check(self.report([finding]))
+        self.assertEqual(len(self.sent), 1)
+        self.run_check(self.report([finding, cpu]))
+        self.assertEqual(len(self.sent), 2)
+        # A snapshot scan cannot see CPU, so it does not forget it: tomorrow's same CPU finding stays quiet.
+        self.run_check(self.report([]), window=0, status_name='host-integrity-quick-status.json', minutes=5)
+        self.run_check(self.report([cpu]))
         self.assertEqual(len(self.sent), 2)
 
     def test_beszel_health_stamp_is_a_known_temp_file(self):

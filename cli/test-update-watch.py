@@ -80,6 +80,10 @@ class FailureRouting(unittest.TestCase):
                      patch.dict(sys.modules, {'alerts': NS(send_email=send)}), \
                      __import__('contextlib').redirect_stdout(io.StringIO()):
                     uw.main({'services': SERVICES, 'cloudflare': CLOUDFLARE})
+                    if unit != uw.SERVICE:  # one failed image scan is retried, not mailed
+                        self.assertEqual(sent, [])
+                        uw.main({'services': SERVICES, 'cloudflare': CLOUDFLARE})
+                        uw.main({'services': SERVICES, 'cloudflare': CLOUDFLARE})
                 self.assertEqual(len(sent), 1)
                 subject, body = sent[0]
                 self.assertEqual(subject, '[Hatchkit] fixture-host: ' + expected)
@@ -89,7 +93,19 @@ class FailureRouting(unittest.TestCase):
                 if unit != uw.SERVICE:
                     self.assertIn('previous complete image ledger', body)
                     self.assertIn('15 minutes', body)
+                    self.assertIn('twice in a row', body)
                     self.assertNotIn('journalctl -u ' + uw.SERVICE, body)
+
+    def test_a_complete_image_scan_ends_the_failure_streak(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            t0 = dt.datetime(2026, 11, 6, 3, tzinfo=dt.timezone.utc)
+            self.assertFalse(uw.image_failure_due(work, t0))
+            (work / 'image-vulnerability-status.json').write_text(json.dumps(
+                {'checkedAt': (t0 + dt.timedelta(minutes=10)).isoformat()}))
+            self.assertFalse(uw.image_failure_due(work, t0 + dt.timedelta(minutes=20)))
+            self.assertTrue(uw.image_failure_due(work, t0 + dt.timedelta(minutes=35)))
+            self.assertFalse(uw.image_failure_due(work, t0 + dt.timedelta(minutes=50)))
 
     def test_unknown_failure_origin_cannot_enter_the_message(self):
         with self.assertRaisesRegex(uw.WatchError, '^Failure notification origin is not recognized$'):
