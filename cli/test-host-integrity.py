@@ -156,7 +156,7 @@ class Fixture:
 
 def clean_host(fx):
     """What the shared Coolify host runs on a good day."""
-    app = fx.container('o5ufcrdu6ur673asft5hw1tt-205657666842', 'ghcr.io/trebeljahr/asteroid-game-server:live', 100,
+    app = fx.container('aaaaexampleapp0000000001-205657666842', 'ghcr.io/example/game-server:live', 100,
                        argv0=('docker-entrypoi', 'node'))
     fx.process(100, 'MainThread', '/usr/local/bin/node', app, mounts=['/dev/shm'], tcp=tcp_table([
         ('0A', ('0.0.0.0', 3000), ('0.0.0.0', 0), '500'),
@@ -167,7 +167,7 @@ def clean_host(fx):
     fx.process(101, 'sh', '/bin/busybox', app)
     fx.diffs[app] = 'C /tmp\nA /tmp/hatchkit-drain.pid\nC /app\nA /app/.next/cache/x\n'
     # A Next.js server started through hatchkit's drain entrypoint and dotenvx.
-    coll = fx.container('bbu24hzgels1n2m1sznx3fdu-211834526961', 'ghcr.io/trebeljahr/collection-of-beauty:latest', 110,
+    coll = fx.container('bbbbexamplesite000000002-211834526961', 'ghcr.io/example/gallery:latest', 110,
                         argv0=('drain-entrypoin', 'dotenvx'))
     fx.process(110, 'MainThread', '/usr/local/bin/node', coll)
     fx.process(111, 'next-server (v1', '/usr/local/bin/node', coll)
@@ -194,7 +194,7 @@ def clean_host(fx):
     fx.process(505, 'runc:[2:INIT]', '/memfd:runc_cloned:/proc/self/exe (deleted)', coolify, age=0.2)
     rt = fx.container('coolify-realtime', 'ghcr.io/coollabsio/coolify-realtime:1.0.11', 600, argv0=('sh',))
     fx.process(600, 'soketi-server', '/usr/local/bin/node', rt)
-    kuma = fx.container('uptime-kuma-v1l81eqaeaslqftatbzh5cga-120931250733', 'louislam/uptime-kuma:2', 700,
+    kuma = fx.container('uptime-kuma-ccccexamplekuma000000003-120931250733', 'louislam/uptime-kuma:2', 700,
                         argv0=('/usr/bin/dumb-init',))
     fx.process(700, 'dumb-init', '/usr/bin/dumb-init', kuma)
     fx.process(701, 'node', '/usr/local/bin/node', kuma)
@@ -482,19 +482,19 @@ class Detectors(unittest.TestCase):
         findings = hi.cpu_hogs(self.fx.containers, usage, 3600, {'cpuLimits': {'ghcr.io/x/encoder*': 90}})
         self.assertEqual([(f['container'], f['percent']) for f in findings], [('busy', 60.0)])
         self.assertEqual(findings[0]['allow'], {'cpuLimits': {'busy': 70}})
-        self.assertEqual(hi.name_glob('bbu24hzgels1n2m1sznx3fdu-211834526961'), 'bbu24hzgels1n2m1sznx3fdu-*')
-        self.assertEqual(hi.name_glob('bbu24hzgels1n2m1sznx3fdu-20261018T233753'), 'bbu24hzgels1n2m1sznx3fdu-*')
+        self.assertEqual(hi.name_glob('bbbbexamplesite000000002-211834526961'), 'bbbbexamplesite000000002-*')
+        self.assertEqual(hi.name_glob('bbbbexamplesite000000002-20261018T233753'), 'bbbbexamplesite000000002-*')
         for fixed in ('coolify-proxy', 'postgres-yxhctpxl6dqfhs3vpacg5it2', 'app-2026', 'app-20261018T2337'):
             self.assertEqual(hi.name_glob(fixed), fixed)
         self.assertIn('60 % of one core averaged over 60 min (limit 50 %)', findings[0]['summary'])
 
     def test_cpu_allow_survives_a_redeploy(self):
         """The allow entry for one deploy's container still applies to the next."""
-        for first, second in (('bbu24hzgels1n2m1sznx3fdu-20261018T233753', 'bbu24hzgels1n2m1sznx3fdu-20261019T050102'),
-                              ('bbu24hzgels1n2m1sznx3fdu-211834526961', 'bbu24hzgels1n2m1sznx3fdu-20261019T050102')):
+        for first, second in (('bbbbexamplesite000000002-20261018T233753', 'bbbbexamplesite000000002-20261019T050102'),
+                              ('bbbbexamplesite000000002-211834526961', 'bbbbexamplesite000000002-20261019T050102')):
             before = {'id': 'a', 'name': first, 'image': 'ghcr.io/x/encoder:1'}
             allow = hi.cpu_hogs([before], {'a': 60.0}, 3600, {})[0]['allow']
-            self.assertEqual(allow, {'cpuLimits': {'bbu24hzgels1n2m1sznx3fdu-*': 70}})
+            self.assertEqual(allow, {'cpuLimits': {'bbbbexamplesite000000002-*': 70}})
             after = {'id': 'b', 'name': second, 'image': 'ghcr.io/x/encoder:2'}
             self.assertEqual(hi.cpu_hogs([after], {'b': 60.0}, 3600, allow), [])
 
