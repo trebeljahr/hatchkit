@@ -1,0 +1,11 @@
+[Unit]
+Description=Check hourly for Traefik and Uptime Kuma patch releases
+
+[Timer]
+OnCalendar=*-*-* *:50:00 UTC
+OnBootSec=20min
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

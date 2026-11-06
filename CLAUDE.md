@@ -139,6 +139,12 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   by `host updates install`, never enabled by it: opt-in file, token and
   `systemctl enable --now hatchkit-image-rebuilds.timer` are the operator's
   (production write; ask first). Rules in `update-watch/README.md`.
+- Automatic service patches: `cli/src/templates/update-watch/service-patches.py`
+  applies Traefik and Uptime Kuma patch releases (same major.minor) with a
+  no-network canary, a routed-host sweep, network reconnects and automatic
+  rollback, and keeps Coolify's stored compose copies in step (`sync-coolify`).
+  Installed by `host updates install`, never enabled by it; config
+  `/etc/hatchkit-security/service-patches.json` + timer are the operator's.
 - `hatchkit audit cloudflare [--json] [--hours <n>]`: read-only check of the
   Cloudflare account against what hatchkit created: tokens it has no record
   of (by id), audit-log entries by the operator token outside a recorded

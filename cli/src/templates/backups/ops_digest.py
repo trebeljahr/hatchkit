@@ -249,6 +249,90 @@ def rebuild_items(work, now, units=UNITS):
     return fixed, needs, unchecked
 
 
+SERVICE_PATCH_STATUS = 'service-patch-status.json'
+SERVICE_PATCH_TIMER = 'hatchkit-service-patches.timer'
+SERVICE_PATCH_LIMIT = 3 * 3600
+SERVICE_PATCH_COMMAND = 'sudo python3 /opt/hatchkit-backups/service-patches.py'
+SERVICE_NAMES = {'traefik': 'Traefik', 'kuma': 'Uptime Kuma'}
+
+
+def service_patch_items(work, now, units=UNITS):
+    """Automatic patch releases of Traefik and Uptime Kuma (update-watch/service-patches.py).
+
+    A landed patch rides along under Fixed automatically for a day. A failed or
+    rolled-back one pauses that service and stays under Needs you until cleared.
+    Operator test runs that rolled back as asked are not listed. So is a Coolify copy
+    that could not follow a patch: a Coolify proxy restart or redeploy would put the
+    old version back. Only named fields of the status file are read.
+    """
+    fixed, needs, unchecked = [], [], []
+    status = read_json(work / SERVICE_PATCH_STATUS)
+    enabled = (Path(units) / 'timers.target.wants' / SERVICE_PATCH_TIMER).exists()
+    if status is None:
+        if enabled:
+            unchecked.append({'what': 'Automatic service patches have no recent result.',
+                              'command': 'systemctl status ' + SERVICE_PATCH_TIMER})
+        return fixed, needs, unchecked
+    try:
+        checked = dt.datetime.fromisoformat(status['checkedAt'])
+    except (KeyError, TypeError, ValueError):
+        checked = None
+    if enabled and (checked is None or (now - checked).total_seconds() > SERVICE_PATCH_LIMIT):
+        unchecked.append({'what': 'Automatic service patches have no recent result.',
+                          'command': 'systemctl status ' + SERVICE_PATCH_TIMER})
+    for name, record in sorted((status.get('targets') or {}).items()):
+        record = record if isinstance(record, dict) else {}
+        label = SERVICE_NAMES.get(record.get('kind'), name)
+        plan = record.get('lastPlan') or {}
+        if plan.get('action') == 'error':
+            unchecked.append({'what': 'Automatic patches of %s could not check for releases: %s.'
+                                      % (label, plan.get('reason') or 'unknown error'),
+                              'command': SERVICE_PATCH_COMMAND + ' plan'})
+        attempts = [a for a in record.get('attempts') or [] if isinstance(a, dict)]
+        real = [a for a in attempts if not (a.get('test') and a.get('status') == 'rolled-back' and a.get('checksPassed'))]
+        last = real[-1] if real else None
+        if last and last.get('status') != 'landed' and not last.get('cleared'):
+            what = {'rolled-back': 'was rolled back', 'rollback-failed': 'failed and its rollback failed too',
+                    'canary-failed': 'failed its canary run', 'failed': 'did not finish'}.get(last.get('status'), 'failed')
+            detail = 'Reason: %s. ' % (last.get('error') or 'unknown')
+            if last.get('rollbackError'):
+                detail += 'Rollback problem: %s. Check the service now. ' % last['rollbackError']
+            else:
+                detail += 'The previous version is running. '
+            detail += 'Patches of %s are paused until you clear them.' % label
+            needs.append({'what': 'Automatic patch of %s %s to %s %s.' % (label, last.get('from') or '?', last.get('to') or '?', what),
+                          'detail': detail, 'command': SERVICE_PATCH_COMMAND + ' clear ' + name})
+        for attempt in attempts:
+            try:
+                verified = dt.datetime.fromisoformat(attempt['verifiedAt'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if attempt.get('status') != 'landed' or attempt.get('test') or now - verified >= dt.timedelta(hours=26):
+                continue
+            detail = 'A canary on the new image passed first. '
+            if record.get('kind') == 'traefik':
+                hosts = (attempt.get('detail') or {}).get('hostsChecked')
+                detail += 'Every routed hostname (%s) answered after the swap as before it.' % hosts
+            else:
+                detail += 'Monitors, users and notifications are unchanged and the page answers.'
+            if attempt.get('fixes'):
+                detail += ' Fixes ' + ', '.join(str(f) for f in attempt['fixes']) + '.'
+            fixed.append({'what': 'Patched %s %s to %s.' % (label, attempt.get('from'), attempt.get('to')),
+                          'detail': detail, 'command': SERVICE_PATCH_COMMAND + ' status'})
+    sync = status.get('coolifySync') or {}
+    if sync.get('error'):
+        needs.append({'what': 'Coolify\'s copy of the patched compose files could not be checked: %s.' % sync['error'],
+                      'detail': 'Until it matches, a Coolify proxy restart or redeploy may reinstall the old version.',
+                      'command': SERVICE_PATCH_COMMAND + ' sync-coolify'})
+    for row in sync.get('results') or []:
+        if isinstance(row, dict) and row.get('status') == 'refused':
+            which = 'proxy of server ' + str(row.get('server')) if row.get('kind') == 'proxy' else 'service ' + str(row.get('app') or row.get('service'))
+            needs.append({'what': 'Coolify\'s copy of the %s does not match the host: %s.' % (which, row.get('reason') or 'refused'),
+                          'detail': 'A Coolify proxy restart or redeploy would write Coolify\'s copy back to the host.',
+                          'command': SERVICE_PATCH_COMMAND + ' sync-coolify'})
+    return fixed, needs, unchecked
+
+
 def collect(work, host, now, backup_issues, units=UNITS):
     """Everything open on this host. Reads only named fields of the status files."""
     needs, waiting, unchecked, raw_needs, raw_waiting, paste_rows = [], [], [], [], [], []
@@ -335,6 +419,10 @@ def collect(work, host, now, backup_issues, units=UNITS):
     auto_fixed += rebuilt
     needs += rebuild_needs
     unchecked += rebuild_unchecked
+    patched, patch_needs, patch_unchecked = service_patch_items(work, now, units)
+    auto_fixed += patched
+    needs += patch_needs
+    unchecked += patch_unchecked
     file_issue = None
     if files.get('error'):
         file_issue = 'The file integrity check crashed: ' + str(files['error']) + '.'

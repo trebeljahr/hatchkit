@@ -1,0 +1,18 @@
+[Unit]
+Description=Apply patch releases of Traefik and Uptime Kuma with a canary and automatic rollback
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+# No config file, no patches: installing the unit enables nothing.
+ExecCondition=/usr/bin/test -f /etc/hatchkit-security/service-patches.json
+ExecStart=/usr/bin/python3 /opt/hatchkit-backups/service-patches.py run
+User=root
+UMask=0077
+Nice=10
+TimeoutStartSec=45min
+MemoryMax=512M
+PrivateTmp=true
+ProtectHome=true
+NoNewPrivileges=true

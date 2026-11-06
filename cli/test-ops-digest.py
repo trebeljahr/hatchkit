@@ -252,6 +252,64 @@ class WhenItSends(DigestCase):
         self.assertEqual(self.sent[0][1]['sections']['unchecked'][0]['what'],
                          'Automatic image rebuilds have no recent result.')
 
+    def write_patches(self, attempts, checked=NOW, kind='traefik', **extra):
+        (self.work / digest.SERVICE_PATCH_STATUS).write_text(json.dumps(
+            {'checkedAt': checked.isoformat(), 'error': None,
+             'targets': {'traefik': {'kind': kind, 'attempts': attempts, 'lastPlan': {'action': 'none'}}}, **extra}))
+
+    def test_a_landed_service_patch_rides_along_for_a_day(self):
+        landed = {'status': 'landed', 'from': '3.7.17', 'to': '3.7.18', 'verifiedAt': NOW.isoformat(),
+                  'fixes': ['GHSA-xxxx'], 'detail': {'hostsChecked': 31}}
+        self.write_patches([landed])
+        self.run_digest()
+        self.assertEqual(self.sent, [], 'a patch alone sends no digest')
+        self.write_watch([direct()])
+        self.run_digest(NOW + DAY)
+        item = self.sent[0][1]['sections']['fixed'][0]
+        self.assertEqual(item['what'], 'Patched Traefik 3.7.17 to 3.7.18.')
+        self.assertIn('Every routed hostname (31) answered', item['detail'])
+        self.assertIn('Fixes GHSA-xxxx.', item['detail'])
+
+    def test_a_rolled_back_service_patch_needs_the_owner_until_cleared(self):
+        failed = {'status': 'rolled-back', 'from': '3.7.17', 'to': '3.7.18', 'error': 'routes stopped answering: a.test'}
+        self.write_patches([failed])
+        self.run_digest()
+        item = self.sent[0][1]['sections']['needs'][0]
+        self.assertEqual(item['what'], 'Automatic patch of Traefik 3.7.17 to 3.7.18 was rolled back.')
+        self.assertIn('The previous version is running.', item['detail'])
+        self.assertEqual(item['command'], digest.SERVICE_PATCH_COMMAND + ' clear traefik')
+        self.write_patches([dict(failed, cleared='x')])
+        self.run_digest(NOW + DAY)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_an_operator_test_rollback_is_not_news_but_a_failed_rollback_is(self):
+        self.write_patches([{'status': 'rolled-back', 'test': True, 'checksPassed': True, 'verifiedAt': NOW.isoformat()}])
+        self.run_digest()
+        self.assertEqual(self.sent, [])
+        self.write_patches([{'status': 'rollback-failed', 'test': True, 'from': '2.5.9', 'to': '2.5.9',
+                             'error': 'x', 'rollbackError': 'Kuma not healthy'}], kind='kuma')
+        self.run_digest(NOW + DAY)
+        item = self.sent[0][1]['sections']['needs'][0]
+        self.assertIn('Uptime Kuma 2.5.9 to 2.5.9 failed and its rollback failed too', item['what'])
+        self.assertIn('Check the service now', item['detail'])
+
+    def test_a_coolify_copy_that_cannot_follow_needs_the_owner(self):
+        self.write_patches([], coolifySync={'at': NOW.isoformat(), 'results': [
+            {'kind': 'proxy', 'server': 'srv1', 'status': 'refused', 'reason': 'host file differs from Coolify beyond the image line'},
+            {'kind': 'service', 'app': 'uptime-kuma', 'status': 'in-sync'}]})
+        self.run_digest()
+        whats = [i['what'] for i in self.sent[0][1]['sections']['needs']]
+        self.assertEqual(whats, ["Coolify's copy of the proxy of server srv1 does not match the host: "
+                                 "host file differs from Coolify beyond the image line."])
+
+    def test_service_patch_timer_counts_only_when_enabled(self):
+        (self.units / 'timers.target.wants').mkdir()
+        (self.units / 'timers.target.wants' / digest.SERVICE_PATCH_TIMER).write_text('')
+        self.write_patches([], checked=NOW - dt.timedelta(hours=4))
+        self.run_digest()
+        self.assertEqual(self.sent[0][1]['sections']['unchecked'][0]['what'],
+                         'Automatic service patches have no recent result.')
+
     def test_a_check_gone_quiet_is_not_checked_rather_than_clean(self):
         (self.units / 'hatchkit-file-integrity.timer').write_text('')
         self.run_digest()

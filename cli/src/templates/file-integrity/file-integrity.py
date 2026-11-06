@@ -30,7 +30,10 @@ CONFIG = '/etc/hatchkit-security/aide.conf'
 # Files Hatchkit itself rewrites: accepted only when their hash equals the
 # record the writer left beside its own status, never by path alone.
 SELF_MANAGED = {'/etc/hatchkit-security/image-assessments.json': ('/var/lib/hatchkit-backups/review-renewal.json',
-                                                                  'Hatchkit review renewal')}
+                                                                  'Hatchkit review renewal'),
+                # service-patches.py moves the proxy's imageId pin with a patch release.
+                '/etc/hatchkit-security/container-policy.json': ('/var/lib/hatchkit-backups/service-patch-policy.json',
+                                                                 'Hatchkit service patch')}
 SECTIONS = {'Added entries:': 'added', 'Removed entries:': 'removed', 'Changed entries:': 'changed'}
 ENTRY = re.compile(r'^(\S)\s?([=+\-<>!])[^:]*:\s(/.*)$')
 MAX_AUTO_FILES = 400

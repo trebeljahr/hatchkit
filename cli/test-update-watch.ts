@@ -40,6 +40,7 @@ for (const file of [
   "test-file-integrity.py",
   "test-ops-digest.py",
   "test-image-rebuilds.py",
+  "test-service-patches.py",
   "src/templates/docker-discovery/test-metadata-guard.py",
 ]) {
   const python = spawnSync("python3", [file], { stdio: "inherit" });
@@ -552,11 +553,14 @@ esac`,
     "hatchkit-image-vulnerabilities-failed.service",
     "hatchkit-image-vulnerabilities.service",
     "hatchkit-image-vulnerabilities.timer",
+    "hatchkit-service-patches.service",
+    "hatchkit-service-patches.timer",
     "hatchkit-update-watch-failed.service",
     "hatchkit-update-watch.service",
     "hatchkit-update-watch.timer",
     "image-rebuilds.py",
     "image-vulnerabilities.py",
+    "service-patches.py",
     "update-watch-cloudflare.json",
     "update-watch-services.json",
     "update-watch.py",
@@ -592,6 +596,11 @@ esac`,
   assert.ok(dryExit < installer.indexOf("temp.write_text"), "dry-run exits before any write");
   const enableLine = installer.split("\n").find((line) => line.includes("'enable','--now'"))!;
   assert.ok(!enableLine.includes("image-rebuilds"), "install never enables automatic rebuilds");
+  assert.ok(!enableLine.includes("service-patches"), "install never enables automatic service patches");
+  assert.match(
+    payload.files["hatchkit-service-patches.service"],
+    /ExecCondition=\/usr\/bin\/test -f \/etc\/hatchkit-security\/service-patches\.json/,
+  );
   for (const check of [
     "fail('unexpected installer files')",
     "fail('the backup runner is not installed",

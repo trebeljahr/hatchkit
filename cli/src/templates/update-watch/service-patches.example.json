@@ -1,0 +1,29 @@
+{
+  "window": [3, 5],
+  "minAgeHours": 24,
+  "targets": [
+    {
+      "name": "traefik",
+      "kind": "traefik",
+      "container": "coolify-proxy",
+      "compose": "/data/coolify/proxy/docker-compose.yml",
+      "composeService": "traefik"
+    },
+    {
+      "name": "uptime-kuma",
+      "kind": "kuma",
+      "container": "uptime-kuma-<service-uuid>",
+      "compose": "/data/coolify/services/<service-uuid>/docker-compose.yml",
+      "project": "<service-uuid>",
+      "volume": "<service-uuid>_uptime-kuma-data",
+      "url": "https://uptime.example.com/"
+    }
+  ],
+  "coolifySync": {
+    "container": "coolify",
+    "proxies": ["<server-uuid>", "<other-server-uuid>"],
+    "services": [
+      {"uuid": "<service-uuid>", "app": "uptime-kuma", "container": "uptime-kuma-<service-uuid>", "kind": "kuma"}
+    ]
+  }
+}

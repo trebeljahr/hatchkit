@@ -260,3 +260,57 @@ app in. The server must report `build` from `BUILD_ID` (the starter does).
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 cli/test-image-rebuilds.py
 ```
+
+# Automatic service patches (Traefik, Uptime Kuma)
+
+`service-patches.py` applies patch releases (same major.minor, higher patch) of
+Coolify's proxy (Traefik) and Uptime Kuma, the two stateless third-party services
+on plain official images. Never a database, never a minor or major jump, never an
+app image (those go through `image-rebuilds.py` or a reviewed upgrade).
+
+When: hourly timer. A patch that fixes an update-watch advisory goes at the next
+run. Any other patch waits until it is `minAgeHours` old (24) and the hour is
+inside `window` (03:00-05:00 UTC). A failure pauses that service until
+`service-patches.py clear <target>`.
+
+How, per target:
+
+- Canary first, with no network. Traefik: the new image with the live command,
+  env (from a 0600 file) and every mount read-only, until the container's own
+  health test passes. Kuma: a copy of the data volume, the live user, limits and
+  tmpfs mounts, until the image's health check passes and the monitor, user and
+  notification counts match the live ones.
+- Traefik swap: routed hostnames (router labels of running containers and
+  `dynamic/*.yml`) are fetched through `127.0.0.1:443` before and after. The
+  proxy's networks are captured first and each is `docker network connect`ed
+  right after `docker compose up -d --no-deps traefik`. The image is pinned as
+  `traefik:vX.Y.Z@sha256:…` (Docker Hub's digest for that tag). A pinned
+  container-policy `imageId` moves with it; the new policy's hash goes to
+  `/var/lib/hatchkit-backups/service-patch-policy.json`, the one rewrite
+  `file-integrity.py` accepts for that file. Any host that answered before and
+  fails twice after, or an unhealthy proxy, rolls back compose, pin and image.
+- Kuma swap: stopped, its volume rsynced to
+  `/var/lib/hatchkit-service-patches/<target>/data`, recreated on the new
+  `-rootless` tag. Healthy, same counts and its URL answers, or the old compose
+  and that data snapshot go back.
+
+Coolify keeps its own copy of the proxy compose (`Server.proxy`) and of each
+service compose and writes it back to the host on a proxy restart or redeploy.
+Coolify's own `StartProxy` reconnects only networks of `coolify.managed`
+containers and removes the proxy before starting the new one, so patches run
+locally instead, and `sync-coolify` (run on the host that runs Coolify) follows
+them: when a host file differs from Coolify's copy by exactly the image line and
+the container runs that image, it updates the copy and its change hashes (for a
+service also the raw compose and `service_applications.image`). Anything else
+is refused and listed under Needs you.
+
+Opt-in: installed by `hatchkit host updates install`, never enabled by it. The
+operator writes `/etc/hatchkit-security/service-patches.json` (start from
+`service-patches.example.json`) and runs
+`systemctl enable --now hatchkit-service-patches.timer`. Test a full
+canary/swap/rollback without a new release:
+`service-patches.py run --target <t> --to <running tag> --force-rollback`.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 cli/test-service-patches.py
+```
