@@ -75,6 +75,10 @@ resource "hcloud_firewall" "hardened" {
     }
   }
 
+  # HTTP/HTTPS only when http_source_ips is non-empty; a box with no web
+  # service (e.g. a Telegram long-polling bot) sets it to [] and keeps
+  # 80/443 closed. Hetzner rejects a rule with an empty source list.
+
   # Lets Tailscale peers connect directly instead of through a DERP relay.
   dynamic "rule" {
     for_each = var.tailscale_direct_udp ? [1] : []
@@ -87,20 +91,26 @@ resource "hcloud_firewall" "hardened" {
     }
   }
 
-  rule {
-    description = "HTTP"
-    direction   = "in"
-    protocol    = "tcp"
-    port        = "80"
-    source_ips  = var.http_source_ips
+  dynamic "rule" {
+    for_each = length(var.http_source_ips) > 0 ? [1] : []
+    content {
+      description = "HTTP"
+      direction   = "in"
+      protocol    = "tcp"
+      port        = "80"
+      source_ips  = var.http_source_ips
+    }
   }
 
-  rule {
-    description = "HTTPS"
-    direction   = "in"
-    protocol    = "tcp"
-    port        = "443"
-    source_ips  = var.http_source_ips
+  dynamic "rule" {
+    for_each = length(var.http_source_ips) > 0 ? [1] : []
+    content {
+      description = "HTTPS"
+      direction   = "in"
+      protocol    = "tcp"
+      port        = "443"
+      source_ips  = var.http_source_ips
+    }
   }
 
   # Outbound — allow all. Restricting outbound at the Hetzner level is
