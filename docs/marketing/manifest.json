@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "project": "hatchkit",
+  "files": [
+    {
+      "file": "screenshots/create-dry-run.png",
+      "purpose": "README hero: hatchkit create --dry-run plan for an example project (nimbus)",
+      "madeBy": "node scripts/marketing/capture-screenshots.mjs",
+      "width": 2080,
+      "height": 2084,
+      "bytes": 297113,
+      "sha256": "7372fe5f16f5c83daaf45d74d720f848eaac31b1be7edd7ba1b6856260810b07",
+      "modified": "2026-11-06"
+    },
+    {
+      "file": "screenshots/help.png",
+      "purpose": "Command overview (hatchkit --help, Getting started and Projects groups)",
+      "madeBy": "node scripts/marketing/capture-screenshots.mjs",
+      "width": 2240,
+      "height": 1712,
+      "bytes": 450172,
+      "sha256": "1c1ce63d4818f235c59482b53317bdd83fc383564868579624543d2516285106",
+      "modified": "2026-11-06"
+    },
+    {
+      "file": "screenshots/status.png",
+      "purpose": "README quickstart: hatchkit status on a machine with only GitHub configured",
+      "madeBy": "node scripts/marketing/capture-screenshots.mjs",
+      "width": 2080,
+      "height": 1154,
+      "bytes": 214342,
+      "sha256": "82ee0a16a24052d7a655671812d652493cc658032bea7d81f4127100424310da",
+      "modified": "2026-11-06"
+    },
+    {
+      "file": "social-preview/social-preview-a.png",
+      "purpose": "GitHub social preview candidate A: screenshot-led",
+      "madeBy": "node scripts/marketing/render-social-preview.mjs",
+      "width": 1280,
+      "height": 640,
+      "bytes": 260606,
+      "sha256": "55813289def1306258ece404b7e1e06dfdea1ab8a45c1f2884fff9fe93180a50",
+      "modified": "2026-11-06"
+    },
+    {
+      "file": "social-preview/social-preview-b.png",
+      "purpose": "GitHub social preview candidate B: typographic, docs-site brand",
+      "madeBy": "node scripts/marketing/render-social-preview.mjs",
+      "width": 1280,
+      "height": 640,
+      "bytes": 195189,
+      "sha256": "e32ace9a44397e74fd367dbf2a35afb8837f9df0154934f15c7c0a5ed46efc71",
+      "modified": "2026-11-06"
+    },
+    {
+      "file": "social-preview/social-preview-c.png",
+      "purpose": "GitHub social preview candidate C: light, setup/create/sync/backup strip",
+      "madeBy": "node scripts/marketing/render-social-preview.mjs",
+      "width": 1280,
+      "height": 640,
+      "bytes": 137315,
+      "sha256": "8d18f510dc163e2b222ce561451a75aba37cb9a8cd661958f99263e218d45af5",
+      "modified": "2026-11-06"
+    }
+  ]
+}

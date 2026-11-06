@@ -1,0 +1,38 @@
+  ✓ GitHub: Authenticated via gh CLI
+  » Stripe (payments) deferred. Finish later: hatchkit add nimbus stripe
+
+  ── Summary ───────────────────────────────────────────────
+
+  Project:    nimbus
+  Domain:     nimbus.example.com
+  Type:       fullstack
+  Deploy to:  new Hetzner cpx21
+  Features:   websocket, stripe, analytics
+  Services:   glitchtip
+  ML:         none
+  Database:   MongoDB (external)
+  Email:      (none)
+  Forwarding: (off)
+  Local dev:  off
+  Scaffold:   yes
+  GitHub:     yes (public)
+  Install:    yes (pnpm install)
+  Deploy now: no
+
+  [dry-run mode — no changes will be made]
+
+  [dry-run] Would scaffold from starter template:
+
+    Source: ~/hatchkit/starter
+    Target: ~/projects/nimbus
+
+    - Copy starter template
+    - Rename project to "nimbus"
+    - Set domain to "nimbus.example.com"
+    - Remove desktop (Electron) scaffolding
+    - Remove mobile (Capacitor) scaffolding
+    - Remove client-core (shared client kit + version handshake)
+    - Remove ML playground, router, types
+  Ports: server=5193, client=6211
+  ⋮
+  ✓ Dry run complete. No changes were made.

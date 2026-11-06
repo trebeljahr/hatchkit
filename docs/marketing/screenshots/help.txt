@@ -1,0 +1,32 @@
+  Getting started:
+    setup           One-time onboarding — wires up all credentials (alias: init)
+    status          Show what's configured and what's next
+    doctor          Health-check every provider with contextual fix hints
+    inventory       Survey what already exists for this project (and flag drift)
+    overview        Fleet-level survey — every resource across all configured providers
+    explain         One-page mental model of the CLI
+
+  Projects:
+    create          Scaffold a new project (interactive)
+    adopt           Bring an existing project under hatchkit management (run in project dir)
+    update          Add features to an already-scaffolded project (run in project dir)
+    server add      Retrofit a server into a client-only project
+    add             Create GlitchTip / Plausible / Listmonk + SES / email / search clients for an existing project
+    add i18n        Give a scaffolded project a second language (writes local files only)
+    dev-setup       Configure local Tailscale development URLs
+    signing         Configure installer signing and store uploads
+    regen-infra     Regenerate owned infrastructure and release files
+    provision s3    Provision project R2 buckets and scoped credentials
+    ses             Inspect and manage SES identities, sending and feedback
+    backup          Configure backups, inspect snapshots and test isolated recovery
+    assets          Move bytes between local S3 and prod buckets (seed/push/pull/migrate)
+    remove          Delete only service resources recorded as created by Hatchkit
+    destroy         Roll back everything hatchkit create did for a project
+    rename-domain   Move a scaffolded project to a new domain (rewrites tfvars/env/manifest)
+    migrate-domain  Move a LIVE project to a new domain (files + SES/R2/DNS/Coolify/Stripe)
+    migrate-runtime Move a LIVE Coolify compose app to Docker Image apps (deploys stop taking the site down)
+    migrate-client  Serve a LIVE project's client from Cloudflare Workers; the API stays on Coolify
+    rename-project  Change a scaffolded project's slug (rewrites manifest/pkg.json/tfvars/env/ledger)
+    set-description Update a project's description across manifest, package.json, Coolify, GitHub
+    sync            Reconcile apps, routing, env, DNS and deploy secrets from the manifest
+    ⋮

@@ -1,0 +1,20 @@
+
+  Provider Status:
+
+  ✓ GitHub (gh CLI)         
+  · Coolify                   — hatchkit config add coolify
+  · Hetzner Cloud             — hatchkit config add hetzner
+  · Cloudflare (operator token)  — hatchkit config add cloudflare
+  · DNS                       — hatchkit config add dns
+  · Cloudflare Workers        — hatchkit config add cloudflare-workers
+  · Project backups (R2)      — hatchkit backup configure --config <provider-config.json>
+  · S3                        — hatchkit config add s3
+  · GPU                       — hatchkit config add modal
+  · GlitchTip (errors)        — hatchkit config add glitchtip
+  · Plausible (analytics)     — hatchkit config add plausible
+  · Listmonk (newsletter)     — hatchkit config add listmonk
+  · Google Search Console     — hatchkit config add search-console
+  · Stripe (payments)         — hatchkit config add stripe
+
+  ML Services: none
+  Next: Run `hatchkit config add coolify` — Coolify is required for full scaffolds.
