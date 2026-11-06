@@ -62,6 +62,18 @@
     comment: "Bootstrap port {{ item }} (remove after setup)"
   loop: "{{ ufw_extra_tcp_ports }}"
 
+# cloud-init (ubuntu-24.04-hardened.yaml) opens 80/443 on first boot. A box
+# whose ufw_allowed_tcp_ports leaves them out (e.g. a Telegram bot with no
+# web service) must not keep those public rules.
+- name: Remove web ports opened by cloud-init but not in the allow list
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+    delete: true
+  loop: "{{ [80, 443] | difference(ufw_allowed_tcp_ports) }}"
+  failed_when: false
+
 - name: Allow tailnet-only TCP ports
   community.general.ufw:
     rule: allow
