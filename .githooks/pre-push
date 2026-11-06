@@ -76,7 +76,7 @@ if [ "$refused" -ne 0 ]; then
 
 pre-push: operator data found — push aborted.
 
-  Move it to the operator's private repository, or replace it with
+  Move it out of this repo, or replace it with
   example values, then rewrite the unpushed commits that added it.
 
 MSG

@@ -200,8 +200,9 @@ Check `hatchkit help <command>` before using flags you have not verified.
 Hatchkit is public. Commit generic tooling only. Never commit one operator's
 fleet: host names, tailnet names or addresses, public IPs, Coolify resource
 UUIDs, Worker URLs, mail addresses, per-app rollout notes, or run scripts and
-evidence written for specific hosts. Keep those in the operator's private
-repository. Tests and docs use made-up names (`app-vps`, `ops-vps`,
+evidence written for specific hosts. Keep those out of this repo: delete
+one-off run scripts after the run, and keep records in the operator's private
+notes. Tests and docs use made-up names (`app-vps`, `ops-vps`,
 `example.com`, `203.0.113.0/24`, `100.64.0.0/10`).
 
 The pre-push hook refuses a push that adds `infra/maintenance/`, or whose added
