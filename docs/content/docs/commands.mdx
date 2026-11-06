@@ -360,6 +360,8 @@ hatchkit add raptor-runner search-console        # verify domain + add Search Co
 
 `stripe` and `signing` are standalone targets — run them by name; they are not part of `all`.
 
+`hatchkit add <project> paid-unlock` writes the paid-unlock runtime (a Cloudflare Worker or the starter's Express route) and edits its `unlocks.json`; `hatchkit stripe sync <project> --mode test|live` creates the matching Stripe products, prices and webhook. Both are local or Stripe-only; see [Paid unlocks](/docs/paid-unlocks).
+
 Values are written into the project, never to stdout: production values encrypted into `.env.production`, development values into the gitignored `.env.development.local`. The committed `.env.development` keeps only local defaults; `add` moves any provisioned credential it finds there into `.env.development.local` and warns. A 0600 copy of every value is also cached under `<config-dir>/provisioned/<project>.*.env`.
 
 A new GlitchTip project's platform is `javascript-node` when a server reports to it (backend, fullstack, the `-server` project of a split one). A client-only project (static, or split `-client`) gets `javascript-nextjs` when the client's `package.json` depends on `next`, else `javascript-browser`.

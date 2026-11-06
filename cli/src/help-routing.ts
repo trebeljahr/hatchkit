@@ -124,5 +124,6 @@ export const CLI_COMMANDS = [
   "release",
   "ses",
   "listmonk",
+  "stripe",
   "help",
 ] as const;

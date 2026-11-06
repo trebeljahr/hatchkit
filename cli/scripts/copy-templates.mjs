@@ -51,6 +51,10 @@ for (const file of files) {
   mkdirSync(dirname(destination), { recursive: true });
   cpSync(join(repo, file), destination, { dereference: true });
 }
+// The paid-unlock runtime core is CLI source (tsc compiles it for `stripe
+// sync`) AND a file `hatchkit add … paid-unlock` copies verbatim into
+// projects, so its TypeScript source ships next to the compiled module.
+cpSync(join(root, "src", "paid-unlock", "core.ts"), join(root, "dist", "paid-unlock", "core.ts"));
 cpSync(join(repo, "README.md"), join(root, "README.md"));
 cpSync(join(repo, "LICENSE"), join(root, "LICENSE"));
 

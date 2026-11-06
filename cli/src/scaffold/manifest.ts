@@ -184,6 +184,11 @@ export interface ProjectManifest {
   localDev?: { slug: string; domain?: string };
   /** Provider integrations that don't write runtime env, but should
    *  still be treated as already added for project-level menus. */
+  /** The project's own Stripe account per mode (`acct_…`). `hatchkit
+   *  stripe sync` sends it as the `Stripe-Context` header when it writes
+   *  with an organization API key, so products, prices and the webhook
+   *  land in this project's account and nowhere else. Not a secret. */
+  stripe?: { accounts?: { test?: string; live?: string } };
   integrations?: {
     /** Cloudflare Email Routing (inbound forwarding). `addresses` are
      *  local parts with their own rule; `migrate-domain` recreates them

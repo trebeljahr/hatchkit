@@ -6,6 +6,11 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ## Unreleased
 
+### Added
+
+- Paid unlocks: `hatchkit add <project> paid-unlock` sells a page, a download or one email through Stripe Checkout, one-time (fixed or pay-what-you-want) or as a subscription. It writes a Cloudflare Worker (`workers/unlock/`) or an Express route in the starter (`services/unlock/`); both run one shared core. There is no buyer database: the paid Checkout Session is the record, a signed cookie or email link is the proof, and a full refund, open dispute or ended subscription ends access. Purchase emails go through Listmonk without making the buyer a subscriber.
+- `hatchkit stripe sync` creates and updates a project's Stripe products, prices and paid-unlock webhook from `unlocks.json`, idempotently and without deleting anything. With a Stripe organization key (`hatchkit stripe org-key`) it writes into the project's own account through `Stripe-Context`. Live runs show the plan and ask first.
+
 ### Fixed
 
 - `keys push --dry-run` plans delivery without provider or keychain access. Adopt defaults new repositories to private and honors explicit visibility. Signing accepts omitted project directories before flags.

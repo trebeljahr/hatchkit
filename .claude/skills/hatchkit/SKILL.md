@@ -57,7 +57,7 @@ Use `hatchkit help <command>` for current options. The families below have diffe
 | `rename-domain`, `rename-project`, `set-description` | Update identity; inspect optional remote effects |
 | `dns publish`, `link-to-cloudflare` | Reconcile records or registrar nameservers |
 | `provision s3`, `assets` | Provision buckets or copy/list objects |
-| `email`, `ses`, `listmonk`, `plausible` | Provider-specific setup and maintenance |
+| `email`, `ses`, `listmonk`, `plausible`, `stripe` | Provider-specific setup and maintenance (`stripe sync` writes products, prices and the paid-unlock webhook; `--dry-run` first) |
 | `signing org-init/apply` | Configure signing providers and project artifacts; dry-run can read GitHub |
 | `release plan/cut/status/check` | Inspect release channels, cut a local commit/tag, or read progress; cut never pushes |
 | `backup` | Configure hosts, register sources, capture, inspect, or restore data |

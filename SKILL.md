@@ -81,6 +81,8 @@ rotation URL, required scopes, and exact `hatchkit config add <provider>` comman
 | `hatchkit listmonk user <project>` | Give a project its own Listmonk API user + roles and rewrite its env (`--dry-run` first; needs the `hatchkit-admin` keychain token; never pushes) |
 | `hatchkit listmonk list <project> <key>` | One more private, double-opt-in list pair (live + `<project>-<key>-test`) granted to the project's list role; prints the ids, writes no env (`--dry-run` first; `hatchkit-admin` keychain token) |
 | `hatchkit add <project> lead-magnet` | List, add or remove a newsletter lead magnet in `magnets.json` (`--key --title --object\|--url`, `--remove`, `--dry-run`); local file only |
+| `hatchkit add <project> paid-unlock` | Sell a page, download or email via Stripe Checkout (one-time or subscription): writes the Worker (`workers/unlock/`) or Express (`services/unlock/`) runtime and edits `unlocks.json` (`--key --name --kind --price\|--min [--suggested] [--interval]`, `--inactive`, `--remove`, `--dry-run`); local files only |
+| `hatchkit stripe sync <project> --mode test\|live` | Create/update the Stripe products, prices (lookup keys) and paid-unlock webhook from `unlocks.json`; never deletes; `--dry-run` first; live asks before writing; org key + `--account acct_…` writes via `Stripe-Context` |
 | `hatchkit rename-domain` | Rename project domain and related deploy config |
 | `hatchkit regen-infra` | Regenerate project infra files |
 | `hatchkit provision s3` | Create project S3/R2 buckets and env entries |

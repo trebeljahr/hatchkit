@@ -72,6 +72,7 @@ const EXTRA_SUBCOMMANDS: Record<string, readonly string[]> = {
   email: ["setup", "status", "ses-mail-from"],
   cloudflare: ["token", "https", "redirect"],
   listmonk: ["user", "list", "isolation-plan"],
+  stripe: ["sync", "org-key", "webhook-secret"],
   ses: [
     "verify",
     "unverify",
@@ -330,6 +331,8 @@ function topDesc(cmd: string): string {
       return "Report what is on the Cloudflare account that hatchkit did not create";
     case "release":
       return "Coordinate one version across every surface";
+    case "stripe":
+      return "Sync a project's paid-unlock products, prices and webhook into Stripe";
     case "keys":
       return "Manage per-project dotenvx private keys";
     case "config":

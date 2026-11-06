@@ -70,6 +70,7 @@ import {
   runProvision,
   runUnprovision,
 } from "./provision/index.js";
+import { STRIPE_USAGE } from "./provision/stripe-usage.js";
 import { scaffoldApp } from "./scaffold/app.js";
 import { scaffoldInfra } from "./scaffold/infra.js";
 import { MANIFEST_FILENAME, type ProjectManifest, readManifest } from "./scaffold/manifest.js";
@@ -424,6 +425,16 @@ async function main(): Promise<void> {
     }
     case "listmonk": {
       await handleListmonkCommand(args.slice(1));
+      break;
+    }
+    case "stripe": {
+      const { runStripeCli } = await import("./provision/stripe-sync-cli.js");
+      try {
+        await runStripeCli(args.slice(1));
+      } catch (err) {
+        console.log(chalk.red(`\n  ${(err as Error).message.split("\n").join("\n  ")}\n`));
+        process.exitCode = 1;
+      }
       break;
     }
     case "gh-pages":
@@ -1298,6 +1309,47 @@ async function handleAdd(): Promise<void> {
   // config edits, ASC API). Special-case it BEFORE the dispatcher so
   // the rest of the handler doesn't have to know about it.
   const positional0 = args.slice(1).filter((a) => !a.startsWith("-"));
+
+  // Paid unlock writes runtime files into the project and edits its
+  // unlocks.json — local files only, like lead-magnet below. Checked
+  // before `stripe` so a flag value can never route it there.
+  const wantsPaidUnlock = positional0[0] === "paid-unlock" || positional0[1] === "paid-unlock";
+  if (wantsPaidUnlock) {
+    const { applyPaidUnlock, printPaidUnlockResult } = await import(
+      "./features/paid-unlock/index.js"
+    );
+    const projectDirArg = positional0[0] === "paid-unlock" ? undefined : positional0[0];
+    const projectDir = projectDirArg ? resolve(projectDirArg) : resolve(".");
+    const dryRun = args.includes("--dry-run");
+    const runtime = flagValue("--runtime");
+    if (runtime !== undefined && runtime !== "worker" && runtime !== "server") {
+      console.log(chalk.red("  --runtime must be worker or server."));
+      process.exitCode = 1;
+      return;
+    }
+    const result = applyPaidUnlock({
+      projectDir,
+      runtime,
+      key: flagValue("--key"),
+      name: flagValue("--name"),
+      description: flagValue("--description"),
+      kind: flagValue("--kind"),
+      price: flagValue("--price"),
+      min: flagValue("--min"),
+      suggested: flagValue("--suggested"),
+      interval: flagValue("--interval"),
+      files: flagValue("--files"),
+      email: flagValue("--email"),
+      subject: flagValue("--subject"),
+      taxCode: flagValue("--tax-code"),
+      active: args.includes("--inactive") ? false : args.includes("--active") ? true : undefined,
+      remove: args.includes("--remove"),
+      dryRun,
+    });
+    printPaidUnlockResult(result, dryRun);
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
 
   // Stripe, like signing, doesn't fit the env-bucket shape the
   // `ProvisionService` fan-out assumes (it writes both env files and
@@ -4164,6 +4216,9 @@ function printCommandHelp(cmd: string | undefined): void {
     case "listmonk":
       printListmonkUsage();
       return;
+    case "stripe":
+      console.log(STRIPE_USAGE);
+      return;
     default:
       printHelp(helpTopicForCommand(cmd));
   }
@@ -5363,6 +5418,17 @@ function printHelp(topic?: HelpTopic): void {
     i18n        A second language for the scaffolded app: typed catalogs, the
                 first-paint gate, per-language public pages (see
                 \`hatchkit help i18n\`). Local files only — no provider call.
+    paid-unlock Sell a page, a download or an email through Stripe Checkout,
+                one-time or as a subscription. Writes the runtime (--runtime
+                worker: workers/unlock/, a Cloudflare Worker on the site's
+                routes; server: services/unlock/ in the Express app) and,
+                with --key, adds or changes a product in unlocks.json:
+                --key <k> --name <n> --kind page|download|email
+                (--price <9.00> | --min <3> [--suggested <8>])
+                [--interval month|year] [--files <object[:name]>,…]
+                [--email <file.html>] [--subject <s>] [--tax-code <txcd_…>]
+                [--inactive|--active] [--remove] [--dry-run]. Local files
+                only; \`hatchkit stripe sync\` creates the Stripe side.
     lead-magnet A free file the newsletter emails after a signup confirms:
                 adds, changes or removes an entry in the newsletter's
                 magnets.json (no flags: lists them). --key <key> --title <t>

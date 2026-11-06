@@ -170,6 +170,18 @@ export const SECRET_KEYS = {
    *  Stripe account. */
   stripeProjectWebhookId: (project: string, mode: "test" | "live") =>
     `stripe:project:${project}:${mode}:webhook-id`,
+  /** Stripe organization API key per mode — `hatchkit stripe sync` writes
+   *  products, prices and the paid-unlock webhook into each project's own
+   *  account with it (`Stripe-Context: acct_…`). Recommended: a restricted
+   *  org key with Products, Prices and Webhook Endpoints write only. Never
+   *  written into a project. */
+  stripeOrgSecretKey: (mode: "test" | "live") => `stripe:org:${mode}:secret-key`,
+  /** The paid-unlock webhook (`/api/unlock/webhook`) — separate from the
+   *  starter's `/api/stripe/webhook` endpoint above. */
+  stripeProjectUnlockWebhookSecret: (project: string, mode: "test" | "live") =>
+    `stripe:project:${project}:${mode}:unlock-webhook-secret`,
+  stripeProjectUnlockWebhookId: (project: string, mode: "test" | "live") =>
+    `stripe:project:${project}:${mode}:unlock-webhook-id`,
   /** Per-scaffolded-project dotenvx private key for .env.production.
    *  Stored in the OS keychain so the CLI's on-disk state never holds
    *  decryption material for the starter's encrypted env. */
@@ -325,7 +337,7 @@ export async function migrateProjectSecrets(
     new RegExp(`^(s3:[^:]+:)(${escaped})(:(?:access-key|secret-key|token-id))$`),
     new RegExp(`^(plausible:)(${escaped})(:site-domain)$`),
     new RegExp(
-      `^(stripe:project:)(${escaped})(:(?:test|live):(?:secret-key|publishable-key|webhook-secret|webhook-id))$`,
+      `^(stripe:project:)(${escaped})(:(?:test|live):(?:secret-key|publishable-key|webhook-secret|webhook-id|unlock-webhook-secret|unlock-webhook-id))$`,
     ),
   ];
 

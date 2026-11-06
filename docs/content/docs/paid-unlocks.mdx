@@ -1,0 +1,174 @@
+---
+title: Paid unlocks — Stripe
+description: Sell a page, a download or an email through Stripe Checkout, one-time or as a subscription, with products kept in code.
+---
+
+You want to sell one thing from a site: a guide, a pack of files, a set of letters, or a monthly supporter page. Setting that up by hand means typing the product and its price into each Stripe account, wiring a webhook, and writing code that remembers who paid.
+
+`hatchkit add <project> paid-unlock` writes that code into the project. `hatchkit stripe sync` creates the Stripe side from a file in the repo. A buyer pays on Stripe Checkout and gets the thing at once, on any device, without an account.
+
+## What the buyer gets
+
+| Kind | After paying |
+| --- | --- |
+| `page` | Pages under `/paid/<key>/`, served only to buyers |
+| `download` | A list of files, streamed from a private bucket |
+| `email` | One email with the goods (text and links) |
+
+Every purchase also sends one email. It holds a link that opens the purchase on another device, the project's refund line, and for a subscription a link to manage or cancel it. A buyer who lost that email asks for it again at `/api/unlock/restore`.
+
+A price is fixed (`900` is 9.00), pay-what-you-want (`{"min": 300, "preset": 800}`), or monthly or yearly (`"interval": "month"`). A subscription unlocks while it is active.
+
+## How access works
+
+There is no buyer database. The paid Stripe Checkout Session is the record, and Stripe keeps the buyer's email for the receipt anyway.
+
+- After Checkout, the buyer gets an HttpOnly cookie for that product, signed with `UNLOCK_TOKEN_SECRET`.
+- The email link carries the same signed proof. It checks Stripe on every use.
+- A cookie checks Stripe again once every 24 hours. If Stripe cannot be reached then, the buyer keeps access.
+- A full refund, an open dispute or an ended subscription removes access: email links at once, cookies within 24 hours. A partial refund keeps access.
+- The webhook sends the purchase email once. It marks the PaymentIntent (or Subscription) in Stripe, so Stripe's retries do not mail twice.
+
+Logs record the product key and the outcome, never an address or an IP.
+
+## Two runtimes, one core
+
+Both runtimes run the same file, `core.ts` (hatchkit's `cli/src/paid-unlock/core.ts`). It uses only `fetch` and WebCrypto.
+
+| Runtime | Where | Use it for |
+| --- | --- | --- |
+| `worker` | `workers/unlock/`, a Cloudflare Worker on routes `<domain>/api/unlock/*` and `<domain>/paid/*` | A static site, or any app whose domain Cloudflare proxies |
+| `server` | `<server>/src/services/unlock/`, mounted in the starter's Express app before `express.json()` | A starter app; the image copies `unlock-private/` next to `dist/` |
+
+`hatchkit add` picks `server` when the project has a starter server, else `worker`. `--runtime` overrides it. A starter app whose client runs on Cloudflare (`clientHost: "cloudflare"`) needs `/paid` in `originPaths`, so page requests reach the server.
+
+Paid pages, email bodies and (server, without a bucket) files live in a private folder: `workers/unlock/private/` or `<server>/unlock-private/`. Keep paid content out of the public site build.
+
+## Products in code
+
+```json
+{
+  "project": "example",
+  "currency": "eur",
+  "refundPolicy": "Not happy? Write to hello@example.com within 30 days for a full refund.",
+  "products": {
+    "field-guide": {
+      "name": "Field guide",
+      "kind": "download",
+      "price": 900,
+      "files": [{ "object": "field-guide.pdf", "filename": "Field guide.pdf" }]
+    },
+    "making-of": { "name": "Making of", "kind": "page", "price": { "min": 300, "preset": 800 } },
+    "letters": { "name": "Five letters", "kind": "email", "price": 500, "email": "letters.html" },
+    "supporter": { "name": "Supporter", "kind": "page", "price": 500, "interval": "month" }
+  }
+}
+```
+
+The runtime only sells what this file lists. Edit it by hand or with flags:
+
+```bash
+hatchkit add <project> paid-unlock                      # write the runtime, list products
+hatchkit add <project> paid-unlock --key field-guide --name "Field guide" \
+  --kind download --price 9 --files "field-guide.pdf:Field guide.pdf"
+hatchkit add <project> paid-unlock --key making-of --name "Making of" \
+  --kind page --min 3 --suggested 8
+hatchkit add <project> paid-unlock --key supporter --name Supporter \
+  --kind page --price 5 --interval month
+hatchkit add <project> paid-unlock --key making-of --inactive   # stop sales, buyers keep access
+```
+
+`--remove` deletes a product, and everyone who bought it loses access. Use `--inactive` to stop sales only.
+
+`refundPolicy` is one line. Stripe shows it above the pay button, and every purchase email repeats it.
+
+## Stripe setup
+
+`hatchkit stripe sync` makes the project's Stripe account match `unlocks.json`:
+
+- one product per key, with id `hk_<project>_<key>`;
+- one current price per product, found by lookup key `hatchkit:<project>:<key>`. Stripe prices cannot change, so a new amount makes a new price, which takes over the lookup key, and the old price is archived;
+- in live mode, the webhook `https://<domain>/api/unlock/webhook`.
+
+```bash
+hatchkit stripe sync <project> --mode test --dry-run   # read Stripe, print the plan
+hatchkit stripe sync <project> --mode test
+hatchkit stripe sync <project> --mode live             # shows the plan, then asks
+```
+
+A second run writes nothing. Sync never deletes. A product removed from `unlocks.json` is reported; `--archive-removed` archives it.
+
+### Which key writes
+
+Each project should have its own Stripe account, so one project's key cannot read another project's buyers. Stripe Organizations hold several accounts under one login.
+
+- **Organization key** (recommended): `hatchkit stripe org-key --mode test|live` stores a restricted organization key (Products, Prices and Webhook Endpoints write). Sync sends `Stripe-Context: <acct_…>`, so every write lands in the project's account. Pass `--account acct_…` once; it is saved in `.hatchkit.json` under `stripe.accounts`.
+- **Project key**: without an organization key, sync uses the project's own key from `hatchkit add <project> stripe`.
+
+The runtime uses a separate restricted key of the project's account: Checkout Sessions write, Customer portal write, PaymentIntents write, Subscriptions write, Charges read, Prices read. The customer portal needs a saved configuration in the Stripe dashboard before "manage" works in live mode.
+
+### The webhook secret
+
+Stripe shows a webhook secret once, when sync creates the endpoint. Sync keeps it in the keychain and writes it where the runtime reads it:
+
+| Runtime | test | live |
+| --- | --- | --- |
+| worker | `workers/unlock/.dev.vars` | `hatchkit stripe webhook-secret <dir> --mode live \| pnpm --dir workers/unlock exec wrangler secret put UNLOCK_WEBHOOK_SECRET` |
+| server | `.env.development.local` | `.env.production` (encrypted) |
+
+Test mode creates no endpoint unless you pass `--webhook-url`. Locally, `stripe listen --forward-to localhost:8787/api/unlock/webhook` prints its own secret; put it in `UNLOCK_WEBHOOK_SECRET` while it runs.
+
+If the keychain lost the secret of an existing endpoint, sync says so. `--recreate-webhook` deletes and recreates the endpoint; deploy the new secret right after.
+
+`hatchkit destroy` does not remove the paid-unlock webhook or the Stripe products. Archive them in the Stripe dashboard when a project ends.
+
+Sync pins `Stripe-Version: 2025-03-31.basil`. `HATCHKIT_STRIPE_API_VERSION` overrides it for sync, and the runtime's optional `STRIPE_API_VERSION` setting overrides it there.
+
+## Tax and refunds
+
+Tax collection is off by default. `"automaticTax": true` turns on Stripe Tax for every Checkout Session. It needs tax registrations in the Stripe dashboard first, and Stripe charges for it per transaction. You stay the seller and file the returns. Prices are created tax-inclusive, so turning tax on later needs no new prices. Set a product's `taxCode` when the default does not fit.
+
+You refund in the Stripe dashboard. Nothing else is needed: access ends as described above.
+
+## Buy button
+
+```html
+<form method="post" action="/api/unlock/checkout">
+  <input type="hidden" name="product" value="field-guide">
+  <button>Buy · €9.00</button>
+</form>
+```
+
+The runtime answers with a redirect to Stripe Checkout. If the site sends a Content-Security-Policy, allow `https://checkout.stripe.com` in `form-action`. `GET /api/unlock/status/<key>` returns `{"unlocked": true}` for a buyer, so the site can show "Open" instead of "Buy".
+
+A product page that is not unlocked yet shows its name, the price and the buy button, plus a link to send the purchase email again.
+
+## Email
+
+Purchase emails go through Listmonk's `/api/tx` with `subscriber_mode: "external"`. A buyer never becomes a Listmonk subscriber. This needs a Listmonk release with external mode, the project's own API user (`hatchkit listmonk user <project>`) and its passthrough tx template. Without the Listmonk settings, nothing is mailed and access still works by cookie.
+
+## Secrets
+
+| Name | Holds |
+| --- | --- |
+| `STRIPE_SECRET_KEY` | The project's restricted runtime key for this mode |
+| `UNLOCK_WEBHOOK_SECRET` | `whsec_…` of the endpoint sync created |
+| `UNLOCK_TOKEN_SECRET` | Any long random string. Changing it logs every buyer out; restore sends new links |
+| `UNLOCK_SITE_URL` (server) | Public origin; defaults to `BETTER_AUTH_URL` |
+| `LISTMONK_*` | Purchase email, as above |
+
+## Routes
+
+| Route | Does |
+| --- | --- |
+| `POST /api/unlock/checkout` | Form field `product`; redirect to Stripe Checkout |
+| `GET /api/unlock/return?session_id=…` | Cookie, then the product. Works for 24 hours after checkout |
+| `GET /api/unlock/claim?t=…` | The email link: cookie, then the product |
+| `GET /api/unlock/files/<key>` | File list of a download |
+| `GET /api/unlock/download/<key>/<n>` | One file, by cookie or the email link |
+| `GET /api/unlock/sent/<key>` | Email product: "sent to your email" |
+| `GET /api/unlock/status/<key>` | `{"unlocked": true \| false}` |
+| `GET` / `POST /api/unlock/restore` | Send the purchase links again |
+| `POST /api/unlock/manage` | Form field `product`; redirect to Stripe's customer portal |
+| `POST /api/unlock/webhook` | Stripe events |
+| `GET /paid/<key>/…` | Page product |

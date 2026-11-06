@@ -48,6 +48,8 @@
   "test-routed-worker-site.ts",
   "test-newsletter-worker.ts",
   "test-lead-magnet.ts",
+  "test-paid-unlock.ts",
+  "test-stripe-sync.ts",
   "test-image-runtime.ts",
   "test-traefik-drain.ts",
   "test-split-readiness.ts",

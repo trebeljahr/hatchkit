@@ -1,0 +1,59 @@
+// Paid unlock Worker. Written by `hatchkit add __PROJECT__ paid-unlock`;
+// edit freely. See README.md.
+//
+// Secrets, set with `pnpm exec wrangler secret put <NAME>`, never in this file
+// (local `wrangler dev` reads them from .dev.vars, which `hatchkit stripe sync
+// --mode test` fills in for the webhook secret):
+//   STRIPE_SECRET_KEY      the project's restricted Stripe key for this mode:
+//                          Checkout Sessions write, Customer portal write,
+//                          PaymentIntents write, Subscriptions write, Charges read,
+//                          Prices read
+//   UNLOCK_WEBHOOK_SECRET  whsec_… of the endpoint `hatchkit stripe sync` created
+//   UNLOCK_TOKEN_SECRET    random HMAC key for the cookies and email links;
+//                          changing it logs every buyer out (their email link
+//                          stops working too, the restore form sends new ones)
+//   LISTMONK_API_TOKEN     token of the project's Listmonk API user (tx:send)
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "__PROJECT__-unlock",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-20",
+  "workers_dev": false,
+  // The apex is proxied through Cloudflare, so the Worker answers on the
+  // site's own origin. More specific routes win over the site's own route.
+  "routes": [
+    { "pattern": "__DOMAIN__/api/unlock/*", "zone_name": "__ZONE__" },
+    { "pattern": "__DOMAIN__/paid/*", "zone_name": "__ZONE__" }
+  ],
+  // private/ holds the paid pages (private/paid/<key>/…) and the email
+  // bodies (private/emails/<file>.html). It is NOT the site's public build:
+  // every request runs the Worker first, which checks the buyer's cookie.
+  "assets": {
+    "directory": "./private",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "vars": {
+    "SITE_URL": "https://__DOMAIN__",
+    "SITE_NAME": "__PROJECT__",
+    "LISTMONK_URL": "https://listmonk.example.com",
+    "LISTMONK_API_USER": "__PROJECT__",
+    // The project's passthrough tx template (`hatchkit add __PROJECT__ listmonk-ses`).
+    "LISTMONK_TX_TEMPLATE_ID": "0",
+    "LISTMONK_FROM": "__PROJECT__ <noreply@mail.example.com>"
+  },
+  // Only when unlocks.json has a download product: the private bucket the
+  // files are streamed from. Never make this bucket public.
+  // "r2_buckets": [{ "binding": "FILES", "bucket_name": "__PROJECT__-paid" }],
+  // Five restore requests per minute per client IP and per address.
+  // namespace_id is any integer not used by another rate limiter in the account.
+  "ratelimits": [
+    { "name": "RESTORE_LIMITER", "namespace_id": "1002", "simple": { "limit": 5, "period": 60 } }
+  ],
+  // Keep our own JSON log lines (no address, no IP) but not Cloudflare's
+  // per-request invocation logs, which would store client IPs and the
+  // claim and download links.
+  "observability": { "enabled": true, "logs": { "invocation_logs": false } }
+}

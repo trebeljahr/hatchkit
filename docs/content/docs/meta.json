@@ -13,6 +13,7 @@
     "providers",
     "secrets-rotation",
     "email",
+    "paid-unlocks",
     "ml-services",
     "gh-pages",
     "cloudflare",
