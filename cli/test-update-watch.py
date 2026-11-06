@@ -1281,6 +1281,62 @@ class HostPackageCoverage(unittest.TestCase):
         self.assertIn('keep TLS verification enabled',message);self.assertNotIn(SECRET,message)
 
 
+class HostSecurityAutoPatch(unittest.TestCase):
+    def pkg(self, name, blocked=False):
+        return {'kind': 'host-package', 'service': 'host-os', 'name': name, 'id': 'ubuntu-security:' + name,
+                'fixed': '2', 'severity': 'high', 'blockedByPolicy': blocked, 'summary': name}
+
+    def test_upgrade_runs_in_its_own_transient_unit_and_skips_pinned_packages(self):
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return uw.subprocess.CompletedProcess(argv, 0, '', '')
+        result = uw.apply_host_security_updates([self.pkg('openssl'), self.pkg('pinned', blocked=True)], run=run)
+        self.assertEqual(result, {'packages': ['openssl'], 'outcome': 'finished'})
+        self.assertEqual(calls[0][:2], ['systemd-run', '--unit=' + uw.HOST_UPGRADE_UNIT])
+        self.assertIn('--wait', calls[0])
+        self.assertEqual(calls[0][-1], '/usr/bin/unattended-upgrade')
+        self.assertIsNone(uw.apply_host_security_updates([self.pkg('pinned', blocked=True)], run=run))
+        def slow(argv, **kwargs):
+            raise uw.subprocess.TimeoutExpired(argv, 600)
+        self.assertEqual(uw.apply_host_security_updates([self.pkg('openssl')], run=slow)['outcome'], 'still running')
+        self.assertEqual(uw.apply_host_security_updates([self.pkg('openssl')], run=lambda a, **k: uw.subprocess.CompletedProcess(a, 1))['outcome'], 'failed')
+
+    def test_scan_reports_only_what_the_upgrade_left(self):
+        before = [self.pkg('openssl'), self.pkg('curl')]
+        after = [self.pkg('curl')]
+        with patch.object(uw, 'host_package_findings', side_effect=[(before, []), (after, [])]), \
+             patch.object(uw, 'list_services', return_value=([], {})):
+            report = uw.scan(None, [], None, now=NOW, host_packages=True, patch_host=True,
+                             patcher=lambda f: {'packages': ['curl', 'openssl'], 'outcome': 'finished'})
+        self.assertEqual([f['name'] for f in report['findings']], ['curl'])
+        self.assertEqual((report['hostPatch']['patched'], report['hostPatch']['remaining']), (['openssl'], ['curl']))
+        with patch.object(uw, 'host_package_findings', return_value=(before, [])), \
+             patch.object(uw, 'list_services', return_value=([], {})):
+            report = uw.scan(None, [], None, now=NOW, host_packages=True,
+                             patcher=lambda f: self.fail('patching is opt-in'))
+        self.assertNotIn('hostPatch', report)
+
+    def test_check_keeps_the_patch_record_and_surfaces_a_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+            smtp = work / 'smtp.json'; smtp.write_text('{}'); smtp.chmod(0o600)
+            config = {'alerts': {'enabled': True, 'to': 'o@example.com', 'from': 'b@example.com', 'smtpFile': str(smtp)}}
+            def report(patch_record, rows):
+                return lambda *a, **k: {'services': [], 'findings': rows, 'skipped': [], 'hostPatch': patch_record}
+            done = {'packages': ['openssl'], 'outcome': 'finished', 'patched': ['openssl'], 'remaining': [], 'at': NOW.isoformat()}
+            with patch.object(uw, 'scan', side_effect=report(done, [])):
+                state, _ = uw.check(None, [], None, work, config, lambda *a: 'id', NOW)
+            self.assertEqual(state['lastHostPatch']['patched'], ['openssl'])
+            self.assertTrue(state['ok'])
+            failed = {'packages': ['curl'], 'outcome': 'failed', 'patched': [], 'remaining': ['curl'], 'at': NOW.isoformat()}
+            with patch.object(uw, 'scan', side_effect=report(failed, [self.pkg('curl')])):
+                state, _ = uw.check(None, [], None, work, config, lambda *a: 'id', NOW)
+            self.assertEqual(state['lastHostPatch']['patched'], ['openssl'], 'the last success is kept')
+            self.assertIn('Automatic host security upgrade failed', ' '.join(state['skipped']))
+            self.assertFalse(state['ok'])
+
+
 class GithubFeedCache(unittest.TestCase):
     URL='https://api.github.com/repos/example/service/security-advisories?per_page=100&state=published'
     def setUp(self):

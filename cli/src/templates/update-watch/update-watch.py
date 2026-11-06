@@ -1222,6 +1222,35 @@ def host_package_findings(now, cache=None, sources=None, refresh_path=None, dist
     return findings, skipped
 
 
+HOST_UPGRADE_UNIT = 'hatchkit-host-security-upgrade'
+
+
+def apply_host_security_updates(findings, run=subprocess.run):
+    """Install pending trusted Ubuntu security updates before anyone is told about them.
+
+    Runs the host's own `unattended-upgrade` (same origins, blacklist and
+    needrestart policy as the nightly job) in a transient unit, so the
+    watcher's memory limit can never interrupt dpkg. A fixed unit name stops
+    two runs overlapping. A timed-out client leaves the upgrade running in its
+    own unit; the next watch reports what remains. Pinned packages are skipped.
+    """
+    pending = sorted({f['name'] for f in findings if f.get('kind') == 'host-package' and not f.get('blockedByPolicy')})
+    if not pending:
+        return None
+    try:
+        result = run(['systemd-run', '--unit=' + HOST_UPGRADE_UNIT, '--wait', '--collect', '--quiet',
+                      '-p', 'TimeoutStartSec=45min', '-p', 'Nice=10',
+                      '/usr/bin/unattended-upgrade'],
+                     capture_output=True, text=True, timeout=600,
+                     env={**os.environ, 'LC_ALL': 'C', 'DEBIAN_FRONTEND': 'noninteractive'})
+        outcome = 'finished' if result.returncode == 0 else 'failed'
+    except subprocess.TimeoutExpired:
+        outcome = 'still running'
+    except (OSError, subprocess.SubprocessError):
+        outcome = 'failed'
+    return {'packages': pending, 'outcome': outcome}
+
+
 def image_package_findings(now, path=None):
     live_names = path is None
     path = Path(path) if path is not None else work_dir()[0] / 'image-vulnerability-status.json'
@@ -1414,7 +1443,7 @@ def apply_image_assessments(findings, docker, now, path=None, boundary=static_ht
         return findings, ['Image applicability review configuration is invalid; raw ledger retained']
 
 
-def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=None, chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False, host_packages=False):
+def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=None, chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False, host_packages=False, patch_host=False, patcher=apply_host_security_updates):
     now = now or dt.datetime.now(dt.timezone.utc)
     skipped = []
     containers, images = list_services(docker, services, skipped)
@@ -1532,8 +1561,17 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
         image_findings, image_skipped = image_package_findings(now)
         findings += image_findings
         skipped += image_skipped
+    host_patch = None
     if host_packages:
         package_findings, package_skipped = host_package_findings(now)
+        if patch_host and package_findings:
+            host_patch = patcher(package_findings)
+            if host_patch:
+                package_findings, package_skipped = host_package_findings(now)
+                remaining = {f['name'] for f in package_findings}
+                host_patch.update(at=now.isoformat(timespec='seconds'),
+                                  patched=[p for p in host_patch['packages'] if p not in remaining],
+                                  remaining=[p for p in host_patch['packages'] if p in remaining])
         findings += package_findings
         skipped += package_skipped
     if kev:
@@ -1558,6 +1596,7 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
                  'cloudflare': cloudflare_state, 'skipped': skipped, 'notes': notes,
                  **({'kev': kev_state} if kev else {}),
                  **({'renewedReviews': renewed_reviews} if image_packages and renewed_reviews else {}),
+                 **({'hostPatch': host_patch} if host_patch else {}),
                  **({'githubFeeds':feeds.get.receipt()} if isinstance(getattr(feeds,'get',None),GithubFeedReader) else {})})
 
 
@@ -1713,7 +1752,8 @@ def prior_urgent_notified(previous):
 
 
 def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_SOURCE, cloudflare=None,
-          chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False, host_packages=False):
+          chain=read_chain, runtime=False, host_runtime=False, image_packages=False, kev=False, host_packages=False,
+          patch_host=False, patcher=apply_host_security_updates):
     """Keep the full ledger. Mail only a crash or a new urgent finding; the digest has the rest."""
     now = now or dt.datetime.now(dt.timezone.utc)
     try:
@@ -1722,7 +1762,7 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
         previous = {}
     report, error = None, None
     try:
-        report = scan(docker, services, feeds, source, now, cloudflare, chain, runtime=runtime, host_runtime=host_runtime, image_packages=image_packages, kev=kev, host_packages=host_packages)
+        report = scan(docker, services, feeds, source, now, cloudflare, chain, runtime=runtime, host_runtime=host_runtime, image_packages=image_packages, kev=kev, host_packages=host_packages, patch_host=patch_host, patcher=patcher)
     except WatchError as failure:
         error = str(failure)
     except Exception as failure:  # never echo a message that might carry host data
@@ -1795,6 +1835,16 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
     renewal = {'at': now.isoformat(timespec='seconds'), 'ids': report['renewedReviews']} if report and report.get('renewedReviews') else previous.get('lastAutoRenewal')
     if renewal:
         state['lastAutoRenewal'] = renewal
+    host_patch = (report or {}).get('hostPatch')
+    if host_patch and host_patch.get('patched'):
+        state['lastHostPatch'] = host_patch
+    elif previous.get('lastHostPatch'):
+        state['lastHostPatch'] = previous['lastHostPatch']
+    if host_patch and host_patch.get('outcome') == 'failed':
+        # The pending packages stay listed as findings; the failure itself needs a person.
+        state['skipped'] = skipped = skipped + ['Automatic host security upgrade failed; inspect journalctl -u '
+                                                + HOST_UPGRADE_UNIT + ' and /var/log/unattended-upgrades']
+        state['ok'] = False
     if kev:
         state['kev'] = (report or {}).get('kev')
     if report and 'githubFeeds' in report:
@@ -1897,7 +1947,7 @@ def main(payload=None):
         return
     refresh_host_package_indexes(work)
     feeds = Feeds((payload or {}).get('feeds'), get=GithubFeedReader(work, fresh=args.fresh_feeds))
-    state, mail_error = check(run_docker, services, feeds, work, config, send_email, cloudflare=cloudflare, runtime=True, host_runtime=True, image_packages=True, kev=True, host_packages=True)
+    state, mail_error = check(run_docker, services, feeds, work, config, send_email, cloudflare=cloudflare, runtime=True, host_runtime=True, image_packages=True, kev=True, host_packages=True, patch_host=True)
     print(json.dumps({'ok': state['ok'], 'findings': len(state['findings']), 'error': state['error'],
                       'mailed': state['mailed'], 'mailError': state.get('mailError')}))
     if mail_error:

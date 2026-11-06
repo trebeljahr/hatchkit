@@ -310,6 +310,16 @@ def collect(work, host, now, backup_issues, units=UNITS):
                       'detail': 'Every changed file matched its signed package or a hash Hatchkit recorded when '
                                 'it rewrote the file. The previous baseline is kept.',
                       'command': 'sudo ls ' + str(accepted.get('previousBaseline') or '/var/lib/hatchkit-security/aide')})
+    host_patch = watch.get('lastHostPatch') or {}
+    try:
+        patched_at = dt.datetime.fromisoformat(host_patch['at'])
+    except (KeyError, TypeError, ValueError):
+        patched_at = None
+    if patched_at and now - patched_at < dt.timedelta(hours=26) and host_patch.get('patched'):
+        auto_fixed.append({'what': 'Installed Ubuntu security updates: ' + named(sorted(str(p) for p in host_patch['patched'])) + '.',
+                           'detail': 'The host\'s own unattended-upgrades job ran as soon as the watcher saw them. '
+                                     'File-integrity accepts their files only when they match the signed packages.',
+                           'command': updates_command(host)})
     renewal = watch.get('lastAutoRenewal') or {}
     try:
         renewed_at = dt.datetime.fromisoformat(renewal['at'])

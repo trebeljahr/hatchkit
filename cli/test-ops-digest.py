@@ -187,6 +187,11 @@ class WhenItSends(DigestCase):
         self.run_digest(NOW + 3 * DAY)
         self.assertEqual(self.sent[1][1]['sections']['fixed'], [], 'an old auto-fix is not repeated')
 
+    def test_installed_host_updates_are_listed_as_fixed(self):
+        self.write_watch([direct()], lastHostPatch={'at': NOW.isoformat(), 'patched': ['openssl', 'libssl3t64']})
+        self.run_digest()
+        self.assertIn('libssl3t64, openssl', self.sent[0][1]['sections']['fixed'][0]['what'])
+
     def test_an_auto_renewed_review_is_listed_as_fixed_once(self):
         self.write_watch([direct()], lastAutoRenewal={'at': NOW.isoformat(), 'ids': ['busybox-static-error-pages-20261113']})
         self.run_digest()

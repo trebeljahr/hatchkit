@@ -121,6 +121,15 @@ PYTHONDONTWRITEBYTECODE=1 python3 cli/test-image-assessments.py
 PYTHONDONTWRITEBYTECODE=1 python3 cli/test-update-watch.py
 ```
 
+Before reporting them, the watcher installs pending trusted Ubuntu security
+updates itself: it runs the host's own `unattended-upgrade` (same origins,
+blacklist and needrestart policy as the nightly job) in the transient unit
+`hatchkit-host-security-upgrade`, outside the watcher's memory limit, then
+re-reads the security pocket. Installed packages appear under Fixed
+automatically; what remains stays a finding. Pinned packages are left alone, and
+a failed upgrade is reported as Not checked. File-integrity accepts the new files
+only when they match the signed packages.
+
 A pending trusted APT update is an actionable maintenance item, even when a
 runtime's embedded copy was already patched. Review the current vendor notice:
 the APT review priority is not a CVE severity assessment. Public code execution
