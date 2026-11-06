@@ -18,6 +18,11 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # Add a semver-minor ignore for each 0.x dependency the app's behaviour
+      # rests on (a 0.x minor is a breaking release), and for tooling whose
+      # minors change its config (Biome needs `biome migrate`):
+      # - dependency-name: "@biomejs/biome"
+      #   update-types: ["version-update:semver-minor"]
     groups:
       npm-minor-patch:
         applies-to: version-updates
