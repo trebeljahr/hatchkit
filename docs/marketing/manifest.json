@@ -64,12 +64,12 @@
     },
     {
       "file": "social-preview/social-preview-a3-2.png",
-      "purpose": "GitHub social preview round 3, A3-2 (dark): A3-1 plus the line 'CLI for self-hosted TypeScript apps'",
+      "purpose": "GitHub social preview round 3, A3-2 (dark): A3-1 plus the line 'Automates the drudgery of starting a new project'",
       "madeBy": "node scripts/marketing/render-social-preview.mjs --round 3",
       "width": 1280,
       "height": 640,
-      "bytes": 191104,
-      "sha256": "dce070dc74dd5b2fb15e020654790ff4ae56273b27328a494fd5b843765272ab",
+      "bytes": 159888,
+      "sha256": "3128218f54bfb4267b649709563d3e44580464b3ded7fb7524ba794e41f718dd",
       "modified": "2026-11-07"
     },
     {
@@ -78,8 +78,8 @@
       "madeBy": "node scripts/marketing/render-social-preview.mjs --round 3",
       "width": 1280,
       "height": 640,
-      "bytes": 180574,
-      "sha256": "e66d53488f5b230c92a0c5238520eef2534063d7861e4a4fddeb80572cc06d76",
+      "bytes": 149849,
+      "sha256": "48d14fc9dfcbc79dbd99bf054655ef0b92bb283493cc355be2ecbfd571416fd7",
       "modified": "2026-11-07"
     },
     {

@@ -27,7 +27,7 @@ const ROUNDS = {
   ],
   3: [
     ["a3-1", "A (dark): wordmark, command, nine nodes, no line", "a"],
-    ["a3-2", "B (dark): A plus \"CLI for self-hosted TypeScript apps\"", "b"],
+    ["a3-2", "B (dark): A plus \"Automates the drudgery of starting a new project\"", "b"],
     ["a3-3", "C (light): B in the light palette", "c"],
   ],
 };

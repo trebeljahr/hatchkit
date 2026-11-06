@@ -51,7 +51,7 @@ const META = {
     madeBy: `${SOCIAL} --round 3`,
   },
   "social-preview/social-preview-a3-2.png": {
-    purpose: "GitHub social preview round 3, A3-2 (dark): A3-1 plus the line 'CLI for self-hosted TypeScript apps'",
+    purpose: "GitHub social preview round 3, A3-2 (dark): A3-1 plus the line 'Automates the drudgery of starting a new project'",
     madeBy: `${SOCIAL} --round 3`,
   },
   "social-preview/social-preview-a3-3.png": {

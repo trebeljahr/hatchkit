@@ -18,7 +18,7 @@ Brand: the docs site's palettes (dark: near-black `#0b0d12` with indigo `#818cf8
 | [`social-preview/social-preview-c.png`](social-preview/social-preview-c.png) | Social preview candidate C, dark. "Your secrets, committed as ciphertext." beside `screenshots/create-secrets.png`. | 1280×640 | `pnpm marketing:social` | 2026-11-06 |
 | [`social-preview/social-preview-d.png`](social-preview/social-preview-d.png) | Social preview candidate D, light. Six secrets, what makes each one and where hatchkit delivers it. | 1280×640 | `pnpm marketing:social` | 2026-11-06 |
 | [`social-preview/social-preview-a3-1.png`](social-preview/social-preview-a3-1.png) | Round 3 candidate A3-1, dark. Card A with the text cut to labels: the wordmark, the `hatchkit create` pill and nine nodes, each a thing and its provider (Repo/GitHub, DNS/Cloudflare, Server/Hetzner, App/Coolify, Error tracking/GlitchTip, Analytics/Plausible, Email/Listmonk + SES, Backups/R2, Secrets/dotenvx). | 1280×640 | `pnpm marketing:social` | 2026-11-07 |
-| [`social-preview/social-preview-a3-2.png`](social-preview/social-preview-a3-2.png) | Round 3 candidate A3-2, dark. A3-1 plus one line under the wordmark: "CLI for self-hosted TypeScript apps". | 1280×640 | `pnpm marketing:social` | 2026-11-07 |
+| [`social-preview/social-preview-a3-2.png`](social-preview/social-preview-a3-2.png) | Round 3 candidate A3-2, dark. A3-1 plus one line under the wordmark: "Automates the drudgery of starting a new project". | 1280×640 | `pnpm marketing:social` | 2026-11-07 |
 | [`social-preview/social-preview-a3-3.png`](social-preview/social-preview-a3-3.png) | Round 3 candidate A3-3, light. A3-2 in the light palette. | 1280×640 | `pnpm marketing:social` | 2026-11-07 |
 | [`social-preview/template.html`](social-preview/template.html) | Source for every card: round 2 `?v=a`, `b`, `c`, `d`; round 3 `?v=a3-1`, `a3-2`, `a3-3`. | 1280×640 | hand-written | 2026-11-07 |
 
@@ -61,6 +61,8 @@ Every name on the cards is a command, provider or env key in this repo. The plac
 | Each Coolify app gets its own 32-byte deploy secret in GitHub Actions, and no Coolify API token goes to the repo | `cli/src/deploy/coolify-deploy-hook.ts`, `cli/src/deploy/gh-actions-secrets.ts` |
 | The DSN reaches Coolify `SENTRY_DSN` before the first push | `cli/src/provision/glitchtip-delivery.ts` |
 | `secrets rotate` replaces GlitchTip DSNs, R2 tokens and local app secrets and pushes to Coolify and GitHub | `cli/src/secrets/registry.ts`, `docs/content/docs/secrets-rotation.mdx` |
-| Round 3's line "CLI for self-hosted TypeScript apps": `create` scaffolds the TypeScript monorepo in `starter/` and deploys it to Coolify on a server you own | `starter/`, `cli/src/index.ts` (create steps 1 and 6) |
+| The live card's line "Automates the drudgery of starting a new project" (chosen 2026-11-07): `create` runs the repo, DNS, server, app, email, analytics, error-tracking, backup and secrets setup and scaffolds the TypeScript monorepo in `starter/` and deploys it to Coolify on a server you own | `starter/`, `cli/src/index.ts` (create steps 1 and 6) |
 
 What the cards leave out: provider tokens are entered once, at `hatchkit setup`, and a project with the Stripe feature asks for its Stripe keys during `create`. A provider that is not configured becomes a deferred step with its follow-up command.
+
+The live GitHub social preview is `social-preview-a3-2.png` (uploaded 2026-11-07).
