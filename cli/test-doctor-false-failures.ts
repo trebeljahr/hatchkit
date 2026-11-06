@@ -44,6 +44,7 @@ import {
   fallbackHint,
   hetznerHint,
   pausedResult,
+  runDoctorSteps,
 } from "./src/doctor.js";
 import { MANIFEST_FILENAME, MANIFEST_VERSION, readManifest } from "./src/scaffold/manifest.js";
 import { CloudflareApi } from "./src/utils/cloudflare-api.js";
@@ -305,6 +306,57 @@ await check("an App Coolify never saw installed fails with its name", async () =
     },
   );
 });
+
+// ── 5b. checks run side by side, report in order ────────────────────
+// Run one after another, a plain doctor took 80 s and more and printed
+// nothing until the end; one throwing check took the whole run down.
+
+await check(
+  "steps run concurrently, rows stream in step order, a throw is one fail row",
+  async () => {
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    let inFlight = 0;
+    let peak = 0;
+    const step = (label: string, ms: number, fail = false) => ({
+      label,
+      run: async () => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await wait(ms);
+        inFlight--;
+        if (fail) throw new Error("boom");
+        return [{ name: label, status: "ok" as const }];
+      },
+    });
+    const streamed: string[] = [];
+    const running: string[][] = [];
+    const started = Date.now();
+    const rows = await runDoctorSteps(
+      [step("slow", 120), step("fast", 10), step("broken", 20, true), step("last", 10)],
+      {
+        rows: (r) => streamed.push(...r.map((x) => x.name)),
+        running: (labels) => running.push(labels),
+      },
+      3,
+    );
+    const elapsed = Date.now() - started;
+    assert.deepEqual(
+      rows.map((r) => [r.name, r.status]),
+      [
+        ["slow", "ok"],
+        ["fast", "ok"],
+        ["broken", "fail"],
+        ["last", "ok"],
+      ],
+    );
+    assert.equal(rows[2].detail, "boom");
+    assert.deepEqual(streamed, ["slow", "fast", "broken", "last"]);
+    assert.equal(peak, 3, "never more than the limit at once");
+    assert.ok(elapsed < 160, `ran side by side (${elapsed} ms)`);
+    assert.ok(running.some((labels) => labels.includes("slow") && labels.length > 1));
+    assert.deepEqual(running.at(-1), []);
+  },
+);
 
 // ── 6. manifest migration notes once ────────────────────────────────
 

@@ -56,6 +56,7 @@ import {
   getCloudflareTokenValue,
   getSecret,
 } from "./utils/secrets.js";
+import spinner from "./utils/spinner.js";
 
 // A stalled provider must not prevent later checks from reporting. Keep
 // this local to doctor so production API calls retain their own policies.
@@ -2177,104 +2178,178 @@ async function guardedDoctorCheck(
   }
 }
 
-export async function collectDoctorResults(): Promise<CheckResult[]> {
-  const results: CheckResult[] = [];
-  results.push(...(await guardedDoctorCheck("checkGitHub", () => checkGitHub())));
-  results.push(
-    ...(await unlessPaused("coolify", async () => [
-      await checkCoolify(),
-      ...(await checkCoolifyGithubApp()),
-      ...(await checkCoolifyGhcrSsh()),
-      ...(await checkCoolifyComposePullPolicy()),
-      ...(await checkCoolifyEmptySentryDsn()),
-    ])),
+/** One unit of doctor work: the name the progress line shows while it
+ *  runs, and the rows it adds. */
+interface DoctorStep {
+  label: string;
+  run: () => Promise<CheckResult[]>;
+}
+
+/** Live feedback while the checks run. `rows` arrives in the order the
+ *  report prints, as soon as every earlier step has finished; `running`
+ *  names the steps still in flight after each change. */
+export interface DoctorProgress {
+  rows?: (rows: CheckResult[]) => void;
+  running?: (labels: string[], done: number, total: number) => void;
+}
+
+/** How many steps run at once. Most wait on a network answer; the
+ *  slowest (host integrity, update watch) wait on SSH to the backup
+ *  hosts for 20–30 s each. Run one after another, a plain `doctor` took
+ *  80 s and more, and said nothing until the end. */
+const DOCTOR_CONCURRENCY = 8;
+
+export async function collectDoctorResults(progress?: DoctorProgress): Promise<CheckResult[]> {
+  const cwd = process.cwd();
+  const project = (label: string, run: (dir: string) => Promise<CheckResult[]>): DoctorStep => ({
+    label: `project: ${label}`,
+    run: () => run(cwd),
+  });
+  const steps: DoctorStep[] = [
+    { label: "GitHub", run: () => guardedDoctorCheck("checkGitHub", () => checkGitHub()) },
+    {
+      label: "Coolify",
+      run: () =>
+        unlessPaused("coolify", async () => [
+          await checkCoolify(),
+          ...(await checkCoolifyGithubApp()),
+          ...(await checkCoolifyGhcrSsh()),
+          ...(await checkCoolifyComposePullPolicy()),
+          ...(await checkCoolifyEmptySentryDsn()),
+        ]),
+    },
+    { label: "Hetzner", run: () => unlessPaused("hetzner", checkHetzner) },
+    {
+      label: "Cloudflare",
+      run: () => guardedDoctorCheck("checkCloudflareOperator", () => checkCloudflareOperator()),
+    },
+    { label: "DNS", run: () => unlessPaused("dns", checkDns) },
+    {
+      label: "Cloudflare Workers",
+      run: () => unlessPaused("cloudflare-workers", checkCloudflareWorkers),
+    },
+    ...(["hetzner", "aws", "r2"] as const).map((p) => ({
+      label: `S3 (${p})`,
+      run: () => guardedDoctorCheck("checkS3", () => checkS3(p)),
+    })),
+    ...["modal", "runpod", "hf", "replicate"].map((p) => ({
+      label: `GPU (${p})`,
+      run: () => guardedDoctorCheck("checkGpu", () => checkGpu(p)),
+    })),
+    { label: "GlitchTip", run: () => unlessPaused("glitchtip", checkGlitchtip) },
+    { label: "Plausible", run: () => unlessPaused("plausible", checkPlausible) },
+    { label: "Listmonk", run: () => unlessPaused("listmonk", () => checkListmonk()) },
+    {
+      label: "Search Console",
+      run: () => unlessPaused("search-console", checkGoogleSearchConsole),
+    },
+    { label: "Stripe", run: () => unlessPaused("stripe", checkStripe) },
+    { label: "SES feedback", run: () => unlessPaused("ses", () => checkSesBounceFeedback()) },
+    {
+      label: "backup sources",
+      run: () => guardedDoctorCheck("checkBackupSources", () => checkBackupSources()),
+    },
+    // Read-only scan of the same host for signs of a compromised container
+    // (the 2026-10-18 Plausible miner ran for days unnoticed). [] when no
+    // backup host is configured.
+    {
+      label: "host integrity",
+      run: async () => {
+        const { checkHostIntegrity } = await import("./host/integrity.js");
+        return guardedDoctorCheck("checkHostIntegrity", () => checkHostIntegrity());
+      },
+    },
+    // Shared services (Coolify, Traefik, Plausible, …) against their upstream
+    // advisories: Plausible ran four months past a critical fix. One row for
+    // every backup host; [] when none is configured.
+    {
+      label: "shared service updates",
+      run: async () => {
+        const { checkUpdateWatch } = await import("./host/updates.js");
+        return guardedDoctorCheck("checkUpdateWatch", () => checkUpdateWatch());
+      },
+    },
+    // Local-dev (Tailscale-served per-project URLs). Returns [] when the
+    // user hasn't run `hatchkit dev-setup init`, so doctor stays quiet for
+    // anyone not opted in.
+    {
+      label: "local dev",
+      run: async () => {
+        const { checkLocalDevHost } = await import("./dev-setup.js");
+        return guardedDoctorCheck("checkLocalDevHost", () => checkLocalDevHost());
+      },
+    },
+    // Project-local checks — they only find something when doctor was
+    // invoked inside a hatchkit-managed project (manifest at cwd).
+    // Globally they're a no-op, so `hatchkit doctor` from $HOME stays clean.
+    project("dotenvx key", checkProjectKeyState),
+    project("dev env secrets", checkProjectDevEnvSecretsState),
+    project("S3 CORS", checkProjectS3CorsState),
+    project("R2 credentials", checkProjectR2CredsState),
+    project("SES MAIL FROM", checkProjectSesMailFromState),
+    project("Listmonk opt-in", checkProjectListmonkOptinState),
+    project("Listmonk templates", checkProjectListmonkTxTemplateState),
+    project("email routing", checkProjectEmailRoutingState),
+    project("public service", checkProjectPublicServiceState),
+    project("routing", checkProjectRoutingState),
+    project("client host", checkProjectClientHostState),
+    project("auto-deploy", checkProjectCoolifyAutoDeployState),
+    project("credential isolation", checkProjectCredentialIsolationState),
+    project("nginx config", checkProjectNginxConfigState),
+    project("app health", checkProjectCoolifyAppHealthState),
+    project("rolling deploys", checkProjectRollingDeployState),
+    project("deployed ref", checkProjectDeployedRefState),
+    project("deployed version", checkProjectDeployedVersionState),
+    project("DNS", checkProjectDnsResolveState),
+    project("production env", checkProjectProdEnvState),
+    project("deferred steps", async (dir) => checkProjectDeferredSteps(dir)),
+    project("subdir", checkProjectSubdirState),
+    project("operational state", checkProjectOperationalState),
+  ];
+  return runDoctorSteps(steps, progress);
+}
+
+/** Run every step, at most {@link DOCTOR_CONCURRENCY} at once, and
+ *  return their rows in step order whatever order they finish in. A
+ *  step that throws becomes one failing row named after it, so one
+ *  broken check never hides the others' results. */
+export async function runDoctorSteps(
+  steps: DoctorStep[],
+  progress?: DoctorProgress,
+  concurrency = DOCTOR_CONCURRENCY,
+): Promise<CheckResult[]> {
+  const settled: Array<CheckResult[] | undefined> = new Array(steps.length);
+  const running = new Set<string>();
+  let printed = 0;
+  let done = 0;
+  let cursor = 0;
+  const report = () => progress?.running?.([...running], done, steps.length);
+  const worker = async (): Promise<void> => {
+    while (cursor < steps.length) {
+      const index = cursor++;
+      const step = steps[index];
+      running.add(step.label);
+      report();
+      let rows: CheckResult[];
+      try {
+        rows = await step.run();
+      } catch (error) {
+        rows = [{ name: step.label, status: "fail", detail: errorDetail(error) }];
+      }
+      settled[index] = rows;
+      running.delete(step.label);
+      done++;
+      while (printed < steps.length && settled[printed]) {
+        progress?.rows?.(settled[printed] as CheckResult[]);
+        printed++;
+      }
+      report();
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(concurrency, steps.length)) }, worker),
   );
-  results.push(...(await unlessPaused("hetzner", checkHetzner)));
-  results.push(
-    ...(await guardedDoctorCheck("checkCloudflareOperator", () => checkCloudflareOperator())),
-  );
-  results.push(...(await unlessPaused("dns", checkDns)));
-  results.push(...(await unlessPaused("cloudflare-workers", checkCloudflareWorkers)));
-  for (const p of ["hetzner", "aws", "r2"] as const)
-    results.push(...(await guardedDoctorCheck("checkS3", () => checkS3(p))));
-  for (const p of ["modal", "runpod", "hf", "replicate"])
-    results.push(...(await guardedDoctorCheck("checkGpu", () => checkGpu(p))));
-  results.push(...(await unlessPaused("glitchtip", checkGlitchtip)));
-  results.push(...(await unlessPaused("plausible", checkPlausible)));
-  results.push(...(await unlessPaused("listmonk", () => checkListmonk())));
-  results.push(...(await unlessPaused("search-console", checkGoogleSearchConsole)));
-  results.push(...(await unlessPaused("stripe", checkStripe)));
-  results.push(...(await unlessPaused("ses", () => checkSesBounceFeedback())));
-  for (const r of await guardedDoctorCheck("checkBackupSources", () => checkBackupSources()))
-    results.push(r);
-  // Read-only scan of the same host for signs of a compromised container
-  // (the 2026-10-18 Plausible miner ran for days unnoticed). [] when no
-  // backup host is configured.
-  const { checkHostIntegrity } = await import("./host/integrity.js");
-  for (const r of await guardedDoctorCheck("checkHostIntegrity", () => checkHostIntegrity()))
-    results.push(r);
-  // Shared services (Coolify, Traefik, Plausible, …) against their upstream
-  // advisories: Plausible ran four months past a critical fix. One row for
-  // every backup host; [] when none is configured.
-  const { checkUpdateWatch } = await import("./host/updates.js");
-  for (const r of await guardedDoctorCheck("checkUpdateWatch", () => checkUpdateWatch()))
-    results.push(r);
-  // Local-dev (Tailscale-served per-project URLs). Returns [] when the
-  // user hasn't run `hatchkit dev-setup init`, so doctor stays quiet for
-  // anyone not opted in.
-  const { checkLocalDevHost } = await import("./dev-setup.js");
-  for (const r of await guardedDoctorCheck("checkLocalDevHost", () => checkLocalDevHost()))
-    results.push(r);
-  // Project-local checks — only run when doctor was invoked inside a
-  // hatchkit-managed project (manifest at cwd). Globally they're a
-  // no-op, so `hatchkit doctor` from $HOME stays clean.
-  const projectChecks = await checkProjectKeyState(process.cwd());
-  for (const r of projectChecks) results.push(r);
-  const devEnvSecretChecks = await checkProjectDevEnvSecretsState(process.cwd());
-  for (const r of devEnvSecretChecks) results.push(r);
-  const corsChecks = await checkProjectS3CorsState(process.cwd());
-  for (const r of corsChecks) results.push(r);
-  const credChecks = await checkProjectR2CredsState(process.cwd());
-  for (const r of credChecks) results.push(r);
-  const mailFromChecks = await checkProjectSesMailFromState(process.cwd());
-  for (const r of mailFromChecks) results.push(r);
-  const optinChecks = await checkProjectListmonkOptinState(process.cwd());
-  for (const r of optinChecks) results.push(r);
-  const txTemplateChecks = await checkProjectListmonkTxTemplateState(process.cwd());
-  for (const r of txTemplateChecks) results.push(r);
-  const emailRoutingChecks = await checkProjectEmailRoutingState(process.cwd());
-  for (const r of emailRoutingChecks) results.push(r);
-  const publicSvcChecks = await checkProjectPublicServiceState(process.cwd());
-  for (const r of publicSvcChecks) results.push(r);
-  const routingChecks = await checkProjectRoutingState(process.cwd());
-  for (const r of routingChecks) results.push(r);
-  const clientHostChecks = await checkProjectClientHostState(process.cwd());
-  for (const r of clientHostChecks) results.push(r);
-  const autoDeployChecks = await checkProjectCoolifyAutoDeployState(process.cwd());
-  for (const r of autoDeployChecks) results.push(r);
-  const isolationChecks = await checkProjectCredentialIsolationState(process.cwd());
-  for (const r of isolationChecks) results.push(r);
-  const nginxConfigChecks = await checkProjectNginxConfigState(process.cwd());
-  for (const r of nginxConfigChecks) results.push(r);
-  const appHealthChecks = await checkProjectCoolifyAppHealthState(process.cwd());
-  for (const r of appHealthChecks) results.push(r);
-  const rollingChecks = await checkProjectRollingDeployState(process.cwd());
-  for (const r of rollingChecks) results.push(r);
-  const deployedRefChecks = await checkProjectDeployedRefState(process.cwd());
-  for (const r of deployedRefChecks) results.push(r);
-  const deployedVersionChecks = await checkProjectDeployedVersionState(process.cwd());
-  for (const r of deployedVersionChecks) results.push(r);
-  const dnsResolveChecks = await checkProjectDnsResolveState(process.cwd());
-  for (const r of dnsResolveChecks) results.push(r);
-  const prodEnvChecks = await checkProjectProdEnvState(process.cwd());
-  for (const r of prodEnvChecks) results.push(r);
-  const deferredChecks = checkProjectDeferredSteps(process.cwd());
-  for (const r of deferredChecks) results.push(r);
-  const subdirChecks = await checkProjectSubdirState(process.cwd());
-  for (const r of subdirChecks) results.push(r);
-  const operationalChecks = await checkProjectOperationalState(process.cwd());
-  for (const r of operationalChecks) results.push(r);
-  return results;
+  return settled.flatMap((rows) => rows ?? []);
 }
 
 /** Verify that a manifest-recorded `projectSubdir` still exists and
@@ -5004,7 +5079,43 @@ async function offerRepairs(failed: CheckResult[], yes: boolean): Promise<number
 export async function runDoctor(
   opts: { json?: boolean; fix?: boolean; yes?: boolean } = {},
 ): Promise<void> {
-  const results = await collectDoctorResults();
+  // JSON goes to tools: stdout stays one document and nothing animates.
+  // A person gets the header at once, each row as soon as its check
+  // (and every check above it) is done, and a stderr line naming what
+  // is still running — a host check can take half a minute.
+  if (!opts.json) console.log(chalk.bold("  hatchkit doctor — checking configured providers\n"));
+  const live = opts.json ? null : spinner("Checking…").start();
+  const started = Date.now();
+  let waiting = { labels: [] as string[], done: 0, total: 0 };
+  const describe = () => {
+    if (!live || waiting.total === 0) return;
+    const { labels, done, total } = waiting;
+    const shown = labels.slice(0, 3).join(", ");
+    const more = labels.length > 3 ? ` +${labels.length - 3}` : "";
+    const seconds = Math.round((Date.now() - started) / 1000);
+    live.text = `${done}/${total} checks done · waiting on ${shown}${more} (${seconds} s)`;
+  };
+  // The slow checks finish nothing for half a minute: keep the clock moving.
+  const tick = live?.isSpinning ? setInterval(describe, 1000) : undefined;
+  const results = await collectDoctorResults(
+    live
+      ? {
+          rows: (rows) => {
+            // A spinner that isn't animating (no TTY) has no line to clear.
+            if (live.isSpinning) live.clear();
+            for (const r of rows) printDoctorRow(r);
+            if (live.isSpinning) live.render();
+          },
+          running: (labels, done, total) => {
+            waiting = { labels, done, total };
+            describe();
+          },
+        }
+      : undefined,
+  ).finally(() => {
+    clearInterval(tick);
+    live?.stop();
+  });
   const okCount = results.filter((r) => r.status === "ok").length;
   const failCount = results.filter((r) => r.status === "fail").length;
   const skipCount = results.filter((r) => r.status === "skip" && !r.paused && !r.unverified).length;
@@ -5037,27 +5148,6 @@ export async function runDoctor(
     return;
   }
 
-  console.log(chalk.bold("  hatchkit doctor — checking configured providers\n"));
-  for (const r of results) {
-    const icon =
-      r.status === "ok"
-        ? chalk.green("✓")
-        : r.status === "fail"
-          ? chalk.red("✗")
-          : r.status === "warn"
-            ? chalk.yellow("!")
-            : r.status === "deferred"
-              ? chalk.yellow("»")
-              : chalk.dim("·");
-    const name =
-      r.status === "fail"
-        ? chalk.red(r.name)
-        : r.status === "deferred" || r.status === "warn"
-          ? chalk.yellow(r.name)
-          : r.name;
-    const detail = r.detail ? chalk.dim(` — ${r.detail}`) : "";
-    console.log(`  ${icon} ${name}${detail}`);
-  }
   console.log(
     `\n  ${chalk.green(`${okCount} ok`)}  ${failCount ? chalk.red(`${failCount} failing`) : chalk.dim("0 failing")}  ${
       warnResults.length
@@ -5107,6 +5197,27 @@ export async function runDoctor(
     const standing = opts.fix ? await offerRepairs(failed, opts.yes ?? false) : failed.length;
     if (standing > 0) process.exit(1);
   }
+}
+
+function printDoctorRow(r: CheckResult): void {
+  const icon =
+    r.status === "ok"
+      ? chalk.green("✓")
+      : r.status === "fail"
+        ? chalk.red("✗")
+        : r.status === "warn"
+          ? chalk.yellow("!")
+          : r.status === "deferred"
+            ? chalk.yellow("»")
+            : chalk.dim("·");
+  const name =
+    r.status === "fail"
+      ? chalk.red(r.name)
+      : r.status === "deferred" || r.status === "warn"
+        ? chalk.yellow(r.name)
+        : r.name;
+  const detail = r.detail ? chalk.dim(` — ${r.detail}`) : "";
+  console.log(`  ${icon} ${name}${detail}`);
 }
 
 /** The line under a failing row whose check wrote no hint. A request

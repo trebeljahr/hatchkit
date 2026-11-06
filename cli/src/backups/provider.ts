@@ -254,6 +254,13 @@ function onParentSignal(signal: NodeJS.Signals) {
   if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
 }
 
+/** The URL Tailscale SSH prints when its check mode wants a browser
+ *  sign-in before it runs the command. */
+const TAILSCALE_CHECK_URL = /https:\/\/login\.tailscale\.com\/a\/[a-zA-Z0-9]+/;
+/** The same URL once it is complete: stderr can arrive mid-URL, and
+ *  stopping there would hand on a truncated link. */
+const TAILSCALE_CHECK_URL_DONE = /https:\/\/login\.tailscale\.com\/a\/[a-zA-Z0-9]+\s/;
+
 /**
  * Always use Tailscale's authenticated SSH transport. No public SSH fallback.
  *
@@ -273,11 +280,18 @@ export function backupHostExec(
   timeoutMs = 120_000,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn("tailscale", ["ssh", host.target,
-      `export PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python; ${command}`], {
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: true,
-    });
+    const child = spawn(
+      "tailscale",
+      [
+        "ssh",
+        host.target,
+        `export PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python; ${command}`,
+      ],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: true,
+      },
+    );
     const pgid = child.pid;
     if (pgid) {
       if (liveGroups.size === 0) watchParent(true);
@@ -289,7 +303,7 @@ export function backupHostExec(
     let settled = false;
     let drain: NodeJS.Timeout | undefined;
     const failure = (code: number | null) => {
-      const auth = stderr.match(/https:\/\/login\.tailscale\.com\/a\/[a-zA-Z0-9]+/)?.[0];
+      const auth = stderr.match(TAILSCALE_CHECK_URL)?.[0];
       // The host scripts print only sanitized BackupError text as
       // {"ok": false, "error": …}; anything else stays generic.
       const hostError = (() => {
@@ -337,6 +351,12 @@ export function backupHostExec(
     });
     child.stderr.on("data", (data) => {
       stderr += data.toString();
+      // Tailscale SSH's check mode prints a login URL and waits for a
+      // browser sign-in. stderr is captured, so nobody sees the URL until
+      // the timeout, and every host command after it waits its own full
+      // timeout too: `doctor` sat silent for minutes. Stop now and hand
+      // the URL on in the error instead.
+      if (!settled && TAILSCALE_CHECK_URL_DONE.test(stderr)) finish(null, true);
     });
     child.stdin.on("error", () => {});
     child.on("error", (error) => finish(null, true, error));

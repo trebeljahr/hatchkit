@@ -117,6 +117,24 @@ try {
     assert.equal((run as { error: Error }).error.message, "Backup host backup-host: runner broke");
   }
 
+  // 3b. Tailscale SSH check mode: ssh prints a login URL and waits for a
+  //     browser sign-in nobody sees. The call stops as soon as the URL is
+  //     complete (here split over two writes) and hands it on, instead of
+  //     waiting out its timeout.
+  fakeTailscale(
+    `echo $$ >> "${pidFile}"\nprintf '# Tailscale SSH requires an additional check.\\n# To authenticate, visit: https://login.tailscale.com/a/abc' >&2\nsleep 0.3\nprintf '123def\\n' >&2\ntrap '' TERM\nexec sleep 60`,
+  );
+  {
+    const run = await settles(backupHostExec(backupHost(), "python3 - sources", "script", 20_000));
+    assert.equal(run.ok, false);
+    assert.equal(
+      (run as { error: Error }).error.message,
+      "Complete the Tailscale SSH check: https://login.tailscale.com/a/abc123def",
+    );
+    assert.ok(run.ms < 5_000, `settled after ${run.ms} ms`);
+    assert.ok(await gone(ourPids()), "the waiting ssh was stopped");
+  }
+
   // 4. Ctrl+C: the command runs in its own process group, which the
   //    terminal's SIGINT does not reach. hatchkit stops it, then dies of
   //    the signal as before.

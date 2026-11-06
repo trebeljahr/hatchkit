@@ -35,8 +35,8 @@ const originalPath = process.env.PATH;
 const originalLog = console.log;
 
 const REPO = "s3:https://account.eu.r2.cloudflarestorage.com/hatchkit-project-backups";
-const DEDICATED = "root@dedicated-vps";
-const SHARED = "root@shared-vps";
+const DEDICATED = "root@app-vps";
+const SHARED = "root@ops-vps";
 
 interface FakeHost {
   installed: boolean;
@@ -66,7 +66,10 @@ const FAKE = `#!${process.execPath}
 const fs = require("node:fs");
 const { isDeepStrictEqual } = require("node:util");
 const statePath = ${JSON.stringify(statePath)};
-const [, target, command] = process.argv.slice(2);
+const [, target, sent] = process.argv.slice(2);
+// backupHostExec prefixes every command so Python writes no bytecode next
+// to the host scripts (AIDE watches /opt/hatchkit-backups).
+const command = sent.replace(/^export PYTHONPYCACHEPREFIX=[^;]*; /, "");
 const input = fs.readFileSync(0, "utf8");
 // Hosts are asked in parallel. Two fakes writing the state at once tore
 // it, and the reader's JSON.parse crashed as "command failed (exit 1)".
@@ -213,19 +216,19 @@ try {
   });
   assert.deepEqual(backupHosts(), [
     {
-      name: "dedicated-vps",
+      name: "app-vps",
       transport: "tailscale",
       target: DEDICATED,
       serverUuid: "dedicated-uuid",
     },
   ]);
-  assert.equal(backupHost().name, "dedicated-vps");
+  assert.equal(backupHost().name, "app-vps");
   // Reading never rewrites the file.
   assert.ok(getConfig().providers.backups?.host);
   assert.equal(getConfig().providers.backups?.hosts, undefined);
   assert.match(
     collectStatus(dir).providers.find((p) => p.key === "backups")?.detail ?? "",
-    /root@dedicated-vps/,
+    /root@app-vps/,
   );
   assert.ok(shouldRegisterBackups("dedicated-uuid"));
 
@@ -233,7 +236,7 @@ try {
   const preview = await cli(
     "add-host",
     "--name",
-    "shared-vps",
+    "ops-vps",
     "--target",
     SHARED,
     "--server-uuid",
@@ -247,7 +250,7 @@ try {
   const added = await cli(
     "add-host",
     "--name",
-    "shared-vps",
+    "ops-vps",
     "--target",
     SHARED,
     "--server-uuid",
@@ -255,11 +258,11 @@ try {
     "--schedule",
     "17:00",
   );
-  assert.deepEqual(added.hosts, ["dedicated-vps", "shared-vps"]);
+  assert.deepEqual(added.hosts, ["app-vps", "ops-vps"]);
   const stored = getConfig().providers.backups;
   assert.equal(stored?.host, undefined, "the first write stores hosts only");
-  assert.deepEqual(Object.keys(stored?.hosts ?? {}), ["dedicated-vps", "shared-vps"]);
-  assert.equal(stored?.hosts["shared-vps"].schedule, "17:00");
+  assert.deepEqual(Object.keys(stored?.hosts ?? {}), ["app-vps", "ops-vps"]);
+  assert.equal(stored?.hosts["ops-vps"].schedule, "17:00");
   const addHost = (name: string, target: string, uuid: string, schedule?: string) =>
     cli(
       "add-host",
@@ -271,7 +274,7 @@ try {
       uuid,
       ...(schedule ? ["--schedule", schedule] : []),
     );
-  await assert.rejects(addHost("shared-vps", "root@x", "x"), /already configured/);
+  await assert.rejects(addHost("ops-vps", "root@x", "x"), /already configured/);
   await assert.rejects(addHost("third", "root@third", "shared-uuid"), /share one serverUuid/);
   await assert.rejects(addHost("third", SHARED, "third-uuid"), /share one target/);
   await assert.rejects(addHost("third", "third", "third-uuid"), /root@hostname/);
@@ -279,44 +282,44 @@ try {
   await assert.rejects(addHost("Third Host", "root@third", "third-uuid"), /host names/);
   assert.match(
     collectStatus(dir).providers.find((p) => p.key === "backups")?.detail ?? "",
-    /root@dedicated-vps, root@shared-vps/,
+    /root@app-vps, root@ops-vps/,
   );
 
   // Host-integrity hints name the host once a command would need --host.
   assert.equal(
     forHost(
       "Install (writes the script and a timer to the host): hatchkit host integrity install",
-      "shared-vps",
+      "ops-vps",
     ),
-    "Install (writes the script and a timer to the host): hatchkit host integrity install --host shared-vps",
+    "Install (writes the script and a timer to the host): hatchkit host integrity install --host ops-vps",
   );
   assert.equal(
-    forHost("Preview (reads only): hatchkit host integrity install --dry-run", "shared-vps"),
-    "Preview (reads only): hatchkit host integrity install --host shared-vps --dry-run",
+    forHost("Preview (reads only): hatchkit host integrity install --dry-run", "ops-vps"),
+    "Preview (reads only): hatchkit host integrity install --host ops-vps --dry-run",
   );
   assert.equal(
-    forHost("Re-check: hatchkit host integrity --json", "shared-vps"),
-    "Re-check: hatchkit host integrity --host shared-vps --json",
+    forHost("Re-check: hatchkit host integrity --json", "ops-vps"),
+    "Re-check: hatchkit host integrity --host ops-vps --json",
   );
   assert.equal(
     forHost(
       "Needs the backup runner and its alert mail first: hatchkit backup install, then hatchkit backup alerts --to <email>",
-      "shared-vps",
+      "ops-vps",
     ),
-    "Needs the backup runner and its alert mail first: hatchkit backup install --host shared-vps, then hatchkit backup alerts --host shared-vps --to <email>",
+    "Needs the backup runner and its alert mail first: hatchkit backup install --host ops-vps, then hatchkit backup alerts --host ops-vps --to <email>",
   );
   assert.equal(
-    forHost("Check from here any time: hatchkit doctor", "shared-vps"),
+    forHost("Check from here any time: hatchkit doctor", "ops-vps"),
     "Check from here any time: hatchkit doctor",
   );
   assert.equal(
-    forHost("hatchkit backup alert-test", "shared-vps"),
-    "hatchkit backup alert-test --host shared-vps",
+    forHost("hatchkit backup alert-test", "ops-vps"),
+    "hatchkit backup alert-test --host ops-vps",
   );
 
   // Each row names its host once, whether or not the scan already did.
   const shared = {
-    name: "shared-vps",
+    name: "ops-vps",
     transport: "tailscale" as const,
     target: SHARED,
     serverUuid: "shared-uuid",
@@ -324,7 +327,7 @@ try {
   assert.deepEqual(
     rowsFor(
       [
-        { name: "Host integrity (shared-vps)", status: "ok" },
+        { name: "Host integrity (ops-vps)", status: "ok" },
         {
           name: "Host integrity daily check",
           status: "warn",
@@ -335,11 +338,11 @@ try {
       true,
     ),
     [
-      { name: "Host integrity (shared-vps)", status: "ok" },
+      { name: "Host integrity (ops-vps)", status: "ok" },
       {
-        name: "Host integrity daily check (shared-vps)",
+        name: "Host integrity daily check (ops-vps)",
         status: "warn",
-        hint: ["hatchkit host integrity install --host shared-vps"],
+        hint: ["hatchkit host integrity install --host ops-vps"],
       },
     ],
   );
@@ -361,18 +364,18 @@ try {
     credentialsFile,
     passwordFile,
   });
-  assert.deepEqual(Object.keys(backupProvider().hosts), ["dedicated-vps", "shared-vps"]);
-  assert.equal(backupProvider().hosts["shared-vps"].schedule, "17:00");
+  assert.deepEqual(Object.keys(backupProvider().hosts), ["app-vps", "ops-vps"]);
+  assert.equal(backupProvider().hosts["ops-vps"].schedule, "17:00");
 
   // --- several hosts: commands that touch one host need --host -----------
-  assert.throws(() => backupHost(), /Several backup hosts .*dedicated-vps, shared-vps.*--host/);
+  assert.throws(() => backupHost(), /Several backup hosts .*app-vps, ops-vps.*--host/);
   assert.throws(() => backupHost("nope"), /No backup host named nope/);
   await assert.rejects(installBackupHost(true), /--host/);
-  await assert.rejects(cli("plan", "--host", "shared-vps"), /does not apply/);
-  const installPreview = await installBackupHost(true, "shared-vps");
+  await assert.rejects(cli("plan", "--host", "ops-vps"), /does not apply/);
+  const installPreview = await installBackupHost(true, "ops-vps");
   assert.equal(installPreview.host.target, SHARED);
   assert.match(installPreview.schedule, /17:00 UTC/);
-  assert.match((await installBackupHost(true, "dedicated-vps")).schedule, /16:00 UTC/);
+  assert.match((await installBackupHost(true, "app-vps")).schedule, /16:00 UTC/);
   const template = readFileSync(
     fileURLToPath(new URL("./src/templates/backups/hatchkit-backups.timer", import.meta.url)),
     "utf8",
@@ -385,7 +388,7 @@ try {
 
   // --- over Tailscale SSH, two fake hosts ----------------------------------
   const listmonkOld = project("listmonk", "old-listmonk", ["postgres", "files"]);
-  const listmonkNew = project("listmonk", "3rlsm6ayxvgcuqtizvgwtgir", ["postgres", "files"]);
+  const listmonkNew = project("listmonk", "l1stm0nk0example0uuid000", ["postgres", "files"]);
   const chess = project("chess-app", "chess", ["files"]);
   write({
     hosts: {
@@ -399,7 +402,7 @@ try {
   process.env.PATH = `${dir}:${originalPath}`;
 
   // install sends the host's own schedule, and only to that host.
-  const installed = await installBackupHost(false, "shared-vps");
+  const installed = await installBackupHost(false, "ops-vps");
   assert.equal(installed.installed, true);
   assert.match(read().hosts[SHARED].timer ?? "", /^OnCalendar=\*-\*-\* 17:00:00 UTC$/m);
   assert.deepEqual(calls(), [{ target: SHARED, kind: "install" }]);
@@ -407,14 +410,14 @@ try {
   // A project's host is found by asking every host; --host skips that.
   resetCalls();
   const snapshots = await cli("snapshots", "--project", "chess-app");
-  assert.equal(snapshots.host, "dedicated-vps");
+  assert.equal(snapshots.host, "app-vps");
   assert.deepEqual(
     calls().filter((c) => c.kind === "snapshots"),
     [{ target: DEDICATED, kind: "snapshots" }],
   );
   assert.equal(calls().filter((c) => c.kind === "projects").length, 2);
   resetCalls();
-  await cli("snapshots", "--project", "chess-app", "--host", "dedicated-vps");
+  await cli("snapshots", "--project", "chess-app", "--host", "app-vps");
   assert.deepEqual(calls(), [{ target: DEDICATED, kind: "snapshots" }]);
   await assert.rejects(projectHost("ghost"), /not registered on any backup host/);
 
@@ -423,24 +426,24 @@ try {
   writeFileSync(sourcesFile, JSON.stringify({ serverUuid: "shared-uuid", project: listmonkNew }));
   const movePreview = await cli("register", "--config", sourcesFile, "--dry-run");
   assert.equal(movePreview.applied, false);
-  assert.equal(movePreview.host.name, "shared-vps");
-  assert.deepEqual(movePreview.movedFrom, ["dedicated-vps"]);
+  assert.equal(movePreview.host.name, "ops-vps");
+  assert.deepEqual(movePreview.movedFrom, ["app-vps"]);
   assert.deepEqual(projectsOn(DEDICATED), ["listmonk", "chess-app"]);
   assert.deepEqual(projectsOn(SHARED), []);
   // --replace swaps a policy on one host; it never moves one.
   await assert.rejects(
     cli("register", "--config", sourcesFile, "--replace"),
-    /registered on dedicated-vps, not only on shared-vps.*without --replace/,
+    /registered on app-vps, not only on ops-vps.*without --replace/,
   );
   // --host must be the host of the project's Coolify server.
   await assert.rejects(
-    cli("register", "--config", sourcesFile, "--host", "dedicated-vps"),
-    /differs from backup host dedicated-vps/,
+    cli("register", "--config", sourcesFile, "--host", "app-vps"),
+    /differs from backup host app-vps/,
   );
   resetCalls();
   const moved = await cli("register", "--config", sourcesFile);
-  assert.equal(moved.host, "shared-vps");
-  assert.deepEqual(moved.movedFrom, ["dedicated-vps"]);
+  assert.equal(moved.host, "ops-vps");
+  assert.deepEqual(moved.movedFrom, ["app-vps"]);
   assert.equal(moved.existing, false);
   assert.deepEqual(projectsOn(SHARED), ["listmonk"]);
   assert.deepEqual(projectsOn(DEDICATED), ["chess-app"]);
@@ -471,7 +474,7 @@ try {
   });
   await assert.rejects(
     cli("register", "--config", sourcesFile),
-    /Couldn't remove listmonk from dedicated-vps: Backup host dedicated-vps: Host policy changed since it was read.*registration on shared-vps was undone; nothing moved/,
+    /Couldn't remove listmonk from app-vps: Backup host app-vps: Host policy changed since it was read.*registration on ops-vps was undone; nothing moved/,
   );
   assert.deepEqual(projectsOn(SHARED), []);
   assert.deepEqual(projectsOn(DEDICATED), ["listmonk", "chess-app"]);
@@ -484,7 +487,7 @@ try {
   });
   await assert.rejects(
     cli("register", "--config", sourcesFile),
-    /Couldn't read backup host dedicated-vps to find listmonk's host/,
+    /Couldn't read backup host app-vps to find listmonk's host/,
   );
   assert.deepEqual(projectsOn(SHARED), []);
 
@@ -498,18 +501,18 @@ try {
   });
   await assert.rejects(
     projectHost("listmonk"),
-    /registered on dedicated-vps and shared-vps.*deregister --project listmonk --host <name>/,
+    /registered on app-vps and ops-vps.*deregister --project listmonk --host <name>/,
   );
-  const dropped = await cli("deregister", "--project", "listmonk", "--host", "dedicated-vps");
-  assert.equal(dropped.backupHost, "dedicated-vps");
+  const dropped = await cli("deregister", "--project", "listmonk", "--host", "app-vps");
+  assert.equal(dropped.backupHost, "app-vps");
   assert.equal(dropped.applied, true);
   assert.deepEqual(projectsOn(DEDICATED), ["chess-app"]);
-  assert.equal((await projectHost("listmonk")).name, "shared-vps");
+  assert.equal((await projectHost("listmonk")).name, "ops-vps");
 
   // Auto-registration in `create` targets the host of the project's server.
   assert.ok(shouldRegisterBackups("shared-uuid"));
   assert.ok(!shouldRegisterBackups("other-uuid"));
-  assert.equal(registrationHost({ serverUuid: "shared-uuid" }).name, "shared-vps");
+  assert.equal(registrationHost({ serverUuid: "shared-uuid" }).name, "ops-vps");
   assert.throws(() => registrationHost({}), /--host/);
   await assert.rejects(
     registerBackupProject(chess, { serverUuid: "other-uuid", dryRun: true }),
@@ -520,7 +523,7 @@ try {
   const status = await cli("status");
   assert.deepEqual(
     status.hosts.map((h: { name: string }) => h.name),
-    ["dedicated-vps", "shared-vps"],
+    ["app-vps", "ops-vps"],
   );
   assert.equal(status.hosts[1].schedule, "17:00 UTC");
   assert.deepEqual(
@@ -530,7 +533,7 @@ try {
   const scoped = await cli("status", "--project", "listmonk");
   assert.deepEqual(
     scoped.hosts.map((h: { name: string }) => h.name),
-    ["shared-vps"],
+    ["ops-vps"],
   );
 
   write({
@@ -541,13 +544,13 @@ try {
     },
   });
   const report = await fetchSourceReport();
-  assert.deepEqual(report.hosts, ["dedicated-vps", "shared-vps"]);
+  assert.deepEqual(report.hosts, ["app-vps", "ops-vps"]);
   assert.deepEqual(report.errors, []);
   assert.equal(report.stale.length, 1);
-  assert.equal(report.stale[0].host, "shared-vps");
+  assert.equal(report.stale[0].host, "ops-vps");
   assert.equal(
     report.stale[0].fix?.command,
-    "hatchkit backup update-source --project listmonk --source postgres --remove --host shared-vps",
+    "hatchkit backup update-source --project listmonk --source postgres --remove --host ops-vps",
   );
 
   // One unreachable host: the other still reports, and the gap is named.
@@ -556,10 +559,10 @@ try {
     hosts: { ...read().hosts, [DEDICATED]: { ...read().hosts[DEDICATED], down: true } },
   });
   const partial = await fetchSourceReport();
-  assert.deepEqual(partial.hosts, ["shared-vps"]);
-  assert.equal(partial.errors[0].host, "dedicated-vps");
+  assert.deepEqual(partial.hosts, ["ops-vps"]);
+  assert.equal(partial.errors[0].host, "app-vps");
   const statusDown = await cli("status");
-  assert.match(statusDown.hosts[0].error, /Backup host dedicated-vps command failed/);
+  assert.match(statusDown.hosts[0].error, /Backup host app-vps command failed/);
   assert.ok(statusDown.hosts[1].status);
   assert.equal(process.exitCode, 1);
   process.exitCode = 0;
@@ -570,22 +573,22 @@ try {
 
   resetCalls();
   const run = await cli("run");
-  assert.deepEqual(run.hosts, ["dedicated-vps", "shared-vps"]);
+  assert.deepEqual(run.hosts, ["app-vps", "ops-vps"]);
   assert.deepEqual(
     calls().map((c) => c.target),
     [DEDICATED, SHARED],
   );
   resetCalls();
-  await cli("run", "--host", "shared-vps");
+  await cli("run", "--host", "ops-vps");
   assert.deepEqual(calls(), [{ target: SHARED, kind: "run" }]);
   const checked = await cli("restore-check", "--project", "listmonk");
-  assert.equal(checked.host, "shared-vps");
+  assert.equal(checked.host, "ops-vps");
   assert.deepEqual(checked.results, [{ project: "listmonk", ok: true }]);
 
   // --- a deleted Coolify resource drops sources on the host that reads it -
   resetCalls();
   const reconciled = await reconcileBackupsAfterRemoval({
-    uuids: ["3rlsm6ayxvgcuqtizvgwtgir"],
+    uuids: ["l1stm0nk0example0uuid000"],
     dryRun: false,
   });
   assert.equal(reconciled.failed, false);
@@ -608,35 +611,35 @@ try {
   });
   await assert.rejects(cli("timer", "--enable"), /--host/);
   await assert.rejects(
-    cli("timer", "--enable", "--host", "shared-vps"),
+    cli("timer", "--enable", "--host", "ops-vps"),
     /no fresh verified capture for listmonk/,
   );
   write({
     ...read(),
     hosts: { ...read().hosts, [SHARED]: { ...read().hosts[SHARED], stale: [] } },
   });
-  const timerPreview = await cli("timer", "--enable", "--host", "shared-vps", "--dry-run");
+  const timerPreview = await cli("timer", "--enable", "--host", "ops-vps", "--dry-run");
   assert.equal(timerPreview.applied, false);
   assert.match(timerPreview.schedule, /17:00 UTC/);
-  const enabled = await cli("timer", "--enable", "--host", "shared-vps");
+  const enabled = await cli("timer", "--enable", "--host", "ops-vps");
   assert.equal(enabled.timerEnabled, true);
   assert.equal(enabled.nextRun, "Mon 2026-10-20 17:00:00 UTC");
 
   // --- remove-host refuses while its policy holds a project ---------------
   await assert.rejects(
-    cli("remove-host", "--host", "shared-vps"),
-    /shared-vps's policy still holds listmonk/,
+    cli("remove-host", "--host", "ops-vps"),
+    /ops-vps's policy still holds listmonk/,
   );
   write({ ...read(), hosts: { ...read().hosts, [SHARED]: { installed: true, projects: [] } } });
-  const removePreview = await cli("remove-host", "--host", "shared-vps", "--dry-run");
+  const removePreview = await cli("remove-host", "--host", "ops-vps", "--dry-run");
   assert.equal(removePreview.applied, false);
   assert.equal(backupHosts().length, 2);
-  await cli("remove-host", "--host", "shared-vps");
+  await cli("remove-host", "--host", "ops-vps");
   assert.deepEqual(
     backupHosts().map((h) => h.name),
-    ["dedicated-vps"],
+    ["app-vps"],
   );
-  await assert.rejects(cli("remove-host", "--host", "dedicated-vps"), /only backup host/);
+  await assert.rejects(cli("remove-host", "--host", "app-vps"), /only backup host/);
   // Back to one host: no --host and no lookup needed.
   resetCalls();
   await cli("snapshots", "--project", "chess-app");
