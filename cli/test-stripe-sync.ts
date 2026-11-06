@@ -35,7 +35,7 @@ import {
   _setStripeFetchForTests,
   runStripeCli,
 } from "./src/provision/stripe-sync-cli.ts";
-import { type StripeSyncInput, syncStripe } from "./src/provision/stripe-sync.ts";
+import { type StripeSyncInput, syncStripe, zoneOf } from "./src/provision/stripe-sync.ts";
 import { SECRET_KEYS, getSecret, setSecret } from "./src/utils/secrets.ts";
 import { fakeStripe } from "./test-support/fake-stripe.ts";
 
@@ -516,6 +516,37 @@ await test("stripe sync --mode live asks first; an org key needs and saves the a
   } finally {
     _setStripeFetchForTests(undefined);
     _setConfirmForTests(undefined);
+  }
+});
+
+await test("Worker routes use the registrable domain as zone", () => {
+  assert.equal(zoneOf("example.com"), "example.com");
+  assert.equal(zoneOf("shop.example.com"), "example.com");
+  assert.equal(zoneOf("example.co.uk"), "example.co.uk");
+  assert.equal(zoneOf("shop.example.co.uk"), "example.co.uk");
+});
+
+await test("--json live needs --yes; an unused --account is not saved", async () => {
+  const dir = project("static");
+  applyPaidUnlock({
+    projectDir: dir,
+    key: "guide",
+    name: "Field guide",
+    kind: "download",
+    price: "9",
+    files: "guide.pdf",
+  });
+  const stripe = fakeStripe();
+  _setStripeFetchForTests(stripe.fetch);
+  try {
+    await assert.rejects(runStripeCli(["sync", dir, "--mode", "live", "--json"]), /needs --yes/);
+    await setSecret(SECRET_KEYS.stripeProjectSecretKey("example", "test"), "sk_test_project");
+    await quiet(() => runStripeCli(["sync", dir, "--mode", "test", "--account", "acct_1Unused"]));
+    assert.ok(writes(stripe).length > 0);
+    assert.ok(stripe.calls.every((c) => c.headers["stripe-context"] === undefined));
+    assert.equal(JSON.parse(readFileSync(join(dir, ".hatchkit.json"), "utf-8")).stripe, undefined);
+  } finally {
+    _setStripeFetchForTests(undefined);
   }
 });
 

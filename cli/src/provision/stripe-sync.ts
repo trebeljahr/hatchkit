@@ -436,9 +436,41 @@ export async function syncStripe(input: StripeSyncInput): Promise<StripeSyncResu
   return result;
 }
 
-/** Zone of a Workers route: the last two labels of the host. Good for
- *  example.com and app.example.com; check it for co.uk-style domains. */
+/** Second-level suffixes under which a registrable domain has three
+ *  labels (example.co.uk). Not the full public suffix list: `hatchkit add`
+ *  prints the zone it picked so it can be checked. */
+const MULTI_LABEL_SUFFIXES = new Set([
+  "co.uk",
+  "org.uk",
+  "me.uk",
+  "ac.uk",
+  "gov.uk",
+  "ltd.uk",
+  "plc.uk",
+  "com.au",
+  "net.au",
+  "org.au",
+  "co.nz",
+  "org.nz",
+  "co.jp",
+  "ne.jp",
+  "or.jp",
+  "com.br",
+  "com.mx",
+  "co.za",
+  "co.in",
+  "co.kr",
+  "com.sg",
+  "com.tr",
+  "com.cn",
+  "com.hk",
+  "com.tw",
+]);
+
+/** Zone of a Workers route: the registrable domain of the host. */
 export function zoneOf(domain: string): string {
-  const labels = domain.split(".");
-  return labels.length <= 2 ? domain : labels.slice(-2).join(".");
+  const labels = domain.toLowerCase().split(".");
+  if (labels.length <= 2) return labels.join(".");
+  const take = MULTI_LABEL_SUFFIXES.has(labels.slice(-2).join(".")) ? 3 : 2;
+  return labels.slice(-take).join(".");
 }

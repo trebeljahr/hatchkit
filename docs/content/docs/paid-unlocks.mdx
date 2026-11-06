@@ -26,8 +26,9 @@ There is no buyer database. The paid Stripe Checkout Session is the record, and 
 - After Checkout, the buyer gets an HttpOnly cookie for that product, signed with `UNLOCK_TOKEN_SECRET`.
 - The email link carries the same signed proof. It checks Stripe on every use.
 - A cookie checks Stripe again once every 24 hours. If Stripe cannot be reached then, the buyer keeps access.
-- A full refund, an open dispute or an ended subscription removes access: email links at once, cookies within 24 hours. A partial refund keeps access.
-- The webhook sends the purchase email once. It marks the PaymentIntent (or Subscription) in Stripe, so Stripe's retries do not mail twice.
+- A full refund, an open or lost dispute, or an ended subscription removes access: email links at once, cookies within 24 hours. A partial refund keeps access, and so does a dispute you won.
+- Refunding a subscription payment does not end the subscription. Cancel it in the Stripe dashboard (the cancel dialog can refund the last payment too).
+- The webhook sends the purchase email and marks the PaymentIntent (or Subscription) in Stripe, so Stripe's retries do not mail again. In a rare race (two deliveries at once, or Listmonk answering after a timeout) a buyer can get the email twice, never zero times.
 
 Logs record the product key and the outcome, never an address or an IP.
 
@@ -105,7 +106,7 @@ Each project should have its own Stripe account, so one project's key cannot rea
 - **Organization key** (recommended): `hatchkit stripe org-key --mode test|live` stores a restricted organization key (Products, Prices and Webhook Endpoints write). Sync sends `Stripe-Context: <acct_…>`, so every write lands in the project's account. Pass `--account acct_…` once; it is saved in `.hatchkit.json` under `stripe.accounts`.
 - **Project key**: without an organization key, sync uses the project's own key from `hatchkit add <project> stripe`.
 
-The runtime uses a separate restricted key of the project's account: Checkout Sessions write, Customer portal write, PaymentIntents write, Subscriptions write, Charges read, Prices read. The customer portal needs a saved configuration in the Stripe dashboard before "manage" works in live mode.
+The runtime uses a separate restricted key of the project's account: Checkout Sessions write, Customer portal write, PaymentIntents write, Subscriptions write, Charges read, Disputes read, Prices read. The customer portal needs a saved configuration in the Stripe dashboard before "manage" works in live mode.
 
 ### The webhook secret
 
@@ -145,7 +146,9 @@ A product page that is not unlocked yet shows its name, the price and the buy bu
 
 ## Email
 
-Purchase emails go through Listmonk's `/api/tx` with `subscriber_mode: "external"`. A buyer never becomes a Listmonk subscriber. This needs a Listmonk release with external mode, the project's own API user (`hatchkit listmonk user <project>`) and its passthrough tx template. Without the Listmonk settings, nothing is mailed and access still works by cookie.
+Purchase emails go through Listmonk's `/api/tx` with `subscriber_mode: "external"`. A buyer never becomes a Listmonk subscriber. This needs a Listmonk release with external mode, the project's own API user (`hatchkit listmonk user <project>`) and its passthrough tx template. Without the Listmonk settings, pages and downloads still open by cookie, but nothing is mailed; an `email` product then fails its webhook, so Stripe retries once mail is set up.
+
+The restore form answers before it looks anything up, so its answer does not show whether an address bought something. It accepts five requests a minute per client and per address; the server runtime also caps an address at ten a day.
 
 ## Secrets
 

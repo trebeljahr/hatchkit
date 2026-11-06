@@ -7,7 +7,7 @@
 //   STRIPE_SECRET_KEY      the project's restricted Stripe key for this mode:
 //                          Checkout Sessions write, Customer portal write,
 //                          PaymentIntents write, Subscriptions write, Charges read,
-//                          Prices read
+//                          Disputes read, Prices read
 //   UNLOCK_WEBHOOK_SECRET  whsec_… of the endpoint `hatchkit stripe sync` created
 //   UNLOCK_TOKEN_SECRET    random HMAC key for the cookies and email links;
 //                          changing it logs every buyer out (their email link
@@ -21,6 +21,8 @@
   "workers_dev": false,
   // The apex is proxied through Cloudflare, so the Worker answers on the
   // site's own origin. More specific routes win over the site's own route.
+  // zone_name is the Cloudflare zone holding the domain; check it. A
+  // custom "pagePrefix" in unlocks.json needs its own route here.
   "routes": [
     { "pattern": "__DOMAIN__/api/unlock/*", "zone_name": "__ZONE__" },
     { "pattern": "__DOMAIN__/paid/*", "zone_name": "__ZONE__" }

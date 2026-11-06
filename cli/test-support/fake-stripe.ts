@@ -58,6 +58,7 @@ export function fakeStripe(options: { now?: () => number } = {}) {
     { id: string; metadata: Record<string, string>; latest_charge: string }
   >();
   const charges = new Map<string, { id: string; refunded: boolean; disputed: boolean }>();
+  const disputes = new Map<string, string>();
   const subscriptions = new Map<
     string,
     { id: string; status: string; metadata: Record<string, string> }
@@ -152,6 +153,13 @@ export function fakeStripe(options: { now?: () => number } = {}) {
       if (!sub) return missing("subscription");
       Object.assign(sub.metadata, params.metadata as Json);
       return respond(200, sub);
+    }
+    if (method === "GET" && path === "/v1/disputes") {
+      const status = disputes.get(String(params.charge));
+      return respond(200, {
+        data: status ? [{ id: `dp_${params.charge}`, charge: params.charge, status }] : [],
+        has_more: false,
+      });
     }
     if (method === "POST" && path === "/v1/billing_portal/sessions") {
       return respond(200, { url: `https://billing.stripe.com/p/session/${params.customer}` });
@@ -316,10 +324,13 @@ export function fakeStripe(options: { now?: () => number } = {}) {
       const charge = pi ? charges.get(pi.latest_charge) : undefined;
       if (charge) charge.refunded = true;
     },
-    dispute(sessionId: string): void {
+    /** Open a dispute, or move it to `status` (e.g. "won", "lost"). */
+    dispute(sessionId: string, status = "needs_response"): void {
       const pi = paymentIntents.get(String(sessions.get(sessionId)?.payment_intent));
       const charge = pi ? charges.get(pi.latest_charge) : undefined;
-      if (charge) charge.disputed = true;
+      if (!charge) return;
+      charge.disputed = true;
+      disputes.set(charge.id, status);
     },
     endSubscription(sessionId: string): void {
       const sub = subscriptions.get(String(sessions.get(sessionId)?.subscription));

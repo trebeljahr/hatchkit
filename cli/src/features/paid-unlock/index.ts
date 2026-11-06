@@ -370,15 +370,24 @@ function warningsFor(projectDir: string, layout: Layout, config: UnlockConfig): 
       );
   }
   const downloads = Object.values(config.products).some((p) => p.kind === "download");
-  if (layout.runtime === "worker" && downloads) {
+  const emails = Object.values(config.products).some((p) => p.kind === "email");
+  if (layout.runtime === "worker") {
     const wrangler = join(dirname(layout.srcDir), "wrangler.jsonc");
     const text = existsSync(wrangler) ? readFileSync(wrangler, "utf-8") : "";
-    const bound = text
-      .split("\n")
-      .some((line) => !line.trim().startsWith("//") && /"binding"\s*:\s*"FILES"/.test(line));
-    if (!bound)
+    const live = text.split("\n").filter((line) => !line.trim().startsWith("//"));
+    const where = rel(projectDir, wrangler);
+    if (downloads && !live.some((line) => /"binding"\s*:\s*"FILES"/.test(line)))
       warnings.push(
-        `${rel(projectDir, wrangler)} binds no R2 bucket as FILES, so downloads cannot be read. Uncomment "r2_buckets" and name a private bucket.`,
+        `${where} binds no R2 bucket as FILES, so downloads cannot be read. Uncomment "r2_buckets" and name a private bucket.`,
+      );
+    const prefix = config.pagePrefix ?? "/paid";
+    if (!live.some((line) => line.includes(`${prefix}/*"`)))
+      warnings.push(
+        `${where} has no route for ${prefix}/*, so page products never reach the Worker.`,
+      );
+    if (live.some((line) => /"LISTMONK_TX_TEMPLATE_ID"\s*:\s*"0"/.test(line)))
+      warnings.push(
+        `${where}: LISTMONK_TX_TEMPLATE_ID is "0", so no purchase email is sent${emails ? " and email products cannot be delivered" : ""}. Set the project's tx template id.`,
       );
   }
   if (layout.runtime === "server" && layout.serverDir) {
@@ -388,6 +397,10 @@ function warningsFor(projectDir: string, layout: Layout, config: UnlockConfig): 
       const missing = ["STRIPE_SECRET_KEY", "UNLOCK_WEBHOOK_SECRET", "UNLOCK_TOKEN_SECRET"].filter(
         (k) => !keys.has(k),
       );
+      if (!keys.has("LISTMONK_TX_TEMPLATE_ID"))
+        warnings.push(
+          `${rel(projectDir, prod)} has no LISTMONK_TX_TEMPLATE_ID, so no purchase email is sent${emails ? " and email products cannot be delivered" : ""}.`,
+        );
       if (missing.length)
         warnings.push(
           `${rel(projectDir, prod)} has no ${missing.join(", ")}; unlock routes answer 503 until they are set.`,

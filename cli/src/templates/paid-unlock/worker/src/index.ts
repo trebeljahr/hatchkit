@@ -27,6 +27,11 @@ interface FilesBucket {
   } | null>;
 }
 
+/** The part of the Worker's execution context this file uses. */
+interface ExecutionContextLike {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
 /** Workers rate limiting binding. */
 interface RateLimiter {
   limit(options: { key: string }): Promise<{ success: boolean }>;
@@ -65,8 +70,13 @@ function loadConfig(): UnlockConfig {
 function assetsFrom(env: Env): PrivateAssets {
   return {
     async get(path) {
+      // Each segment is encoded, and the parsed path must be the one asked
+      // for: the URL parser must not resolve anything the core did not.
       // html_handling is "none" in wrangler.jsonc, so exact paths are served.
-      const res = await env.ASSETS.fetch(new Request(`https://assets.local/${path}`));
+      const encoded = `/${path.split("/").map(encodeURIComponent).join("/")}`;
+      const url = new URL(`https://assets.local${encoded}`);
+      if (url.pathname !== encoded) return null;
+      const res = await env.ASSETS.fetch(new Request(url));
       if (!res.ok || !res.body) return null;
       return { body: res.body, contentType: res.headers.get("Content-Type") ?? "application/octet-stream" };
     },
@@ -119,12 +129,13 @@ export function depsFromEnv(env: Env): UnlockDeps {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContextLike): Promise<Response> {
     if (!env.STRIPE_SECRET_KEY || !env.UNLOCK_WEBHOOK_SECRET || !env.UNLOCK_TOKEN_SECRET) {
       return new Response("Paid unlock is not configured (missing Worker secrets).", { status: 503 });
     }
     const response = await handleUnlockRequest(request, depsFromEnv(env), {
       clientIp: request.headers.get("CF-Connecting-IP"),
+      waitUntil: ctx ? (work) => ctx.waitUntil(work) : undefined,
     });
     return response ?? new Response("Not found", { status: 404 });
   },

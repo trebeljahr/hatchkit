@@ -106,7 +106,7 @@ export async function resolveSyncClient(
   project: string,
   mode: StripeMode,
   account: string | undefined,
-): Promise<{ client: StripeClient; label: string }> {
+): Promise<{ client: StripeClient; label: string; usesAccount: boolean }> {
   const orgKey = await getSecret(SECRET_KEYS.stripeOrgSecretKey(mode));
   if (orgKey && account) {
     checkKeyMode(orgKey, mode, "organization key");
@@ -118,6 +118,7 @@ export async function resolveSyncClient(
         apiVersion: apiVersion(),
       },
       label: `organization key → ${account}`,
+      usesAccount: true,
     };
   }
   const projectKey = await getSecret(SECRET_KEYS.stripeProjectSecretKey(project, mode));
@@ -126,6 +127,7 @@ export async function resolveSyncClient(
     return {
       client: { secretKey: projectKey, fetch: fetchOverride },
       label: `${project}'s own ${mode} key`,
+      usesAccount: false,
     };
   }
   if (orgKey)
@@ -201,7 +203,9 @@ async function runSync(args: Args): Promise<void> {
   const account = str(args, "--account") ?? manifest.stripe?.accounts?.[mode];
   if (account && !/^acct_[A-Za-z0-9]+$/.test(account))
     throw new Error("--account must look like acct_…");
-  const { client, label } = await resolveSyncClient(manifest.name, mode, account);
+  if (asJson && mode === "live" && !dryRun && !args.flags.has("--yes"))
+    throw new Error("--json with --mode live needs --yes. Read the plan with --dry-run first.");
+  const { client, label, usesAccount } = await resolveSyncClient(manifest.name, mode, account);
   const webhookUrl =
     str(args, "--webhook-url") ??
     (mode === "live" ? `https://${manifest.domain}/api/unlock/webhook` : null);
@@ -260,7 +264,14 @@ async function runSync(args: Args): Promise<void> {
 
   const result = await syncStripe({ ...input, dryRun });
 
-  if (str(args, "--account") && !dryRun && manifest.stripe?.accounts?.[mode] !== account) {
+  // Saved only when it was used: an account recorded beside a project key
+  // would steer a later organization-key run somewhere nobody checked.
+  if (
+    usesAccount &&
+    str(args, "--account") &&
+    !dryRun &&
+    manifest.stripe?.accounts?.[mode] !== account
+  ) {
     manifest.stripe = {
       ...manifest.stripe,
       accounts: { ...manifest.stripe?.accounts, [mode]: account },

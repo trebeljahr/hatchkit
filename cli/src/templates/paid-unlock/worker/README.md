@@ -24,8 +24,10 @@ file you changed.
    that paid. It answers the same whether or not a purchase exists.
 
 No buyer database: the paid Checkout Session in Stripe is the record. A
-full refund, an open dispute or an ended subscription ends access. Email
-links check Stripe on every use; a cookie once a day.
+full refund, an open or lost dispute, or an ended subscription ends
+access. Email links check Stripe on every use; a cookie once a day.
+Refunding a subscription payment does not cancel the subscription:
+cancel it in the Stripe dashboard.
 
 ## Routes
 

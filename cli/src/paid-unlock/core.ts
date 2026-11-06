@@ -238,8 +238,8 @@ export function unlockConfigProblems(raw: unknown): string[] {
   if (raw.pagePrefix !== undefined) {
     if (typeof raw.pagePrefix !== "string" || !PAGE_PREFIX_RE.test(raw.pagePrefix))
       out.push('"pagePrefix" must be a path such as "/paid" (no trailing slash)');
-    else if (raw.pagePrefix === API_PREFIX || raw.pagePrefix.startsWith(`${API_PREFIX}/`))
-      out.push(`"pagePrefix" must not be inside ${API_PREFIX}`);
+    else if (raw.pagePrefix === "/api" || raw.pagePrefix.startsWith("/api/"))
+      out.push('"pagePrefix" must not be /api or inside it, where the app\'s API lives');
   }
   if (!isRecord(raw.products)) out.push('"products" must be an object keyed by product key');
   else
@@ -505,6 +505,10 @@ interface StripeCharge {
   disputed?: boolean;
 }
 
+/** Dispute states that keep the buyer's access: won, or an inquiry closed
+ *  without a chargeback. Every other state (open or lost) removes it. */
+const SETTLED_FOR_SELLER = new Set(["won", "warning_closed"]);
+
 interface StripePaymentIntent {
   id: string;
   metadata?: Record<string, string> | null;
@@ -582,6 +586,9 @@ export interface UnlockDeps {
 
 export interface RequestContext {
   clientIp?: string | null;
+  /** Keep work running after the response (Worker: ctx.waitUntil). Without
+   *  it the work runs as a detached promise, which Node keeps alive. */
+  waitUntil?: (work: Promise<unknown>) => void;
 }
 
 /** Listmonk transactional mail to any address (`subscriber_mode:
@@ -600,6 +607,9 @@ export function listmonkMailer(options: {
     async send({ to, subject, html }) {
       const res = await (options.fetch ?? fetch)(`${options.url.replace(/\/+$/, "")}/api/tx`, {
         method: "POST",
+        // Well under Stripe's webhook timeout: a slow Listmonk fails here,
+        // and Stripe retries, rather than answering after the mail went out.
+        signal: AbortSignal.timeout(10_000),
         headers: {
           Authorization: `token ${options.user}:${options.token}`,
           "Content-Type": "application/json",
@@ -656,6 +666,23 @@ function nowOf(deps: UnlockDeps): number {
   return deps.now ? deps.now() : Date.now();
 }
 
+/** `charge.disputed` stays true after a dispute is won, so a disputed
+ *  charge asks for its disputes. Any error counts as "not settled". */
+async function disputesSettledForSeller(deps: UnlockDeps, chargeId: string): Promise<boolean> {
+  try {
+    const list = await stripeRequest<{ data: Array<{ status: string }> }>(
+      stripeOf(deps),
+      "GET",
+      "/v1/disputes",
+      { charge: chargeId, limit: 10 },
+    );
+    return list.data.length > 0 && list.data.every((d) => SETTLED_FOR_SELLER.has(d.status));
+  } catch (err) {
+    log(deps, { event: "dispute_check_failed", message: (err as Error).message });
+    return false;
+  }
+}
+
 /** Ask Stripe whether this Checkout Session still grants its unlock. */
 export async function checkEntitlement(deps: UnlockDeps, sessionId: string): Promise<Entitlement> {
   let session: StripeCheckoutSession;
@@ -686,7 +713,8 @@ export async function checkEntitlement(deps: UnlockDeps, sessionId: string): Pro
     const charge = pi && typeof pi !== "string" ? pi.latest_charge : null;
     if (charge && typeof charge !== "string") {
       if (charge.refunded) return { ok: false, reason: "refunded", key, session };
-      if (charge.disputed) return { ok: false, reason: "disputed", key, session };
+      if (charge.disputed && !(await disputesSettledForSeller(deps, charge.id)))
+        return { ok: false, reason: "disputed", key, session };
     }
   }
   return { ok: true, key, product, email: session.customer_details?.email ?? null, session };
@@ -1077,7 +1105,10 @@ function pageAssetPath(key: string, rest: string): string[] | null {
     } catch {
       return null;
     }
-    if (segment === "." || segment === ".." || /[\\/\0]/.test(segment)) return null;
+    // A "%" left after one decode is a second layer of encoding. Refused:
+    // a runtime that builds a URL from this path (the Worker's assets
+    // binding) would decode it again and could climb out of the folder.
+    if (segment === "." || segment === ".." || /[\\/\0%]/.test(segment)) return null;
     segments.push(segment);
   }
   const base = `paid/${key}/${segments.join("/")}`.replace(/\/+$/, "");
@@ -1291,11 +1322,12 @@ export async function deliverPurchase(
   const marker = markerTarget(entitlement.session);
   if (marker?.metadata.hatchkit_mailed_at) return "already";
   if (!deps.mailer || !entitlement.email) {
-    log(deps, {
-      event: "delivery",
-      outcome: deps.mailer ? "no-email" : "no-mailer",
-      key: entitlement.key,
-    });
+    const outcome = deps.mailer ? "no-email" : "no-mailer";
+    // An email product IS the email: fail, so Stripe retries once mail is
+    // configured. Pages and downloads still open by cookie.
+    if (entitlement.product.kind === "email")
+      throw new Error(`cannot deliver an email product: ${outcome}`);
+    log(deps, { event: "delivery", outcome, key: entitlement.key });
     return "skipped";
   }
   const message = await purchaseEmail(deps, entitlement);
@@ -1331,7 +1363,6 @@ async function handleRestorePost(
 ): Promise<Response> {
   const form = await formOf(request);
   const email = (form.get("email") ?? "").trim();
-  const sentPage = redirect(`${API_PREFIX}/restore?sent=1`);
   if (!EMAIL_RE.test(email))
     return messagePage("Check the address", "That does not look like an email address.", 400);
   if (deps.limit) {
@@ -1340,27 +1371,52 @@ async function handleRestorePost(
       (await deps.limit(`restore-email:${email.toLowerCase()}`));
     if (!allowed) return messagePage("Too many requests", "Please try again in a minute.", 429);
   }
+  // The answer leaves before the lookup starts, so neither its content nor
+  // its timing says whether this address bought anything.
+  const work = mailPurchases(deps, email).catch((err) =>
+    log(deps, { event: "restore_failed", message: (err as Error).message }),
+  );
+  if (ctx.waitUntil) ctx.waitUntil(work);
+  return redirect(`${API_PREFIX}/restore?sent=1`);
+}
+
+/** Paid sessions of this project for `email`, newest first, at most 300. */
+async function sessionsFor(deps: UnlockDeps, email: string): Promise<StripeCheckoutSession[]> {
+  const out: StripeCheckoutSession[] = [];
+  let startingAfter: string | undefined;
+  for (let page = 0; page < 3; page++) {
+    const list = await stripeRequest<{ data: StripeCheckoutSession[]; has_more: boolean }>(
+      stripeOf(deps),
+      "GET",
+      "/v1/checkout/sessions",
+      {
+        customer_details: { email },
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      },
+    );
+    out.push(
+      ...list.data.filter(
+        (s) => s.status === "complete" && s.metadata?.hatchkit_project === deps.config.project,
+      ),
+    );
+    if (!list.has_more || list.data.length === 0) break;
+    startingAfter = list.data[list.data.length - 1].id;
+  }
+  return out;
+}
+
+async function mailPurchases(deps: UnlockDeps, email: string): Promise<void> {
   if (!deps.mailer) {
     log(deps, { event: "restore", outcome: "no-mailer" });
-    return sentPage;
+    return;
   }
-  const sessions = await stripeRequest<{ data: StripeCheckoutSession[] }>(
-    stripeOf(deps),
-    "GET",
-    "/v1/checkout/sessions",
-    {
-      customer_details: { email },
-      status: "complete",
-      limit: 100,
-    },
-  );
   const links: string[] = [];
   const seen = new Set<string>();
-  for (const candidate of sessions.data) {
+  for (const candidate of await sessionsFor(deps, email)) {
     if (links.length >= RESTORE_MAX) break;
     const key = candidate.metadata?.hatchkit_unlock;
-    if (candidate.metadata?.hatchkit_project !== deps.config.project || !key || seen.has(key))
-      continue;
+    if (!key || seen.has(key)) continue;
     const entitlement = await checkEntitlement(deps, candidate.id);
     if (!entitlement.ok) continue;
     seen.add(key);
@@ -1369,14 +1425,12 @@ async function handleRestorePost(
     );
   }
   log(deps, { event: "restore", outcome: links.length ? "sent" : "none" });
-  if (links.length) {
-    await deps.mailer.send({
-      to: email,
-      subject: `Your purchases at ${siteName(deps)}`,
-      html: `<p>Links to what you bought:</p><ul>${links.join("")}</ul>${refundLine(deps)}`,
-    });
-  }
-  return sentPage;
+  if (!links.length) return;
+  await deps.mailer.send({
+    to: email,
+    subject: `Your purchases at ${siteName(deps)}`,
+    html: `<p>Links to what you bought:</p><ul>${links.join("")}</ul>${refundLine(deps)}`,
+  });
 }
 
 function restoreForm(url: URL): Response {

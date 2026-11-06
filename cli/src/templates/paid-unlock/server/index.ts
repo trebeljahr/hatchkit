@@ -143,12 +143,13 @@ function envMailer(env: Record<string, string | undefined>, fetchImpl?: typeof f
   });
 }
 
-/** Fixed one-minute windows, in memory: five restore requests per key. */
-function memoryLimiter(limit = 5, windowMs = 60_000): (key: string) => Promise<boolean> {
+/** In memory: five restore requests per key a minute, and at most ten a
+ *  day per address, so nobody can fill a buyer's inbox with restore mail. */
+function memoryLimiter(): (key: string) => Promise<boolean> {
   const windows = new Map<string, { start: number; count: number }>();
-  return async (key) => {
+  const hit = (key: string, limit: number, windowMs: number): boolean => {
     const now = Date.now();
-    if (windows.size > 10_000) windows.clear();
+    if (windows.size > 20_000) windows.clear();
     const current = windows.get(key);
     if (!current || now - current.start >= windowMs) {
       windows.set(key, { start: now, count: 1 });
@@ -156,6 +157,11 @@ function memoryLimiter(limit = 5, windowMs = 60_000): (key: string) => Promise<b
     }
     current.count += 1;
     return current.count <= limit;
+  };
+  return async (key) => {
+    const minute = hit(`m:${key}`, 5, 60_000);
+    if (!key.startsWith("restore-email:")) return minute;
+    return hit(`d:${key}`, 10, 24 * 60 * 60_000) && minute;
   };
 }
 

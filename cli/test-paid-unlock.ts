@@ -144,8 +144,10 @@ function harness(config: UnlockConfig = CONFIG): Harness {
     mailer,
     log: (entry) => logs.push(entry),
     assets: {
+      // Like the Workers assets binding: the path goes through a URL
+      // parser, which resolves "%2e%2e" segments.
       async get(path) {
-        const body = assets.get(path);
+        const body = assets.get(new URL(`https://assets.local/${path}`).pathname.slice(1));
         return body === undefined ? null : { body, contentType: "text/html; charset=utf-8" };
       },
     },
@@ -175,8 +177,14 @@ function get(path: string, cookie?: string): Request {
   return new Request(`${SITE}${path}`, { headers: cookie ? { Cookie: cookie } : {} });
 }
 
+/** One request; work the core hands to waitUntil finishes before return. */
 async function call(h: Harness, request: Request): Promise<Response> {
-  const res = await handleUnlockRequest(request, h.deps, { clientIp: "203.0.113.7" });
+  const pending: Promise<unknown>[] = [];
+  const res = await handleUnlockRequest(request, h.deps, {
+    clientIp: "203.0.113.7",
+    waitUntil: (work) => pending.push(work),
+  });
+  await Promise.all(pending);
   assert.ok(res, `no response for ${request.url}`);
   return res;
 }
@@ -374,6 +382,9 @@ await test("page paths cannot leave the product folder; forged cookies fail", as
     "/paid/making-of/%2e%2e%2fsupporter/",
     "/paid/making-of/a%2F..%2F..%2Femails/letters.html",
     "/paid/making-of/%00",
+    "/paid/making-of/%252e%252e/supporter/index.html",
+    "/paid/making-of/%252e%252e/%252e%252e/emails/letters.html",
+    "/paid/making-of/.%252e/supporter/",
   ]) {
     const res = await call(h, get(path, cookie));
     assert.ok(res.status === 404 || res.status === 402, `${path} → ${res.status}`);
@@ -438,6 +449,15 @@ await test("a dispute and an ended subscription end access", async () => {
   h.stripe.dispute(bought.session);
   h.clock.now += COOKIE_RECHECK_MS + 1;
   assert.equal((await call(h, get("/api/unlock/files/guide", bought.cookie))).status, 402);
+  const link = await signToken(TOKEN_SECRET, { p: "l", k: "guide", s: bought.session });
+  h.stripe.dispute(bought.session, "won");
+  assert.equal(
+    (await call(h, get(`/api/unlock/files/guide?t=${link}`))).status,
+    200,
+    "a won dispute gives access back",
+  );
+  h.stripe.dispute(bought.session, "lost");
+  assert.equal((await call(h, get(`/api/unlock/files/guide?t=${link}`))).status, 402);
 
   const sub = await buy(h, "supporter");
   assert.equal((await call(h, get("/paid/supporter/", sub.cookie))).status, 200);
@@ -654,7 +674,7 @@ await test("unlocks.json rules", () => {
   for (const fragment of [
     '"project"',
     '"currency"',
-    '"pagePrefix" must not be inside',
+    '"pagePrefix" must not be /api',
     'unknown field "extra"',
     "products.Bad Key: the key",
     "no pay-what-you-want for subscriptions",
@@ -934,6 +954,47 @@ await test("the Express adapter passes other paths on and keeps Set-Cookie and t
   } finally {
     await new Promise<void>((done) => http.close(() => done()));
   }
+});
+
+await test("an email product without a mailer fails its webhook so Stripe retries", async () => {
+  const h = harness();
+  const mailer = h.deps.mailer;
+  h.deps.mailer = null;
+  const letters = await buy(h, "letters");
+  assert.equal((await webhook(h, "checkout.session.completed", letters.session)).status, 500);
+  const page = await buy(h, "making-of");
+  assert.equal((await webhook(h, "checkout.session.completed", page.session)).status, 200);
+  h.deps.mailer = mailer;
+  assert.equal((await webhook(h, "checkout.session.completed", letters.session)).status, 200);
+  assert.equal(h.mail.length, 1);
+  assert.equal(h.mail[0].subject, "Your five letters");
+});
+
+await test("restore answers before it looks anything up", async () => {
+  const h = harness();
+  await buy(h, "making-of", "fan@example.com");
+  let release: () => void = () => {};
+  const gate = new Promise<void>((done) => {
+    release = done;
+  });
+  const realFetch = h.deps.fetch as typeof fetch;
+  h.deps.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    await gate;
+    return realFetch(input, init);
+  }) as typeof fetch;
+  const pending: Promise<unknown>[] = [];
+  const res = await handleUnlockRequest(
+    form("/api/unlock/restore", { email: "fan@example.com" }),
+    h.deps,
+    {
+      waitUntil: (work) => pending.push(work),
+    },
+  );
+  assert.equal(res?.status, 303, "answered while Stripe is still blocked");
+  assert.equal(h.mail.length, 0);
+  release();
+  await Promise.all(pending);
+  assert.equal(h.mail.length, 1);
 });
 
 const failed = Object.entries(results).filter(([, ok]) => !ok);
