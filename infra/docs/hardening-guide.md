@@ -1250,6 +1250,8 @@ Use one explicit configuration and database path. Exclude volatile Docker/contai
 
 **Prove detection:** In an isolated fixture, initialize the same policy, change a harmless monitored file, and require a nonzero difference result. Then run the production check and verify its freshness/alert path. A successful process exit or a line saying “no changes” is insufficient when the same log reports a missing database.
 
+`cli/src/templates/file-integrity/initialize-aide.py --accept-reviewed-state` runs these steps on a host. It refuses unreviewed `dpkg --verify` differences and a stale or unclean host-integrity check, proves detection on a fixture, refuses to overwrite an existing baseline, then writes the baseline and starts `hatchkit-file-integrity.service`. Its evidence goes to `/var/lib/hatchkit-security/aide-review`.
+
 Use the existing configured alert transport with verified TLS. Healthy runs stay quiet; failures and unexpected changes alert. Avoid a second daily cron job alongside systemd, and do not solve mail errors by handing an unprivileged checker broad credential-file access.
 
 **Recovery:** Preserve findings and the old baseline. Investigate before accepting a change. Restore the previous checker/configuration if deployment fails; do not overwrite production data or discard incident evidence to get a green result.
