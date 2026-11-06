@@ -33,8 +33,8 @@ def container(name='app-abc', image_id='sha256:old', repository=IMAGE, mounts=()
     return {'name': name, 'imageId': image_id, 'repository': repository, 'mounts': list(mounts)}
 
 
-def row(number=1, image_id='sha256:old', due=NOW + 24 * HOUR, fixed='8.14.1-2+deb13u2', name='curl'):
-    return {'kind': 'image-package', 'service': image_id, 'id': 'CVE-2026-%04d' % number, 'name': name,
+def row(number=1, image_id='sha256:old', due=NOW + 24 * HOUR, fixed='8.14.1-2+deb13u2', name='curl', **extra):
+    return {**extra, 'kind': 'image-package', 'service': image_id, 'id': 'CVE-2026-%04d' % number, 'name': name,
             'version': '8.14.1-2', 'fixed': fixed, 'severity': 'high', 'containers': ['app-abc'],
             'dueAt': due.isoformat(), 'environment': 'PRIVATE_VALUE'}
 
@@ -126,6 +126,9 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(attempt['status'], 'dispatched')
         self.assertEqual(attempt['imageIdsBefore'], ['sha256:old'])
         self.assertEqual(attempt['fixCountBefore'], 1)
+        self.assertEqual(attempt['workloads'], ['app-abc'])
+        state = run_pass(led=ledger(row(containerDisplayNames=['app-server'])))
+        self.assertEqual(state['apps'][IMAGE]['attempts'][-1]['workloads'], ['app-server'])
         self.assertNotIn('PRIVATE_VALUE', json.dumps(state))
 
     def test_not_running_unopted_or_unfixable_images_are_left_alone(self):

@@ -284,8 +284,14 @@ def app_view(app, inventory, ledger):
     mine = [c for c in inventory if c['repository'] == app['image']]
     image_ids = sorted({c['imageId'] for c in mine})
     rows = fix_rows(ledger, set(image_ids))
+    # Coolify names containers by UUID; the ledger carries the readable name next to each.
+    display = {}
+    for row in (ledger or {}).get('findings') or []:
+        for name, shown in zip(row.get('containers') or [], row.get('containerDisplayNames') or []):
+            if isinstance(name, str) and isinstance(shown, str) and shown:
+                display.setdefault(name, shown)
     return {'containers': mine, 'imageIds': image_ids, 'rows': rows,
-            'workloads': sorted({c['name'] for c in mine}), 'writable': writable_mounts(mine)}
+            'workloads': sorted({display.get(c['name'], c['name']) for c in mine}), 'writable': writable_mounts(mine)}
 
 
 def scanned_after(scan, image_ids, moment):
