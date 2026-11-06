@@ -316,9 +316,10 @@ function renderWorkflow(
     : "";
   // Versions activation does not apply routing settings. A newly-created
   // Worker otherwise stays unreachable at workers.dev after a green CI run.
-  const triggers = opts.applyTriggers === false
-    ? ""
-    : `
+  const triggers =
+    opts.applyTriggers === false
+      ? ""
+      : `
 
       - name: Apply routing settings
         env:
