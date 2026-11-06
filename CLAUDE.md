@@ -141,6 +141,9 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   applies Traefik and Uptime Kuma patch releases (same major.minor) with a
   no-network canary, a routed-host sweep, network reconnects and automatic
   rollback, and keeps Coolify's stored compose copies in step (`sync-coolify`).
+  Postgres (`kind: postgres`, digest-pinned `X.Y-alpine`): a higher minor of the
+  same major or an upstream rebuild of the tag; the old and new image must read
+  one snapshot copy to the same exact row counts before the recreate.
   Installed by `host updates install`, never enabled by it; config
   `/etc/hatchkit-security/service-patches.json` + timer are the operator's.
 - `hatchkit audit cloudflare [--json] [--hours <n>]`: read-only check of the

@@ -235,12 +235,15 @@ app image through the repository's own pipeline:
 
 The scanner keeps reporting what is still there; nothing here resets a deadline.
 
-# Automatic service patches (Traefik, Uptime Kuma)
+# Automatic service patches (Traefik, Uptime Kuma, Postgres)
 
 `service-patches.py` applies patch releases (same major.minor, higher patch) of
-Coolify's proxy (Traefik) and Uptime Kuma, the two stateless third-party services
-on plain official images. Never a database, never a minor or major jump, never an
-app image (those ship through the app's own pipeline).
+Coolify's proxy (Traefik) and Uptime Kuma, and new builds of the official
+Postgres images that shared services and standalone databases run. For Postgres a
+patch is a higher minor of the running major (18.6 -> 18.7) or Docker Hub's
+rebuild of the running `X.Y-alpine` tag (a new digest, usually Alpine package
+fixes); the compose must name `postgres:X.Y-alpine@sha256:…`. Never a major
+jump, never an app image (those ship through the app's own pipeline).
 
 When: hourly timer. A patch that fixes an update-watch advisory goes at the next
 run. Any other patch waits until it is `minAgeHours` old (24) and the hour is
@@ -267,6 +270,20 @@ How, per target:
   `/var/lib/hatchkit-service-patches/<target>/data`, recreated on the new
   `-rootless` tag. Healthy, same counts and its URL answers, or the old compose
   and that data snapshot go back.
+- Postgres: the new image must print the running major. The container is
+  stopped cleanly and its volume rsynced to the snapshot directory; the old
+  image and then the new image each start on one copy of it with no network
+  (live env from a 0600 file, live limits), and every database must hold the
+  same tables with the same exact row counts in both (every heap is read). Then
+  `docker compose up -d --no-deps --force-recreate <db service>` on the new
+  digest, the policy `imageId` pin moves as for Traefik, and it must be healthy
+  with the same tables per database. Listed `clients` are waited on and
+  reported, never a rollback reason (an app without a pool `error` handler
+  crashes once on the dropped connection). Rollback puts back compose, pin and
+  image on the same data: a minor release reads the same data directory. The
+  outage is the stop, the snapshot, two canaries and the recreate (about half a
+  minute for a 70 MB database), inside the window. The guard and egress checks
+  run right after a landing.
 
 Coolify keeps its own copy of the proxy compose (`Server.proxy`) and of each
 service compose and writes it back to the host on a proxy restart or redeploy.
@@ -275,8 +292,13 @@ containers and removes the proxy before starting the new one, so patches run
 locally instead, and `sync-coolify` (run on the host that runs Coolify) follows
 them: when a host file differs from Coolify's copy by exactly the image line and
 the container runs that image, it updates the copy and its change hashes (for a
-service also the raw compose and `service_applications.image`). Anything else
-is refused and listed under Needs you.
+service also the raw compose and `service_applications.image`, or
+`service_databases.image` for an entry with `"part": "database"`). A standalone
+Postgres (`standalonePostgres: [<uuid>]`) has no stored compose: Coolify writes
+it from `standalone_postgresqls.image` at start, so that field follows the
+running image. The PHP goes to `php` on stdin, never into the container's /tmp,
+where host-integrity would report it. Anything else is refused and listed under
+Needs you.
 
 Opt-in: installed by `hatchkit host updates install`, never enabled by it. The
 operator writes `/etc/hatchkit-security/service-patches.json` (start from

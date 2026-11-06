@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Apply patch releases of stateless third-party services, with a canary and rollback.
+"""Apply patch releases of third-party services, with a canary and rollback.
 
-Coolify's proxy (Traefik) and Uptime Kuma run plain official images. A patch release
-(same major.minor, higher patch) of either is applied here without asking, so the
-owner hears about it only when it cannot be done automatically. Nothing else is
-touched: never a database, never a minor or major jump, never an app image.
+Coolify's proxy (Traefik), Uptime Kuma and the Postgres containers of shared
+services run plain official images. A patch release (Traefik/Kuma: same
+major.minor, higher patch) is applied here without asking, so the owner hears
+about it only when it cannot be done automatically. Postgres counts a higher
+minor of the same major (18.6 -> 18.7, same on-disk format) and an upstream
+rebuild of the running tag (same tag, new digest: Alpine package fixes) as a
+patch. Never a major jump, never an app image.
 
 What `run` does, once an hour:
 
@@ -27,8 +30,16 @@ What `run` does, once an hour:
        accepts exactly that change.
        Kuma — stopped, its volume snapshotted, recreated on the new tag; healthy,
        same counts, its URL answers.
+       Postgres — the new image must report the same major. Stopped cleanly,
+       its volume snapshotted; the old image and then the new image each start
+       on a copy of the snapshot with no network, and every database must
+       hold the same tables with the same exact row counts in both. Then
+       recreated on the new digest (imageId pin follows, as for Traefik);
+       healthy, the same tables in every database, listed clients healthy.
   5. Any failed check rolls back to the previous compose file, image and policy
-     (Kuma: also the data snapshot) and pauses that target until `clear`.
+     (Kuma: also the data snapshot; Postgres: none needed, a minor release of
+     one major reads the same data directory) and pauses that target until
+     `clear`.
      The daily digest lists landed patches under Fixed automatically and failures
      under Needs you.
 
@@ -79,7 +90,11 @@ KINDS = {
                 'tag': r'v(\d+)\.(\d+)\.(\d+)', 'line': r'traefik[:@]'},
     'kuma': {'repository': 'louislam/uptime-kuma', 'image': 'louislam/uptime-kuma', 'watch': 'uptime-kuma',
              'tag': r'(\d+)\.(\d+)\.(\d+)-rootless', 'line': r'louislam/uptime-kuma:'},
+    # major.minor-alpine only: '18-alpine' floats and 'alpine3.24' pins a base we would never leave.
+    'postgres': {'repository': 'library/postgres', 'image': 'postgres', 'watch': None,
+                 'tag': r'(\d+)\.(\d+)-alpine', 'line': r'postgres[:@]'},
 }
+POSTGRES_REF = re.compile(r'postgres:(?P<tag>\d+\.\d+-alpine)@(?P<digest>sha256:[0-9a-f]{64})')
 BAD_STATUS = ('000', '502', '503', '504')
 IMAGE_LINE = re.compile(r'^(?P<indent>[ \t]+)image:[ \t]*(?P<q>[\'"]?)(?P<ref>[^\'"\s]+)(?P=q)[ \t]*$', re.M)
 COOLIFY_ROOT = '/var/www/html'
@@ -145,8 +160,33 @@ def pick_patch(kind, current, tags):
     return best
 
 
+def fmt(version):
+    return '.'.join(str(part) for part in version)
+
+
+def same_line(kind, a, b):
+    """Postgres keeps its data format within a major; the others within a minor."""
+    return a[:1] == b[:1] if kind == 'postgres' else a[:2] == b[:2]
+
+
+def pick_postgres(current, digest, tags):
+    """Highest minor of the running major; at the running minor only a new digest counts."""
+    best = None
+    for tag in tags:
+        version = tag_version('postgres', tag['name'])
+        if not version or version[0] != current[0] or version < current:
+            continue
+        if version == current and (not tag.get('digest') or tag['digest'] == digest):
+            continue
+        if best is None or version > best[0]:
+            best = (version, tag)
+    return best
+
+
 def advisories_for(ledger, kind, current):
     """Advisory findings of the update watcher against this service and version."""
+    if not KINDS[kind]['watch']:
+        return []
     rows = []
     for finding in (ledger or {}).get('findings') or []:
         if finding.get('kind') != 'advisory' or finding.get('service') != KINDS[kind]['watch']:
@@ -167,7 +207,7 @@ def decide(kind, current, candidate, advisories, state, now, config, forced=None
     if (state or {}).get('paused'):
         return 'paused', 'paused after a failed attempt; clear it after review', []
     if candidate is None:
-        return 'none', 'no newer patch release of %d.%d' % current[:2], []
+        return 'none', 'no newer patch release of %s' % fmt(current[:2]), []
     version, tag = candidate
     fixes = [a['id'] for a in advisories if a['fixedIn'] and a['fixedIn'] <= version]
     if fixes:
@@ -482,8 +522,15 @@ def volume_path(name):
 
 
 def kuma_run_args(live, name, volume, ref):
+    return canary_run_args(live, name, volume, '/app/data', ref)
+
+
+def canary_run_args(live, name, volume, destination, ref, env_file=None):
+    """The live container's user, caps and limits, no network, the volume copy at `destination`."""
     host = live['HostConfig']
     args = ['docker', 'run', '-d', '--name', name, '--network', 'none', '--label', 'io.hatchkit.service-patch=canary']
+    if env_file:
+        args += ['--env-file', str(env_file)]
     if live['Config'].get('User'):
         args += ['--user', live['Config']['User']]
     for cap in host.get('CapDrop') or []:
@@ -500,7 +547,7 @@ def kuma_run_args(live, name, volume, ref):
         args += ['--pids-limit', str(host['PidsLimit'])]
     for path, options in sorted((host.get('Tmpfs') or {}).items()):
         args += ['--tmpfs', path + (':' + options if options else '')]
-    return args + ['-v', volume + ':/app/data', ref]
+    return args + ['-v', volume + ':' + destination, ref]
 
 
 def kuma_canary(live, ref, data_dir, counts):
@@ -596,12 +643,188 @@ def patch_kuma(target, new_ref, force_rollback, log):
     raise RolledBack(reason, rollback_problem, verified=problem is None)
 
 
-PATCHERS = {'traefik': patch_traefik, 'kuma': patch_kuma}
+# ---------------------------------------------------------------- Postgres
+
+PSQL = 'exec psql -XAtq -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "$1" -c "$2"'
+DATABASES_SQL = 'select datname from pg_database where datallowconn and not datistemplate order by 1'
+# Exact rows: every heap is read, so a new image that cannot read the data fails here.
+ROWS_SQL = ("select count(*), coalesce(sum((xpath('/row/c/text()', query_to_xml(format("
+            "'select count(*) as c from %I.%I', schemaname, relname), false, true, '')))[1]::text::bigint), 0) "
+            "from pg_stat_user_tables")
+TABLES_SQL = 'select count(*) from pg_stat_user_tables'
+
+
+def psql(container, database, sql, timeout=300):
+    result = run(['docker', 'exec', container, 'sh', '-c', PSQL, 'sh', database, sql], timeout=timeout)
+    if result.returncode:
+        raise PatchError('psql in %s failed' % container)  # stderr can name roles; keep it out
+    return result.stdout.split()
+
+
+def pg_shape(container, exact=True):
+    """{database: [tables, exact rows]} (exact) or {database: tables}."""
+    shape = {}
+    for database in psql(container, 'postgres', DATABASES_SQL):
+        if exact:
+            tables, rows = psql(container, database, ROWS_SQL)[0].split('|')
+            shape[database] = [int(tables), int(rows)]
+        else:
+            shape[database] = int(psql(container, database, TABLES_SQL)[0])
+    return shape
+
+
+def pg_ready(container, seconds=120, sleep=time.sleep):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not health(container)['running']:
+            return False
+        if run(['docker', 'exec', container, 'sh', '-c',
+                'pg_isready -q -U "${POSTGRES_USER:-postgres}" -d postgres'], timeout=15).returncode == 0:
+            return True
+        sleep(2)
+    return False
+
+
+def pg_major(args):
+    match = re.search(r'\(PostgreSQL\) (\d+)\.', run(args, timeout=60).stdout)
+    return int(match.group(1)) if match else None
+
+
+def postgres_ref(compose_text):
+    """-> ((major, minor), digest) of the compose image line, which must be a digest-pinned tag."""
+    ref = image_line(compose_text, 'postgres').group('ref')
+    match = POSTGRES_REF.fullmatch(ref)
+    if not match:
+        raise PatchError('compose names %s, not postgres:<major>.<minor>-alpine@sha256:<digest>' % ref)
+    return tag_version('postgres', match.group('tag')), match.group('digest')
+
+
+def data_mount(live):
+    mounts = [m for m in live.get('Mounts') or []
+              if m.get('Type') == 'volume' and m['Destination'].startswith('/var/lib/postgresql')]
+    if len(mounts) != 1:
+        raise PatchError('expected one Postgres data volume, found %d' % len(mounts))
+    return mounts[0]
+
+
+def postgres_canaries(live, old_ref, new_ref, snapshot, destination, workdir):
+    """Old image, then new image, on one copy of the stopped data. -> (old shape, new shape)."""
+    name, volume = 'hatchkit-patch-canary-postgres', 'hatchkit-patch-canary-postgres'
+    env_file = Path(workdir) / 'canary.env'
+    env_file.write_text(''.join(e + '\n' for e in live['Config'].get('Env') or [] if '\n' not in e))
+    env_file.chmod(0o600)
+    shapes = []
+    run(['docker', 'rm', '-f', name])
+    run(['docker', 'volume', 'rm', volume])
+    try:
+        run(['docker', 'volume', 'create', volume], check=True)
+        run(['rsync', '-a', '--delete', str(snapshot) + '/', str(volume_path(volume)) + '/'], timeout=900, check=True)
+        for label, ref in (('old', old_ref), ('new', new_ref)):
+            run(canary_run_args(live, name, volume, destination, ref, env_file), timeout=60, check=True)
+            if not pg_ready(name):
+                raise PatchError('%s-image canary never accepted connections' % label)
+            shapes.append(pg_shape(name))
+            run(['docker', 'stop', '-t', '60', name], timeout=120)
+            run(['docker', 'rm', '-f', name])
+    finally:
+        env_file.unlink(missing_ok=True)
+        run(['docker', 'rm', '-f', name])
+        run(['docker', 'volume', 'rm', volume])
+    if shapes[0] != shapes[1]:
+        raise PatchError('canary tables/rows %s differ from the old image on the same data %s' % (shapes[1], shapes[0]))
+    return shapes
+
+
+def client_health(names, seconds=120, sleep=time.sleep):
+    """Clients may restart once on the dropped connection; report, never roll back for them."""
+    deadline = time.monotonic() + seconds
+    states = {}
+    while True:
+        states = {n: health(n) for n in names}
+        if all(s['status'] in ('healthy', 'running') for s in states.values()) or time.monotonic() > deadline:
+            return {n: s['status'] for n, s in states.items()}
+        sleep(5)
+
+
+def patch_postgres(target, new_ref, force_rollback, log):
+    container = target['container']
+    compose = Path(target['compose'])
+    live = inspect(container)
+    if not live or not (live.get('State') or {}).get('Running'):
+        raise PatchError('container %s is not running' % container)
+    old_text = compose.read_text()
+    new_text, old_ref = replace_image(old_text, 'postgres', new_ref)
+    if old_ref == new_ref and not force_rollback:
+        raise PatchError('compose already names ' + new_ref)
+    if live['Config'].get('Image') != old_ref:
+        raise PatchError('the container does not run the compose image')
+    mount = data_mount(live)
+    new_image = pull(new_ref)
+    running = pg_major(['docker', 'exec', container, 'postgres', '--version'])
+    coming = pg_major(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'postgres', new_ref, '--version'])
+    if running is None or running != coming:
+        raise PatchError('new image runs Postgres %s, the container runs %s' % (coming, running))
+    old_image = live['Image']
+    tables = pg_shape(container, exact=False)
+    snap = SNAPSHOTS / target['name']
+    snap.mkdir(parents=True, exist_ok=True, mode=0o700)
+    (snap / 'data').mkdir(exist_ok=True, mode=0o700)
+    shutil.copy2(compose, snap / 'compose.before.yml')
+    data_dir = volume_path(mount['Name'])
+    project = target.get('project') or compose.parent.name
+    service = target['composeService']
+
+    def up():
+        return run(['docker', 'compose', '-p', project, '-f', str(compose), 'up', '-d', '--no-deps', '--force-recreate',
+                    service], timeout=300, cwd=str(compose.parent)).returncode
+
+    def verify(want_image):
+        ok, state = wait_healthy(container, want_image, 180)
+        if not ok:
+            return 'Postgres not healthy on the expected image (%s)' % state.get('status')
+        now_tables = pg_shape(container, exact=False)
+        return None if now_tables == tables else 'tables per database %s differ from %s' % (now_tables, tables)
+
+    # A clean stop gives a copy the canaries can open without crash recovery.
+    run(['docker', 'stop', '-t', '120', container], timeout=180, check=True)
+    snapshot = run(['rsync', '-a', '--delete', str(data_dir) + '/', str(snap / 'data') + '/'], timeout=900)
+    try:
+        if snapshot.returncode:
+            raise PatchError('data snapshot failed')
+        with tempfile.TemporaryDirectory(dir=snap) as workdir:
+            shapes = postgres_canaries(live, old_ref, new_ref, snap / 'data', mount['Destination'], workdir)
+        log('canaries agree: %s' % shapes[1])
+    except Exception:
+        run(['docker', 'start', container])
+        raise
+    policy_before, pinned = policy_pin(container, new_image)
+    try:
+        write_atomic(compose, new_text)
+        problem = 'compose up failed' if up() else None
+        problem = problem or verify(new_image)
+    except Exception as error:  # whatever broke, put the old image back on the same data
+        problem = 'crashed during the swap: %s' % error
+    if problem is None and not force_rollback:
+        clients = client_health(target.get('clients') or [])
+        return {'from': old_ref, 'to': new_ref, 'databases': shapes[1], 'clients': clients,
+                'snapshot': str(snap / 'data')}
+    reason = problem or 'operator test: forced rollback after every check passed'
+    log('rolling back: ' + reason)
+    write_atomic(compose, old_text)
+    if pinned:
+        write_policy(policy_before)
+    rollback_problem = ('compose up failed' if up() else None) or verify(old_image)
+    raise RolledBack(reason, rollback_problem, verified=problem is None)
+
+
+PATCHERS = {'traefik': patch_traefik, 'kuma': patch_kuma, 'postgres': patch_postgres}
 
 
 # ---------------------------------------------------------------- planning
 
 def current_version(target):
+    if target['kind'] == 'postgres':
+        return postgres_ref(Path(target['compose']).read_text())[0]
     if target['kind'] == 'traefik':
         version = traefik_version(target['container'])
         if not version:
@@ -615,7 +838,7 @@ def current_version(target):
 
 def new_ref_for(kind, version, tag):
     ref = KINDS[kind]['image'] + ':' + tag['name']
-    if kind == 'traefik':
+    if kind in ('traefik', 'postgres'):
         digest = tag.get('digest') or ''
         if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
             raise PatchError('Docker Hub gave no digest for ' + ref)
@@ -627,25 +850,31 @@ def plan_target(target, state, ledger, now, config, forced_tag=None, fetch=None)
     kind = target['kind']
     current = current_version(target)
     advisories = advisories_for(ledger, kind, current)
-    tags = hub_tags(kind, ('v' if kind == 'traefik' else '') + '%d.%d.' % current[:2], fetch)
+    prefix = {'traefik': 'v%d.%d.' % current[:2], 'postgres': '%d.' % current[0]}.get(kind, '%d.%d.' % current[:2])
+    tags = hub_tags(kind, prefix, fetch)
     if forced_tag:
         version = tag_version(kind, forced_tag)
-        if not version or version[:2] != current[:2] or version < current:
-            raise PatchError('--to must be a %s tag of %d.%d at or above the running version' % (kind, *current[:2]))
+        if not version or not same_line(kind, version, current) or version < current:
+            raise PatchError('--to must be a %s tag of the running line %s at or above the running version'
+                             % (kind, fmt(current[:1] if kind == 'postgres' else current[:2])))
         match = [t for t in tags if t['name'] == forced_tag]
         if not match:
             raise PatchError('Docker Hub has no tag ' + forced_tag)
         candidate = (version, match[0])
+    elif kind == 'postgres':
+        candidate = pick_postgres(current, postgres_ref(Path(target['compose']).read_text())[1], tags)
     else:
         candidate = pick_patch(kind, current, tags)
     action, reason, fixes = decide(kind, current, candidate, advisories, state, now, config,
                                    forced=forced_tag)
-    plan = {'target': target['name'], 'kind': kind, 'current': '%d.%d.%d' % current,
+    plan = {'target': target['name'], 'kind': kind, 'current': fmt(current),
             'action': action, 'reason': reason, 'fixes': fixes,
             'advisories': [a['id'] for a in advisories],
             'unpatchable': sorted(a['id'] for a in advisories if not a['fixedIn'])}
     if candidate:
-        plan['candidate'] = '%d.%d.%d' % candidate[0]
+        plan['candidate'] = fmt(candidate[0])
+        if candidate[0] == current:
+            plan['rebuild'] = candidate[1].get('digest')
         if action == 'patch':
             plan['ref'] = new_ref_for(kind, candidate[0], candidate[1])
     return plan
@@ -711,7 +940,8 @@ foreach ($args['services'] as $s) {
   $r = ['kind' => 'service', 'service' => $s['uuid'], 'app' => $s['app']];
   try {
     $service = App\Models\Service::where('uuid', $s['uuid'])->firstOrFail();
-    $application = $service->applications()->where('name', $s['app'])->firstOrFail();
+    $isDb = ($s['part'] ?? 'application') === 'database';
+    $application = ($isDb ? $service->databases() : $service->applications())->where('name', $s['app'])->firstOrFail();
     $server = $service->destination->server;
     $path = '/data/coolify/services/' . $service->uuid . '/docker-compose.yml';
     $host = base64_decode(hk_remote($server, 'base64 -w0 ' . escapeshellarg($path)), true);
@@ -733,7 +963,7 @@ foreach ($args['services'] as $s) {
         if ($apply) {
           Illuminate\Support\Facades\DB::transaction(function () use ($service, $application, $newRaw, $swap) {
             Illuminate\Support\Facades\DB::table('services')->where('id', $service->id)->update(['docker_compose_raw' => $newRaw, 'docker_compose' => $swap[0]]);
-            Illuminate\Support\Facades\DB::table('service_applications')->where('id', $application->id)->update(['image' => $swap[2]]);
+            Illuminate\Support\Facades\DB::table($isDb ? 'service_databases' : 'service_applications')->where('id', $application->id)->update(['image' => $swap[2]]);
           });
         }
       }
@@ -741,12 +971,29 @@ foreach ($args['services'] as $s) {
   } catch (Throwable $e) { $r['status'] = 'refused'; $r['reason'] = substr(get_class($e) . ': ' . $e->getMessage(), 0, 200); }
   $out[] = $r;
 }
+// Standalone databases: Coolify writes their compose from the model at start, so only the image field follows.
+foreach ($args['standalone'] ?? [] as $s) {
+  $r = ['kind' => 'standalone', 'database' => $s['uuid']];
+  try {
+    $db = App\Models\StandalonePostgresql::where('uuid', $s['uuid'])->firstOrFail();
+    $running = hk_remote($db->destination->server, "docker inspect -f '{{.Config.Image}}' " . escapeshellarg($s['uuid']));
+    if ($db->image === $running) { $r['status'] = 'in-sync'; $r['image'] = $running; }
+    elseif (!preg_match($s['pattern'], $running)) { $r['status'] = 'refused'; $r['reason'] = 'unexpected image ' . $running; }
+    elseif (!preg_match($s['pattern'], (string) $db->image) && !preg_match('/^postgres:\d+(\.\d+)?-alpine$/', (string) $db->image)) { $r['status'] = 'refused'; $r['reason'] = 'Coolify names ' . $db->image; }
+    else {
+      $r += ['from' => $db->image, 'to' => $running, 'status' => $apply ? 'updated' : 'would-update'];
+      if ($apply) { Illuminate\Support\Facades\DB::table('standalone_postgresqls')->where('id', $db->id)->update(['image' => $running]); }
+    }
+  } catch (Throwable $e) { $r['status'] = 'refused'; $r['reason'] = substr(get_class($e) . ': ' . $e->getMessage(), 0, 200); }
+  $out[] = $r;
+}
 echo json_encode($out), "\n";
 '''
 
-SYNC_PREFIXES = {'traefik': 'traefik', 'kuma': 'louislam/uptime-kuma:'}
+SYNC_PREFIXES = {'traefik': 'traefik', 'kuma': 'louislam/uptime-kuma:', 'postgres': 'postgres:'}
 SYNC_PATTERNS = {'traefik': '/^traefik(:v\\d+\\.\\d+\\.\\d+)?@sha256:[0-9a-f]{64}$/',
-                 'kuma': '/^louislam\\/uptime-kuma:\\d+\\.\\d+\\.\\d+-rootless$/'}
+                 'kuma': '/^louislam\\/uptime-kuma:\\d+\\.\\d+\\.\\d+-rootless$/',
+                 'postgres': '/^postgres:\\d+\\.\\d+-alpine@sha256:[0-9a-f]{64}$/'}
 
 
 def sync_coolify(sync, apply):
@@ -755,19 +1002,15 @@ def sync_coolify(sync, apply):
             'proxies': [{'server': s, 'prefix': SYNC_PREFIXES['traefik'], 'pattern': SYNC_PATTERNS['traefik']}
                         for s in sync.get('proxies') or []],
             'services': [{'uuid': s['uuid'], 'app': s['app'], 'container': s['container'],
+                          'part': s.get('part', 'application'),
                           'prefix': SYNC_PREFIXES[s.get('kind', 'kuma')], 'pattern': SYNC_PATTERNS[s.get('kind', 'kuma')]}
-                         for s in sync.get('services') or []]}
+                         for s in sync.get('services') or []],
+            'standalone': [{'uuid': u, 'pattern': SYNC_PATTERNS['postgres']} for u in sync.get('standalonePostgres') or []]}
     container = sync.get('container', 'coolify')
-    path = '/tmp/hatchkit-service-patch-sync.php'
-    put = run(['docker', 'exec', '-i', '-u', 'root', container, 'sh', '-c', 'umask 077; cat > ' + path],
-              input=SYNC_PHP, timeout=30)
-    if put.returncode:
-        raise PatchError('cannot copy the sync script into ' + container)
-    try:
-        result = run(['docker', 'exec', '-u', 'root', '-e', 'HK_ARGS=' + json.dumps(args), container, 'php', path],
-                     timeout=180)
-    finally:
-        run(['docker', 'exec', '-u', 'root', container, 'rm', '-f', path])
+    # The script goes over stdin: a file in the container's /tmp is exactly what
+    # host-integrity's temp-file detector reports (and mails).
+    result = run(['docker', 'exec', '-i', '-u', 'root', '-e', 'HK_ARGS=' + json.dumps(args), container, 'php'],
+                 input=SYNC_PHP, timeout=180)
     lines = [l for l in result.stdout.splitlines() if l.startswith('[')]
     if result.returncode or not lines:
         raise PatchError('the Coolify sync script failed (exit %d)' % result.returncode)
@@ -816,8 +1059,11 @@ def attempt_target(target, plan, force_rollback, log):
     return attempt
 
 
-def after_landing():
-    for unit in ('hatchkit-update-watch.service', 'hatchkit-container-policy.service'):
+def after_landing(kind=None):
+    units = ['hatchkit-update-watch.service', 'hatchkit-container-policy.service']
+    if kind == 'postgres':  # both key on the container name, which a recreate keeps; prove it at once
+        units += ['hatchkit-database-guard-check.service', 'hatchkit-database-egress-check.service']
+    for unit in units:
         run(['systemctl', 'start', '--no-block', unit])
 
 
@@ -894,7 +1140,7 @@ def locked(args, work):
             record_attempt(state, target['name'], attempt)
             print(json.dumps({'attempt': attempt}), flush=True)
             if attempt['status'] == 'landed':
-                after_landing()
+                after_landing(target['kind'])
             save_state(work, state)
     if args.mode == 'run' and config.get('coolifySync'):
         try:

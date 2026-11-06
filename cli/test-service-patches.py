@@ -189,6 +189,151 @@ class Swap(unittest.TestCase):
         self.assertEqual(json.loads(policy.read_text())['policies'][0]['expected']['imageId'], 'sha256:old')
 
 
+PG_OLD = 'postgres:18.6-alpine@sha256:' + 'a' * 64
+PG_COMPOSE = """services:
+  listmonk:
+    image: 'hatchkit-security/listmonk-x:20261024'
+  postgres:
+    image: '%s'
+    environment:
+      POSTGRES_PASSWORD: SECRET_THAT_MUST_NOT_LEAK
+""" % PG_OLD
+PG_TAGS = [tag('18.6-alpine', digest='sha256:' + 'a' * 64), tag('18.6-alpine3.24'), tag('18.6'),
+           tag('18-alpine'), tag('19.0-alpine'), tag('17.9-alpine'), tag('18.6-bookworm')]
+
+
+class Postgres(unittest.TestCase):
+    def test_a_rebuild_of_the_running_tag_or_a_higher_minor_of_the_major_is_picked(self):
+        current, running = (18, 6), 'sha256:' + 'a' * 64
+        self.assertIsNone(sp.pick_postgres(current, running, PG_TAGS))
+        rebuilt = PG_TAGS + [tag('18.6-alpine', digest=DIGEST)]
+        self.assertEqual(sp.pick_postgres(current, running, rebuilt[-1:])[1]['digest'], DIGEST)
+        self.assertEqual(sp.pick_postgres(current, running, PG_TAGS + [tag('18.7-alpine')])[0], (18, 7))
+
+    def plan(self, compose_text, tags, **options):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        compose = Path(folder.name, 'docker-compose.yml')
+        compose.write_text(compose_text)
+        target = {'name': 'listmonk-db', 'kind': 'postgres', 'container': 'postgres-x', 'compose': str(compose)}
+        return sp.plan_target(target, {}, {}, NOW, CONFIG, fetch=lambda url: {'results': tags}, **options)
+
+    def test_plan_pins_the_rebuild_by_digest_and_never_crosses_a_major(self):
+        plan = self.plan(PG_COMPOSE, [tag('18.6-alpine', digest=DIGEST), tag('19.0-alpine')])
+        self.assertEqual((plan['action'], plan['ref'], plan['rebuild']), ('patch', 'postgres:18.6-alpine@' + DIGEST, DIGEST))
+        self.assertEqual(self.plan(PG_COMPOSE, PG_TAGS)['action'], 'none')
+        with self.assertRaises(sp.PatchError):
+            self.plan(PG_COMPOSE, [tag('19.0-alpine')], forced_tag='19.0-alpine')
+        self.assertNotIn('SECRET', json.dumps(plan))
+
+    def test_a_floating_or_derived_compose_image_is_refused(self):
+        for ref in ('postgres:18-alpine', 'postgres:18.6-alpine', 'hatchkit-security/postgres:listmonk-18.6'):
+            with self.assertRaises(sp.PatchError):
+                sp.postgres_ref(PG_COMPOSE.replace(PG_OLD, ref))
+
+    def test_canaries_must_agree(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        shapes = iter([{'listmonk': [9, 400]}, {'listmonk': [9, 399]}])
+        with patch.object(sp, 'run', return_value=NS(returncode=0, stdout='', stderr='')), \
+                patch.object(sp, 'volume_path', return_value=Path(folder.name)), \
+                patch.object(sp, 'pg_ready', return_value=True), patch.object(sp, 'pg_shape', lambda name: next(shapes)):
+            with self.assertRaisesRegex(sp.PatchError, 'differ from the old image'):
+                sp.postgres_canaries({'Config': {'Env': ['POSTGRES_USER=x']}, 'HostConfig': {}}, PG_OLD,
+                                     'postgres:18.6-alpine@' + DIGEST, Path(folder.name), '/var/lib/postgresql', folder.name)
+        self.assertEqual(list(Path(folder.name).glob('canary.env')), [])
+
+
+class Sync(unittest.TestCase):
+    def test_the_script_goes_over_stdin_with_database_parts_and_standalone_rows(self):
+        calls = []
+
+        def fake_run(args, timeout=120, check=False, input=None, cwd=None):
+            calls.append((args, input))
+            return NS(returncode=0, stdout='[]\n', stderr='')
+        sync = {'services': [{'uuid': 'u1', 'app': 'postgres', 'container': 'postgres-u1', 'kind': 'postgres',
+                              'part': 'database'}], 'standalonePostgres': ['g145']}
+        with patch.object(sp, 'run', fake_run):
+            sp.sync_coolify(sync, False)
+        (args, stdin), = calls
+        self.assertEqual((args[-1], stdin), ('php', sp.SYNC_PHP))
+        self.assertFalse(any('/tmp' in a for a in args))
+        sent = json.loads(next(a for a in args if a.startswith('HK_ARGS='))[len('HK_ARGS='):])
+        self.assertEqual((sent['services'][0]['part'], sent['services'][0]['prefix']), ('database', 'postgres:'))
+        self.assertEqual(sent['standalone'][0]['uuid'], 'g145')
+
+
+class FakePostgres:
+    """Enough Docker for patch_postgres: compose up recreates on whatever the file names."""
+
+    def __init__(self, folder, new_fails=False):
+        self.compose = Path(folder, 'docker-compose.yml')
+        self.compose.write_text(PG_COMPOSE)
+        self.image = 'sha256:old'
+        self.new_fails = new_fails
+        self.calls = []
+
+    def run(self, args, timeout=120, check=False, input=None, cwd=None):
+        self.calls.append(args)
+        if args[:2] == ['docker', 'compose']:
+            self.image = 'sha256:new' if DIGEST in self.compose.read_text() else 'sha256:old'
+        return NS(returncode=0, stdout='', stderr='')
+
+    def inspect(self, name):
+        ref = PG_OLD if self.image == 'sha256:old' else 'postgres:18.6-alpine@' + DIGEST
+        return {'Image': self.image, 'State': {'Running': True}, 'HostConfig': {},
+                'Config': {'Image': ref, 'Env': []},
+                'Mounts': [{'Type': 'volume', 'Name': 'x_postgres-data', 'Destination': '/var/lib/postgresql'}]}
+
+    def wait_healthy(self, name, image, seconds):
+        return (self.image == image and not (self.new_fails and image == 'sha256:new')), {'status': 'unhealthy'}
+
+
+class PostgresSwap(unittest.TestCase):
+    def swap(self, **fake_options):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        fake = FakePostgres(folder.name, **fake_options)
+        policy = Path(folder.name, 'policy.json')
+        policy.write_text(json.dumps({'policies': [{'selector': {'name': 'postgres-x'},
+                                                    'expected': {'imageId': 'sha256:old'}}]}))
+        target = {'name': 'listmonk-db', 'kind': 'postgres', 'container': 'postgres-x', 'compose': str(fake.compose),
+                  'project': 'x', 'composeService': 'postgres', 'clients': ['listmonk-x']}
+        with patch.object(sp, 'run', fake.run), patch.object(sp, 'inspect', fake.inspect), \
+                patch.object(sp, 'pull', return_value='sha256:new'), patch.object(sp, 'pg_major', return_value=18), \
+                patch.object(sp, 'pg_shape', return_value={'listmonk': 9}), \
+                patch.object(sp, 'postgres_canaries', return_value=[{'listmonk': [9, 4]}] * 2), \
+                patch.object(sp, 'volume_path', return_value=Path(folder.name, 'vol')), \
+                patch.object(sp, 'client_health', return_value={'listmonk-x': 'healthy'}), \
+                patch.object(sp, 'wait_healthy', fake.wait_healthy), \
+                patch.object(sp, 'SNAPSHOTS', Path(folder.name, 'snap')), patch.object(sp, 'POLICY', policy), \
+                patch.object(sp, 'POLICY_RECORD', Path(folder.name, 'record.json')):
+            try:
+                result = sp.patch_postgres(target, 'postgres:18.6-alpine@' + DIGEST, False, lambda m: None)
+            except sp.RolledBack as error:
+                result = error
+        return fake, policy, result
+
+    def test_a_good_rebuild_lands_with_the_pin_and_only_the_db_service_recreated(self):
+        fake, policy, result = self.swap()
+        self.assertEqual((result['to'], result['clients']), ('postgres:18.6-alpine@' + DIGEST, {'listmonk-x': 'healthy'}))
+        self.assertEqual(json.loads(policy.read_text())['policies'][0]['expected']['imageId'], 'sha256:new')
+        self.assertIn(['docker', 'compose', '-p', 'x', '-f', str(fake.compose), 'up', '-d', '--no-deps',
+                       '--force-recreate', 'postgres'], fake.calls)
+        self.assertIn("hatchkit-security/listmonk-x:20261024", fake.compose.read_text())
+        self.assertLess(fake.calls.index(['docker', 'stop', '-t', '120', 'postgres-x']),
+                        next(i for i, c in enumerate(fake.calls) if c[:2] == ['docker', 'compose']))
+
+    def test_an_unhealthy_new_image_rolls_back_compose_and_pin_without_touching_data(self):
+        fake, policy, result = self.swap(new_fails=True)
+        self.assertIsInstance(result, sp.RolledBack)
+        self.assertIsNone(result.rollback_problem)
+        self.assertEqual((fake.compose.read_text(), fake.image), (PG_COMPOSE, 'sha256:old'))
+        self.assertEqual(json.loads(policy.read_text())['policies'][0]['expected']['imageId'], 'sha256:old')
+        restores = [c for c in fake.calls if c[0] == 'rsync' and c[-1].rstrip('/').endswith('vol')]
+        self.assertEqual(restores, [])
+
+
 class State(unittest.TestCase):
     def test_failures_pause_but_a_passing_operator_test_does_not(self):
         state = {}
