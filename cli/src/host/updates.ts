@@ -650,12 +650,6 @@ const FILES = [
   "hatchkit-update-watch.service",
   "hatchkit-update-watch.timer",
   "hatchkit-update-watch-failed.service",
-  // Installed, never enabled here: automatic rebuilds start only when the
-  // operator writes /etc/hatchkit-security/image-rebuilds.json and the token,
-  // then enables the timer. See templates/update-watch/image-rebuilds.py.
-  "image-rebuilds.py",
-  "hatchkit-image-rebuilds.service",
-  "hatchkit-image-rebuilds.timer",
   // Installed, never enabled here either: Traefik/Kuma patch releases start only
   // when the operator writes /etc/hatchkit-security/service-patches.json and
   // enables the timer. See templates/update-watch/service-patches.py.
@@ -675,7 +669,7 @@ def fail(message):
 payload=json.load(sys.stdin)
 opt=pathlib.Path('/opt/hatchkit-backups')
 units=pathlib.Path('/etc/systemd/system')
-names=('update-watch.py','update-watch-services.json','update-watch-cloudflare.json','hatchkit-update-watch.service','hatchkit-update-watch.timer','hatchkit-update-watch-failed.service','image-vulnerabilities.py','hatchkit-image-vulnerabilities.service','hatchkit-image-vulnerabilities.timer','hatchkit-image-vulnerabilities-failed.service','image-rebuilds.py','hatchkit-image-rebuilds.service','hatchkit-image-rebuilds.timer','service-patches.py','hatchkit-service-patches.service','hatchkit-service-patches.timer')
+names=('update-watch.py','update-watch-services.json','update-watch-cloudflare.json','hatchkit-update-watch.service','hatchkit-update-watch.timer','hatchkit-update-watch-failed.service','image-vulnerabilities.py','hatchkit-image-vulnerabilities.service','hatchkit-image-vulnerabilities.timer','hatchkit-image-vulnerabilities-failed.service','service-patches.py','hatchkit-service-patches.service','hatchkit-service-patches.timer')
 if sorted(payload['files'])!=sorted(names):
  fail('unexpected installer files')
 if not pathlib.Path('/usr/local/bin/grype').is_file():
@@ -696,7 +690,7 @@ except (IndexError,ValueError):
  report={}
 if probe.returncode!=0 or 'findings' not in report:
  fail('the first scan failed ('+str(report.get('error') or 'no report')+'); nothing was installed')
-targets={name:(opt if name.startswith('update-watch') or name in ('image-vulnerabilities.py','image-rebuilds.py','service-patches.py') else units)/name for name in names}
+targets={name:(opt if name.startswith('update-watch') or name in ('image-vulnerabilities.py','service-patches.py') else units)/name for name in names}
 result={'host':report['host'],'mailTo':alerts['to'],'alreadyInstalled':targets['hatchkit-update-watch.timer'].exists(),
  'services':[s['name']+' '+s['version'] for s in report['services']],
  'findingsNow':[f['summary'] for f in report['findings']],'skippedNow':report.get('skipped',[]),'files':[str(t) for t in targets.values()]}

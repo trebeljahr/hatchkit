@@ -200,58 +200,6 @@ class WhenItSends(DigestCase):
         self.run_digest(NOW + 2 * DAY)
         self.assertEqual(self.sent[1][1]['sections']['fixed'], [])
 
-    def write_rebuilds(self, attempts, checked=NOW, **extra):
-        (self.work / digest.REBUILD_STATUS).write_text(json.dumps(
-            {'checkedAt': checked.isoformat(), 'ok': True, 'error': None, 'refused': [],
-             'apps': {'ghcr.io/o/app-server': {'attempts': attempts}}, **extra}))
-
-    def test_a_landed_rebuild_rides_along_and_never_hides_findings(self):
-        landed = {'status': 'landed', 'workloads': ['app-server'], 'verifiedAt': NOW.isoformat(),
-                  'fixCountBefore': 12, 'fixCountAfter': 2, 'runUrl': 'https://github.com/o/app/actions/runs/1'}
-        self.write_rebuilds([landed])
-        self.run_digest()
-        self.assertEqual(self.sent, [], 'a rebuild alone sends no digest')
-        self.write_watch([direct(), package(1, containerDisplayNames=['app-server'])])
-        self.run_digest(NOW + DAY)
-        sections = self.sent[0][1]['sections']
-        self.assertIn('Rebuilt app-server on a fresh base image', sections['fixed'][0]['what'])
-        self.assertIn('12 before, 2 after', sections['fixed'][0]['detail'])
-        self.assertIn('keep their deadlines', sections['fixed'][0]['detail'])
-        self.assertTrue(any('CVE-2026-0001' in row for row in self.sent[0][1]['paste']['rows']))
-        self.run_digest(NOW + 2 * DAY)
-        self.assertEqual(self.sent[1][1]['sections']['fixed'], [], 'an old rebuild is not repeated')
-
-    def test_a_failed_rebuild_needs_the_owner_until_cleared(self):
-        failed = {'status': 'failed', 'workloads': ['app-server'], 'reason': 'the run ended failure',
-                  'runUrl': 'https://github.com/o/app/actions/runs/2'}
-        self.write_rebuilds([failed])
-        self.run_digest()
-        item = self.sent[0][1]['sections']['needs'][0]
-        self.assertIn('Automatic rebuild of app-server did not finish', item['what'])
-        self.assertEqual(item['command'], digest.REBUILD_COMMAND + ' clear ghcr.io/o/app-server')
-        self.write_rebuilds([dict(failed, cleared=True)])
-        self.run_digest(NOW + DAY)
-        self.assertEqual(len(self.sent), 1)
-
-    def test_rebuild_config_errors_and_refusals_need_the_owner(self):
-        self.write_rebuilds([], error='The rebuild config is invalid: x.',
-                            refused=[{'image': 'ghcr.io/o/app-postgres', 'reason': 'looks like a database'}])
-        self.run_digest()
-        whats = [i['what'] for i in self.sent[0][1]['sections']['needs']]
-        self.assertIn('The rebuild config is invalid: x.', whats)
-        self.assertTrue(any('ghcr.io/o/app-postgres' in w for w in whats))
-
-    def test_rebuild_timer_counts_only_when_enabled(self):
-        (self.units / digest.REBUILD_TIMER).write_text('')
-        self.run_digest()
-        self.assertEqual(self.sent, [], 'an installed but disabled timer is not a gap')
-        (self.units / 'timers.target.wants').mkdir()
-        (self.units / 'timers.target.wants' / digest.REBUILD_TIMER).write_text('')
-        self.write_rebuilds([], checked=NOW - dt.timedelta(hours=4))
-        self.run_digest(NOW + DAY)
-        self.assertEqual(self.sent[0][1]['sections']['unchecked'][0]['what'],
-                         'Automatic image rebuilds have no recent result.')
-
     def write_patches(self, attempts, checked=NOW, kind='traefik', **extra):
         (self.work / digest.SERVICE_PATCH_STATUS).write_text(json.dumps(
             {'checkedAt': checked.isoformat(), 'error': None,

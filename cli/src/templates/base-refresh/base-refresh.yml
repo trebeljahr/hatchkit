@@ -2,15 +2,13 @@ name: base-refresh
 
 # Rebuild the commit that is live NOW on freshly pulled base images, so OS
 # package fixes (curl, libc6, openssl …) reach production without a code
-# change. The backup host's image-rebuilds runner dispatches this when its
-# scanner reports fixes for this app's running image
-# (hatchkit templates/update-watch/image-rebuilds.py); it can also be run by
-# hand from the Actions tab.
+# change. Run it by hand from the Actions tab, e.g. for an app nobody has
+# pushed to in a while. Hosts never dispatch it: no host holds a GitHub token.
 #
 # Reference template, not scaffolded. Copy it to .github/workflows/ and make
 # the `test` job run the same gate as this repo's push pipeline.
 #
-# The contract the host relies on:
+# The contract:
 #   · It rebuilds the LIVE commit, never main HEAD: a refresh must not ship
 #     unreleased code.
 #   · New images get a NEW immutable tag, <sha>-base-<run id>. `:<sha>` and
@@ -29,8 +27,7 @@ name: base-refresh
 #     runtime stage if the app does not use it.
 #   · The digests `:live` held before are recorded first. Any failure after
 #     that restores them, redeploys, checks the old build serves again, and
-#     fails the run. The host then pauses rebuilds of this app and says so in
-#     the daily digest.
+#     fails the run.
 #
 # Holds no Coolify API token: promotion uses this job's GITHUB_TOKEN, the
 # deploy signs each app's own webhook (see hatchkit

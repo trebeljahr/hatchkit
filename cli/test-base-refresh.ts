@@ -1,7 +1,6 @@
 /**
  * The base-refresh workflow template (templates/base-refresh/base-refresh.yml)
- * is what the backup host's image-rebuilds runner dispatches. The host trusts
- * it to keep a contract it cannot check from outside, so the contract is
+ * is run by hand to rebuild the live commit on a fresh base. Its contract is
  * pinned here:
  *
  *   · it rebuilds the LIVE commit, never the dispatching ref's HEAD;

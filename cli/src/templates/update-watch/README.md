@@ -214,59 +214,33 @@ Rolling tests should prove a late in-flight response finishes and its idle
 keep-alive socket retires within the existing shutdown budget, with clean exit
 and preserved state on the surviving replica.
 
-# Automatic base-image rebuilds
+# App image fixes
 
-`image-rebuilds.py` rebuilds opted-in app images when the scanner reports
-image-package rows with a fix on the image that runs now. Rebuilding the live
-commit with a re-pulled base image and no layer cache picks up Debian and Alpine
-package fixes. The runner reads the ledger and never writes it: it does not reset
-a deadline, edit a row or hide a finding. The old image's rows leave the ledger
-because the next scan no longer sees that image. Rows the rebuild did not fix keep
-their original clocks.
+No host starts a GitHub workflow: no host holds a GitHub token. Fixes reach an
+app image through the repository's own pipeline:
 
-Opt-in is per image repository in `/etc/hatchkit-security/image-rebuilds.json`
-(root, 0600; start from `image-rebuilds.example.json`). Each entry names the
-GitHub repository, its dispatchable workflow and the ref. The runner dispatches
-with a fine-grained token in `/etc/hatchkit-security/image-rebuild-github-token`
-that has Actions read and write on the opted-in repositories only. The dispatch
-carries the configured ref and inputs, never package data.
+- Debian/Alpine packages: the runtime stage runs `apt-get upgrade` (or
+  `apk upgrade`) and the push build uses no layer cache, so every deploy takes
+  today's packages. Remove the base image's global npm/npx from the runtime
+  stage when the app never runs them; their bundled packages are scanned too.
+- npm dependencies: `cli/src/templates/dependency-updates/` holds a
+  `dependabot.yml` (grouped minor/patch updates weekly after a 7-day cooldown,
+  grouped security fixes as they appear, no majors) and a daily
+  `dependency-updates.yml` that tests the oldest grouped Dependabot PR,
+  squash-merges it and starts `build-and-deploy`. Turn on Dependabot alerts and
+  security updates for the repository too.
+- An app nobody pushes to: run `cli/src/templates/base-refresh/base-refresh.yml`
+  by hand. It rebuilds the live commit on a fresh base, deploys it after tests and
+  health checks, and restores the previous image on failure.
 
-It refuses, whatever the config says: images whose name looks like a database or
-other stateful service, and containers with a writable volume or bind mount. It
-dispatches at most one rebuild per hourly pass and `maxDispatchesPerDay` (default
-2, at most 5) across all apps, with at least 12 hours between rebuilds of one app
-(default 24). When a rebuild landed and left the same fixes behind, the base image
-does not have them yet, so the app waits seven days unless a new fix appears. It
-acts only on a ledger less than 26 hours old.
-
-A run counts as done only when it succeeded, this host runs a different image for
-the app, and the scanner covered that image after the run. The digest then lists it
-under Fixed automatically, with the fixable-match counts before and after; it never
-sends a digest by itself. A failed or cancelled run, a run that never started, or a
-success that never landed pauses that app. The digest lists it under Needs you every
-day until `image-rebuilds.py clear <image>`. `image-rebuilds.py plan` shows what a
-pass would do without writing anything.
-
-`hatchkit host updates install` copies the runner and its units but never enables
-the timer, and the service's ExecCondition skips every pass without the opt-in file.
-The repository side is `cli/src/templates/base-refresh/base-refresh.yml`: it reads
-the live commit, runs the repository's tests, builds `<sha>-base-<run id>` with
-`pull` and `no-cache`, records the previous `:live` digests, promotes, deploys
-through the signed webhooks, waits for `/api/health` to report the run's `build`,
-and on any failure restores the recorded digests and fails the run. Port it into
-each repository and make its `test` job match the push pipeline before opting the
-app in. The server must report `build` from `BUILD_ID` (the starter does).
-
-```sh
-PYTHONDONTWRITEBYTECODE=1 python3 cli/test-image-rebuilds.py
-```
+The scanner keeps reporting what is still there; nothing here resets a deadline.
 
 # Automatic service patches (Traefik, Uptime Kuma)
 
 `service-patches.py` applies patch releases (same major.minor, higher patch) of
 Coolify's proxy (Traefik) and Uptime Kuma, the two stateless third-party services
 on plain official images. Never a database, never a minor or major jump, never an
-app image (those go through `image-rebuilds.py` or a reviewed upgrade).
+app image (those ship through the app's own pipeline).
 
 When: hourly timer. A patch that fixes an update-watch advisory goes at the next
 run. Any other patch waits until it is `minAgeHours` old (24) and the hour is

@@ -132,13 +132,11 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   inside the hourly backup-alerts service. `hatchkit_mail.py` and
   `security-controller/mail-core.mjs` render the same bytes;
   `cli/test-ops-digest.py` pins that, the gating and the size cap.
-- Automatic base-image rebuilds: `cli/src/templates/update-watch/image-rebuilds.py`
-  dispatches an opted-in app's `base-refresh.yml`
-  (`cli/src/templates/base-refresh/`) when the scanner reports package fixes on
-  its running image, follows the run, and reports it in the digest. Installed
-  by `host updates install`, never enabled by it: opt-in file, token and
-  `systemctl enable --now hatchkit-image-rebuilds.timer` are the operator's
-  (production write; ask first). Rules in `update-watch/README.md`.
+- App image fixes come from each repo's own pipeline, never from a host (no
+  host holds a GitHub token): `apt-get upgrade` in the runtime stage, and
+  `cli/src/templates/dependency-updates/` (Dependabot npm config + a daily
+  workflow that tests, squash-merges and deploys the grouped PR).
+  `templates/base-refresh/` is a manual rebuild of the live commit.
 - Automatic service patches: `cli/src/templates/update-watch/service-patches.py`
   applies Traefik and Uptime Kuma patch releases (same major.minor) with a
   no-network canary, a routed-host sweep, network reconnects and automatic

@@ -39,7 +39,6 @@ for (const file of [
   "test-database-egress.py",
   "test-file-integrity.py",
   "test-ops-digest.py",
-  "test-image-rebuilds.py",
   "test-service-patches.py",
   "src/templates/docker-discovery/test-metadata-guard.py",
 ]) {
@@ -548,8 +547,6 @@ esac`,
   assert.equal(payload.dryRun, true);
   assert.deepEqual(Object.keys(payload).sort(), ["boot", "dryRun", "feeds", "files"]);
   assert.deepEqual(Object.keys(payload.files).sort(), [
-    "hatchkit-image-rebuilds.service",
-    "hatchkit-image-rebuilds.timer",
     "hatchkit-image-vulnerabilities-failed.service",
     "hatchkit-image-vulnerabilities.service",
     "hatchkit-image-vulnerabilities.timer",
@@ -558,7 +555,6 @@ esac`,
     "hatchkit-update-watch-failed.service",
     "hatchkit-update-watch.service",
     "hatchkit-update-watch.timer",
-    "image-rebuilds.py",
     "image-vulnerabilities.py",
     "service-patches.py",
     "update-watch-cloudflare.json",
@@ -581,12 +577,6 @@ esac`,
     /update-watch\.py failed --failed-unit hatchkit-image-vulnerabilities\.service/,
   );
   assert.equal(command.includes(payload.boot), true, "install probes with the same boot line");
-  // Automatic rebuilds are installed, never enabled: the operator's opt-in
-  // file gates every pass, and enabling the timer is a separate, asked-for step.
-  assert.match(
-    payload.files["hatchkit-image-rebuilds.service"],
-    /ExecCondition=\/usr\/bin\/test -f \/etc\/hatchkit-security\/image-rebuilds\.json/,
-  );
   const installer = Buffer.from(
     argv("ops-vps")[2].match(/b64decode\("([^"]+)"\)/)![1],
     "base64",
@@ -595,7 +585,6 @@ esac`,
   assert.ok(dryExit > installer.indexOf("probe=subprocess.run"), "dry-run reports the first scan");
   assert.ok(dryExit < installer.indexOf("temp.write_text"), "dry-run exits before any write");
   const enableLine = installer.split("\n").find((line) => line.includes("'enable','--now'"))!;
-  assert.ok(!enableLine.includes("image-rebuilds"), "install never enables automatic rebuilds");
   assert.ok(!enableLine.includes("service-patches"), "install never enables automatic service patches");
   assert.match(
     payload.files["hatchkit-service-patches.service"],
