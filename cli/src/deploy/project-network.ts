@@ -2,12 +2,12 @@
  * One Docker network per project.
  *
  * Coolify puts every resource on the server's first destination, the
- * shared `coolify` network, unless it is told otherwise. On dedicated-vps
- * that meant every app container, every app database AND Coolify's own
- * dashboard, Postgres and Redis on one network: any compromised app could
+ * shared `coolify` network, unless it is told otherwise. Left alone,
+ * that puts every app container, every app database AND Coolify's own
+ * dashboard, Postgres and Redis on one network: any compromised app can
  * open a connection to every other project's database and to Coolify's
- * login, from inside, past Cloudflare and the host firewall. (Audit of
- * 2026-10-19, after a cryptominer got into Plausible through an
+ * login, from inside, past Cloudflare and the host firewall. (An audit found
+ * this after a cryptominer got into a Plausible instance through an
  * unauthenticated RCE. Plausible had a network of its own, which is why
  * it got no further.)
  *
@@ -61,13 +61,13 @@
  *      `hatchkit backup sources --project <p>` is ok; `hatchkit doctor`
  *      shows the network row ok.
  *
- * Rollback at any step: put the old `destination_id` back (0 for
- * `coolify` on dedicated-vps) and redeploy or restart. The `coolify`
+ * Rollback at any step: put the old `destination_id` back (usually 0 for
+ * `coolify`) and redeploy or restart. The `coolify`
  * network is never removed.
  *
- * infra/scripts/move-project-network.sh runs these steps. On 2026-10-19 it
- * moved all ten projects on dedicated-vps; `coolify` now holds only
- * Coolify's own containers. App moves cost 0 failed requests; each
+ * infra/scripts/move-project-network.sh runs these steps. Measured on a
+ * ten-project host, with `coolify` left holding only Coolify's own
+ * containers afterwards: app moves cost 0 failed requests; each
  * database restart cost 3–23 s on that project's database-backed routes
  * (Mongo the slowest). Data, volumes and backup sources were unchanged.
  */

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Move one Coolify project off the shared `coolify` network onto its own
 # `hk-<project>` destination, on the Coolify host, as root. The procedure is
-# documented in cli/src/deploy/project-network.ts; this script moved all ten
-# projects on dedicated-vps on 2026-10-19. Stops at the first check that
+# documented in cli/src/deploy/project-network.ts; this script runs it.
+# Stops at the first check that
 # fails and prints how to put things back.
 #
 #   move-project-network.sh <network> <app ids, comma-separated> [<db specs>]

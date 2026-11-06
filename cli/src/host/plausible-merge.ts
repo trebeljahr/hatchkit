@@ -188,8 +188,8 @@ async function resolveDatabases(run: HostRunner, stack: PlausibleStack): Promise
     ],
   });
   const [pg, ch] = out.split("\n").map((line) => line.replace(/\?.*$/, "").trim());
-  // Coolify's template names the Postgres database plausible-db (shared-vps,
-  // 2026-10-19). The names only ever travel as argv, never into SQL.
+  // Coolify's template names the Postgres database plausible-db.
+  // The names only ever travel as argv, never into SQL.
   const valid = (name: string | undefined) => !!name && /^[A-Za-z0-9_-]+$/.test(name);
   if (!valid(pg) || !valid(ch))
     throw new Error(

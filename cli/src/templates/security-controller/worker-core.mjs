@@ -1,6 +1,12 @@
 // Only fixed health metadata crosses this boundary. No app logs, records or secrets.
 import {renderMail,summaryLine} from './mail-core.mjs';
 export const HOSTS = ['app-vps', 'ops-vps'];
+// The ping secrets keep their original binding names; renaming a binding
+// means re-uploading the secret.
+export const PING_KEYS = {'app-vps': 'DEDICATED_PING_KEY', 'ops-vps': 'SHARED_PING_KEY'};
+// Bridge for the rename only: a host still pinging its old path is stored
+// under its new name, and a new name with no heartbeat yet reads the old one.
+export const LEGACY = {'app-vps': 'app-vps', 'ops-vps': 'ops-vps'};
 export const CHECKS = {process: 15*60, full: 28*3600, advisory: 8*3600,
   images: 36*3600, files: 28*3600, backups: 36*3600, restore: 9*86400};
 // 09:00 in Sydney during daylight time, near the hosts' own digests. Coverage
@@ -102,7 +108,7 @@ async function readSmall(request) {
 export async function sweep(env, now=Date.now()) {
   const issues=[],pending=[];
   for(const host of HOSTS) {
-    const heartbeat=await jsonObject(env.STATE,`hosts/${host}.json`);
+    const heartbeat=await jsonObject(env.STATE,`hosts/${host}.json`) || await jsonObject(env.STATE,`hosts/${LEGACY[host]}.json`);
     issues.push(...issuesFor(host,heartbeat,now));pending.push(...pendingFor(host,heartbeat,now));
   }
   const previous=await jsonObject(env.STATE,'sweep.json') || {};
@@ -131,9 +137,10 @@ export async function sweep(env, now=Date.now()) {
 export default {
   async fetch(request,env) {
     const url=new URL(request.url);const bearer=request.headers.get('Authorization')?.replace(/^Bearer /,'');
-    const host=url.pathname.match(/^\/ping\/(app-vps|ops-vps)$/)?.[1];
+    const name=url.pathname.match(/^\/ping\/([a-z0-9-]+)$/)?.[1];
+    const host=HOSTS.includes(name)?name:HOSTS.find(h=>LEGACY[h]===name);
     if(request.method==='POST' && host) {
-      if(!await authorized(bearer,env[host==='app-vps'?'DEDICATED_PING_KEY':'SHARED_PING_KEY']))return new Response('Forbidden',{status:403});
+      if(!await authorized(bearer,env[PING_KEYS[host]]))return new Response('Forbidden',{status:403});
       const old=await jsonObject(env.STATE,`hosts/${host}.json`);
       if(old && Date.now()-Date.parse(old.receivedAt)<30000)return new Response('Rate limited',{status:429});
       try {const safe=sanitize(await readSmall(request));await env.STATE.put(`hosts/${host}.json`,JSON.stringify(safe));return Response.json({accepted:true});}

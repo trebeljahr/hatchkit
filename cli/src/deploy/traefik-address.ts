@@ -1,7 +1,7 @@
 /*
  * Where `migrate-runtime` sends its Host-header requests to Traefik.
  *
- * Since 2026-10-18 dedicated-vps drops 80/443 on its public interface
+ * A hardened host drops 80/443 on its public interface
  * unless the peer is Cloudflare (host iptables chain HATCHKIT-CF). A
  * request from the operator's machine to the public IPv4 times out, so
  * every private verification failed and the run refused the cutover.
