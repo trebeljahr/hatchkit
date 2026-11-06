@@ -88,6 +88,17 @@ container name, immutable image ID, `busybox` package/version and advisory IDs.
 Supply a named owner, reason, primary HTTPS evidence, `reviewedAt` and
 `expiresAt` no more than seven days later. Duplicate/overlapping reviews fail.
 
+A review renews itself for another seven days in its last day, and only while
+its exact container, image, command and read-only content still verify, no
+scanner row reports a fixed release and nothing is known exploited or exposed.
+Otherwise it lapses into Not checked for a person, as before. The renewed entry
+keeps its owner (marked auto-renewed), reason and evidence and names the review
+it replaced; the digest lists it under Fixed automatically. The watcher records
+the rewritten file's hash in `/var/lib/hatchkit-backups/review-renewal.json`,
+and the file-integrity check accepts that file change only with that hash.
+Coolify creates the busybox error-page container itself and recreates it on a
+proxy restart, so replacing its image is not a durable fix.
+
 Every run verifies the fixed direct `httpd` command, image and read-only
 `/www` mount. The host-admin-owned content directory must contain only regular,
 non-executable, non-group/world-writable 503/maintenance HTML files. Scripts,

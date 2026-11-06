@@ -110,6 +110,21 @@ class PackageExplainedChanges(unittest.TestCase):
              patch.object(integrity, 'package_matches', return_value=True):
             self.assertEqual(integrity.explain(integrity.report_entries(REPORT)[:2]), (['bind9-dnsutils'], None))
 
+    def test_a_hatchkit_rewrite_is_accepted_only_with_its_recorded_hash(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            review, record = root / 'image-assessments.json', root / 'review-renewal.json'
+            review.write_text('{"renewed": true}')
+            managed = {str(review): (str(record), 'Hatchkit review renewal')}
+            entries = [('changed', 'd', 'd = ... mc.. ..', str(root)), ('changed', 'f', 'f > ... mci.H..', str(review))]
+            with patch.object(integrity, 'SELF_MANAGED', managed):
+                self.assertIn('recorded rewrite', integrity.explain(entries)[1])  # no record at all
+                record.write_text(json.dumps({'path': str(review), 'sha256': hashlib.sha256(review.read_bytes()).hexdigest()}))
+                self.assertEqual(integrity.explain(entries), (['Hatchkit review renewal'], None))
+                review.write_text('{"renewed": true, "extra": "edit"}')  # edited after the rewrite
+                self.assertIn('recorded rewrite', integrity.explain(entries)[1])
+
     def test_package_matches_compares_content_mode_and_owner_with_the_deb(self):
         import grp, os, pwd
         with tempfile.TemporaryDirectory() as folder:

@@ -24,6 +24,10 @@ REVIEW = {'id': 'fixture-review', 'predicate': 'busybox-static-httpd-awk-ash-v1'
           'reviewedAt': NOW.isoformat(), 'expiresAt': (NOW+dt.timedelta(days=7)).isoformat()}
 
 
+def stat_mode(path):
+    return os.stat(path).st_mode & 0o777
+
+
 class Assessments(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -45,9 +49,65 @@ class Assessments(unittest.TestCase):
             return ''
         raise AssertionError('Unexpected Docker request')
 
-    def apply(self, rows=None, now=NOW, boundary=lambda c: True):
+    def apply(self, rows=None, now=NOW, boundary=lambda c: True, **kwargs):
         return uw.apply_image_assessments(rows if rows is not None else [dict(ROW)], self.docker, now,
-                                          path=self.path, boundary=boundary)
+                                          path=self.path, boundary=boundary, **kwargs)
+
+    def stored(self):
+        return json.loads(self.path.read_text())['reviews']
+
+    def test_review_near_expiry_renews_itself_while_everything_still_holds(self):
+        later = NOW + dt.timedelta(days=6, hours=12)
+        renewed = []
+        rows, skipped = self.apply(now=later, renew=True, renewed=renewed)
+        self.assertEqual(skipped, [])
+        [review] = self.stored()
+        self.assertEqual(renewed, [review['id']])
+        self.assertEqual(review['id'], 'fixture-review-' + later.strftime('%Y%m%d'))
+        self.assertEqual(review['renewedFrom'], 'fixture-review')
+        self.assertTrue(review['owner'].endswith('(auto-renewed by Hatchkit)'))
+        self.assertEqual(dt.datetime.fromisoformat(review['expiresAt']), later + dt.timedelta(days=7, minutes=-1))
+        self.assertEqual(rows[0]['assessment']['id'], review['id'])
+        self.assertEqual(stat_mode(self.path), 0o600)
+        # The renewed review passes the same validation next run, and is not renewed again early.
+        renewed.clear()
+        rows, skipped = self.apply(now=later + dt.timedelta(hours=4), renew=True, renewed=renewed)
+        self.assertEqual((skipped, renewed), ([], []))
+        self.assertIn('assessment', rows[0])
+        # A second renewal keeps one owner suffix.
+        third = later + dt.timedelta(days=6, hours=12)
+        self.apply(now=third, renew=True)
+        self.assertEqual(self.stored()[0]['owner'].count('auto-renewed'), 1)
+
+    def test_an_expired_review_renews_when_its_checks_still_pass(self):
+        later = NOW + dt.timedelta(days=9)
+        rows, skipped = self.apply(now=later, renew=True)
+        self.assertEqual(skipped, [])
+        self.assertIn('assessment', rows[0])
+
+    def test_released_fix_or_exploitation_sends_the_review_back_to_a_person(self):
+        later = NOW + dt.timedelta(days=8)
+        for changes, reason in [({'fixed': '1.38.1'}, 'fixed release'), ({'fixState': 'fixed'}, 'fixed release'),
+                                ({'knownExploited': True}, 'known exploited')]:
+            self.write()
+            rows, skipped = self.apply([dict(ROW, **changes)], now=later, renew=True)
+            self.assertNotIn('assessment', rows[0])
+            self.assertIn('expired', skipped[0]);self.assertIn(reason, skipped[0])
+            self.assertEqual(self.stored()[0]['id'], 'fixture-review')
+
+    def test_changed_boundary_is_never_renewed(self):
+        later = NOW + dt.timedelta(days=6, hours=12)
+        rows, skipped = self.apply(now=later, boundary=lambda c: False, renew=True)
+        self.assertIn('context changed', skipped[0])
+        self.assertEqual(self.stored()[0]['id'], 'fixture-review')
+
+    def test_renewal_waits_for_the_last_day_and_is_off_for_other_files(self):
+        before = self.path.read_text()
+        self.apply(now=NOW + dt.timedelta(days=5), renew=True)
+        self.assertEqual(self.path.read_text(), before)
+        rows, skipped = self.apply(now=NOW + dt.timedelta(days=8))
+        self.assertIn('expired', skipped[0])
+        self.assertEqual(self.path.read_text(), before)
 
     def test_valid_review_keeps_raw_severity_versions_and_deadlines(self):
         row = dict(ROW, firstSeenAt='2026-10-20T00:00:00+00:00', dueAt='2026-10-23T00:00:00+00:00')

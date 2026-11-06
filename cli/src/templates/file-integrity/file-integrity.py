@@ -27,6 +27,10 @@ import tempfile
 WORK = Path('/var/lib/hatchkit-security/aide')
 STATUS = Path('/var/lib/hatchkit-backups/file-integrity-status.json')
 CONFIG = '/etc/hatchkit-security/aide.conf'
+# Files Hatchkit itself rewrites: accepted only when their hash equals the
+# record the writer left beside its own status, never by path alone.
+SELF_MANAGED = {'/etc/hatchkit-security/image-assessments.json': ('/var/lib/hatchkit-backups/review-renewal.json',
+                                                                  'Hatchkit review renewal')}
 SECTIONS = {'Added entries:': 'added', 'Removed entries:': 'removed', 'Changed entries:': 'changed'}
 ENTRY = re.compile(r'^(\S)\s?([=+\-<>!])[^:]*:\s(/.*)$')
 MAX_AUTO_FILES = 400
@@ -124,8 +128,20 @@ def explain(entries):
         if kind not in ('f', 'l'):
             return None, 'an unsupported entry type changed'
         files.append(path)
+    explained = []
+    for path in [p for p in files if p in SELF_MANAGED]:
+        record_path, label = SELF_MANAGED[path]
+        try:
+            record = json.loads(Path(record_path).read_text())
+            matches = record['path'] == path and record['sha256'] == hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        except (OSError, ValueError, KeyError, TypeError):
+            matches = False
+        if not matches:
+            return None, 'a Hatchkit-managed file does not match its recorded rewrite'
+        explained.append(label)
+        files.remove(path)
     if not files:
-        return None, 'only directories changed'
+        return (sorted(set(explained)), None) if explained else (None, 'only directories changed')
     if len(files) > MAX_AUTO_FILES:
         return None, 'too many files to verify automatically'
     owners = owner_packages(files)
@@ -138,7 +154,7 @@ def explain(entries):
         for package, paths in sorted(by_package.items()):
             if not package_matches(package, paths, Path(scratch)):
                 return None, 'a changed file does not match its signed package'
-    return sorted(by_package), None
+    return sorted(by_package) + sorted(set(explained)), None
 
 def finding_fingerprint(log):
     # AIDE's run timestamps change even when its actual diff is identical.

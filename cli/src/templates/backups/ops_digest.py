@@ -236,10 +236,22 @@ def collect(work, host, now, backup_issues, units=UNITS):
     except (KeyError, TypeError, ValueError):
         accepted_at = None
     if accepted_at and now - accepted_at < dt.timedelta(hours=26):
-        auto_fixed.append({'what': 'Accepted file changes from verified package updates: '
+        auto_fixed.append({'what': 'Accepted file changes that verified updates explain: '
                               + named(sorted(str(p) for p in accepted.get('packages') or [])) + '.',
-                      'detail': 'Every changed file matched its signed package. The previous baseline is kept.',
+                      'detail': 'Every changed file matched its signed package or a hash Hatchkit recorded when '
+                                'it rewrote the file. The previous baseline is kept.',
                       'command': 'sudo ls ' + str(accepted.get('previousBaseline') or '/var/lib/hatchkit-security/aide')})
+    renewal = watch.get('lastAutoRenewal') or {}
+    try:
+        renewed_at = dt.datetime.fromisoformat(renewal['at'])
+    except (KeyError, TypeError, ValueError):
+        renewed_at = None
+    if renewed_at and now - renewed_at < dt.timedelta(hours=26) and renewal.get('ids'):
+        auto_fixed.append({'what': 'Renewed the not-reachable review for one more week: '
+                                   + named(sorted(str(i) for i in renewal['ids'])) + '.',
+                           'detail': 'Its container, image and read-only content still match, no fixed release '
+                                     'exists yet and nothing is known exploited. A fix or a change stops renewal.',
+                           'command': updates_command(host)})
     file_issue = None
     if files.get('error'):
         file_issue = 'The file integrity check crashed: ' + str(files['error']) + '.'

@@ -187,6 +187,14 @@ class WhenItSends(DigestCase):
         self.run_digest(NOW + 3 * DAY)
         self.assertEqual(self.sent[1][1]['sections']['fixed'], [], 'an old auto-fix is not repeated')
 
+    def test_an_auto_renewed_review_is_listed_as_fixed_once(self):
+        self.write_watch([direct()], lastAutoRenewal={'at': NOW.isoformat(), 'ids': ['busybox-static-error-pages-20261113']})
+        self.run_digest()
+        fixed = self.sent[0][1]['sections']['fixed']
+        self.assertIn('busybox-static-error-pages-20261113', fixed[0]['what'])
+        self.run_digest(NOW + 2 * DAY)
+        self.assertEqual(self.sent[1][1]['sections']['fixed'], [])
+
     def test_a_check_gone_quiet_is_not_checked_rather_than_clean(self):
         (self.units / 'hatchkit-file-integrity.timer').write_text('')
         self.run_digest()

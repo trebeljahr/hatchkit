@@ -90,6 +90,8 @@ CONSTRAINT = re.compile(r'(>=|<=|==|=|>|<)?\s*([vV]?\d[0-9A-Za-z.+-]*)')
 UPGRADE_LOGS = 60
 MAX_MAIL_FINDINGS = 50
 IMAGE_ASSESSMENTS = '/etc/hatchkit-security/image-assessments.json'
+# The file-integrity check accepts a changed review file only with exactly this hash.
+RENEWAL_RECORD = '/var/lib/hatchkit-backups/review-renewal.json'
 
 
 class WatchError(Exception):
@@ -1279,13 +1281,39 @@ def static_httpd_boundary(container, expected_root=Path('/data/coolify/proxy/err
     return True
 
 
-def apply_image_assessments(findings, docker, now, path=None, boundary=static_httpd_boundary):
+RENEW_BEFORE = dt.timedelta(days=1)
+
+
+def renewal_blocker(selected):
+    """Why a review must go back to a person, or None when it may renew itself."""
+    if any(f.get('fixed') or f.get('fixState') == 'fixed' for f in selected):
+        return 'a fixed release is now available'
+    if any(immediate_finding(f) for f in selected):
+        return 'it is now known exploited or explicitly exposed'
+    return None
+
+
+def renewed_review(review, now):
+    base = re.sub(r'-\d{8}$', '', review['id'])[:70]
+    owner = review['owner'] if review['owner'].endswith('(auto-renewed by Hatchkit)') else (review['owner'] + ' (auto-renewed by Hatchkit)')[:1000]
+    return dict(review, id=base + '-' + now.strftime('%Y%m%d'), owner=owner, renewedFrom=review['id'],
+                reviewedAt=now.isoformat(), expiresAt=(now + dt.timedelta(days=7) - dt.timedelta(minutes=1)).isoformat())
+
+
+def apply_image_assessments(findings, docker, now, path=None, boundary=static_httpd_boundary, renew=None, renewed=None):
     """Keep raw findings/clocks; revalidate narrowly scoped operator reviews.
 
     Missing optional configuration changes nothing. A live matching review that
     expires or loses its predicate becomes incomplete coverage, never a silent
     exception. Known exploitation always bypasses an assessment.
+
+    A review within a day of expiry renews itself for another seven days only
+    while its whole boundary still verifies, no scanner row reports a fixed
+    release and nothing is known exploited or exposed. Otherwise it lapses
+    into incomplete coverage for a person, exactly as before. Renewal is on for
+    the production file only; `renewed` collects the new identities.
     """
+    renew = path is None if renew is None else renew
     target = Path(path or IMAGE_ASSESSMENTS)
     findings = [{k: v for k, v in f.items() if k != 'assessment'} for f in findings]
     if not target.exists():
@@ -1299,7 +1327,7 @@ def apply_image_assessments(findings, docker, now, path=None, boundary=static_ht
         data = json.loads(target.read_text())
         if data['schema'] != 1 or not isinstance(data['reviews'], list) or len(data['reviews']) > 100:
             raise ValueError('Invalid assessment schema')
-        rows, seen, assigned, skipped = [dict(f) for f in findings], set(), set(), []
+        rows, seen, assigned, skipped, pending_renewals = [dict(f) for f in findings], set(), set(), [], []
         for review in data['reviews']:
             identifier = review['id']
             if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,79}', identifier) or identifier in seen:
@@ -1337,7 +1365,8 @@ def apply_image_assessments(findings, docker, now, path=None, boundary=static_ht
                         and f.get('id') in review['advisories'] and f.get('containers') == [review['container']]]
             if not selected:
                 continue  # Resolved findings do not create stale-review alerts.
-            if now >= expires:
+            near_expiry = now >= expires - RENEW_BEFORE
+            if now >= expires and not renew:
                 skipped.append('Image applicability review expired: '+identifier)
                 continue
             try:
@@ -1348,10 +1377,38 @@ def apply_image_assessments(findings, docker, now, path=None, boundary=static_ht
             except (WatchError, OSError, ValueError, KeyError, TypeError):
                 skipped.append('Image applicability review context changed: '+identifier)
                 continue
+            if renew and near_expiry:
+                blocker = renewal_blocker(selected)
+                fresh = renewed_review(review, now)
+                if blocker is None and fresh['id'] not in seen:
+                    pending_renewals.append((review, fresh))
+                    seen.add(fresh['id'])
+                    review = fresh
+                elif now >= expires:
+                    skipped.append('Image applicability review expired: ' + identifier
+                                   + ('; not renewed because ' + blocker if blocker else ''))
+                    continue
             for finding in selected:
                 if not immediate_finding(finding):
                     finding['assessment'] = {k: review[k] for k in ['id', 'owner', 'reason', 'evidence', 'reviewedAt', 'expiresAt', 'imageId', 'predicate']}
                     finding['assessment']['status'] = 'not-reachable-in-reviewed-configuration'
+        if pending_renewals:
+            replaced = {old['id']: fresh for old, fresh in pending_renewals}
+            data['reviews'] = [replaced.get(r['id'], r) for r in data['reviews']]
+            temporary = target.with_name(target.name + '.tmp')
+            temporary.write_text(json.dumps(data, indent=1) + '\n')
+            os.chmod(temporary, 0o600)
+            temporary.replace(target)
+            if path is None:
+                record = Path(RENEWAL_RECORD)
+                staging = record.with_name(record.name + '.tmp')
+                staging.write_text(json.dumps({'path': str(target), 'at': now.isoformat(timespec='seconds'),
+                                               'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
+                                               'ids': [fresh['id'] for _, fresh in pending_renewals]}) + '\n')
+                os.chmod(staging, 0o600)
+                staging.replace(record)
+            if renewed is not None:
+                renewed.extend(fresh['id'] for _, fresh in pending_renewals)
         return rows, skipped
     except (OSError, ValueError, KeyError, TypeError):
         return findings, ['Image applicability review configuration is invalid; raw ledger retained']
@@ -1489,7 +1546,8 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
         except FeedError as failure:
             skipped.append(str(failure))
     if image_packages:
-        findings, assessment_skipped = apply_image_assessments(findings, docker, now)
+        renewed_reviews = []
+        findings, assessment_skipped = apply_image_assessments(findings, docker, now, renewed=renewed_reviews)
         skipped += assessment_skipped
     severity_rank = {'critical': 0, 'high': 1}
     findings.sort(key=lambda f: (f['kind'] != 'auto-update', severity_rank.get(f.get('severity'), 2), f['service']))
@@ -1499,6 +1557,7 @@ def scan(docker, services, feeds, source=COOLIFY_SOURCE, now=None, cloudflare=No
                  'services': report_services, 'findings': findings, 'autoUpdate': auto_update,
                  'cloudflare': cloudflare_state, 'skipped': skipped, 'notes': notes,
                  **({'kev': kev_state} if kev else {}),
+                 **({'renewedReviews': renewed_reviews} if image_packages and renewed_reviews else {}),
                  **({'githubFeeds':feeds.get.receipt()} if isinstance(getattr(feeds,'get',None),GithubFeedReader) else {})})
 
 
@@ -1733,6 +1792,9 @@ def check(docker, services, feeds, work, config, send, now=None, source=COOLIFY_
              'unreviewedPackageMatches': len(review),
              'assessedPackageMatches': sum(current_assessment(f, now) for f in findings),
              'findingFirstSeen': first_seen}
+    renewal = {'at': now.isoformat(timespec='seconds'), 'ids': report['renewedReviews']} if report and report.get('renewedReviews') else previous.get('lastAutoRenewal')
+    if renewal:
+        state['lastAutoRenewal'] = renewal
     if kev:
         state['kev'] = (report or {}).get('kev')
     if report and 'githubFeeds' in report:
