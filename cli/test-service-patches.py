@@ -175,7 +175,7 @@ class Swap(unittest.TestCase):
         self.assertEqual(fake.image, 'sha256:new')
         self.assertLessEqual({'app-1', 'app-2'}, fake.networks)
         self.assertEqual(json.loads(policy.read_text())['policies'][0]['expected']['imageId'], 'sha256:new')
-        self.assertIn(['docker', 'compose', '-f', str(fake.compose), 'up', '-d', '--no-deps', 'traefik'], fake.calls)
+        self.assertIn(['docker', 'compose', '-f', str(fake.compose), 'up', '-d', '--no-deps', '--force-recreate', 'traefik'], fake.calls)
         self.assertTrue(list(Path(fake.compose.parent, 'backups').glob('docker-compose.before-service-patch-*.yml')))
 
     def test_failing_routes_roll_back_compose_image_and_pin(self):

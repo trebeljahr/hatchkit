@@ -406,7 +406,8 @@ def patch_traefik(target, new_ref, force_rollback, log):
     policy_before, pinned = policy_pin(container, new_image)
 
     def up():
-        result = run(['docker', 'compose', '-f', str(compose), 'up', '-d', '--no-deps', target.get('composeService', 'traefik')],
+        result = run(['docker', 'compose', '-f', str(compose), 'up', '-d', '--no-deps', '--force-recreate',
+                      target.get('composeService', 'traefik')],
                      timeout=300, cwd=str(proxy_dir))
         missing = []
         for network in networks:
@@ -558,7 +559,7 @@ def patch_kuma(target, new_ref, force_rollback, log):
     project = target.get('project') or project_dir.name
 
     def up():
-        return run(['docker', 'compose', '-p', project, '-f', str(compose), 'up', '-d'], timeout=300,
+        return run(['docker', 'compose', '-p', project, '-f', str(compose), 'up', '-d', '--force-recreate'], timeout=300,
                    cwd=str(project_dir)).returncode
 
     def verify(want_image):
