@@ -263,6 +263,13 @@ class Sync(unittest.TestCase):
         self.assertEqual(sent['standalone'][0]['uuid'], 'g145')
 
 
+class Clients(unittest.TestCase):
+    def test_a_prefix_finds_the_stamped_app_container(self):
+        ps = NS(returncode=0, stdout='o5uf-20261106T055016\nazwms\no5uf-old-rollback\n', stderr='')
+        with patch.object(sp, 'run', return_value=ps):
+            self.assertEqual(sp.client_names(['o5uf-2*', 'listmonk-x']), ['o5uf-20261106T055016', 'listmonk-x'])
+
+
 class FakePostgres:
     """Enough Docker for patch_postgres: compose up recreates on whatever the file names."""
 

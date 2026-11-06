@@ -735,8 +735,18 @@ def postgres_canaries(live, old_ref, new_ref, snapshot, destination, workdir):
     return shapes
 
 
-def client_health(names, seconds=120, sleep=time.sleep):
+def client_names(patterns):
+    """Exact names, or `prefix*` for image apps whose container name carries a deploy stamp."""
+    running = run(['docker', 'ps', '--format', '{{.Names}}']).stdout.split()
+    names = []
+    for pattern in patterns:
+        names += sorted(n for n in running if n.startswith(pattern[:-1])) if pattern.endswith('*') else [pattern]
+    return names
+
+
+def client_health(patterns, seconds=120, sleep=time.sleep):
     """Clients may restart once on the dropped connection; report, never roll back for them."""
+    names = client_names(patterns) if patterns else []
     deadline = time.monotonic() + seconds
     states = {}
     while True:
