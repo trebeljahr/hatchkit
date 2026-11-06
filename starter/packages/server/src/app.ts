@@ -118,6 +118,8 @@ export function createApp(options: { accessLogStream?: { write(message: string):
       // everywhere. Empty for a locally-run server, which has no build
       // commit; consumers must treat the field as optional.
       version: env.COMMIT_SHA,
+      // The CI run that built the image (see env.ts). Optional, like version.
+      build: env.BUILD_ID,
       timestamp: new Date().toISOString(),
       // ── client-core ──────────────────────────────────────────────
       // The version handshake, from the server's side. A client reads these

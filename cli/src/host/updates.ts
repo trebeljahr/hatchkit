@@ -650,6 +650,12 @@ const FILES = [
   "hatchkit-update-watch.service",
   "hatchkit-update-watch.timer",
   "hatchkit-update-watch-failed.service",
+  // Installed, never enabled here: automatic rebuilds start only when the
+  // operator writes /etc/hatchkit-security/image-rebuilds.json and the token,
+  // then enables the timer. See templates/update-watch/image-rebuilds.py.
+  "image-rebuilds.py",
+  "hatchkit-image-rebuilds.service",
+  "hatchkit-image-rebuilds.timer",
 ];
 
 // Runs as root on the host, files on stdin over Tailscale SSH. It checks the
@@ -663,7 +669,7 @@ def fail(message):
 payload=json.load(sys.stdin)
 opt=pathlib.Path('/opt/hatchkit-backups')
 units=pathlib.Path('/etc/systemd/system')
-names=('update-watch.py','update-watch-services.json','update-watch-cloudflare.json','hatchkit-update-watch.service','hatchkit-update-watch.timer','hatchkit-update-watch-failed.service','image-vulnerabilities.py','hatchkit-image-vulnerabilities.service','hatchkit-image-vulnerabilities.timer','hatchkit-image-vulnerabilities-failed.service')
+names=('update-watch.py','update-watch-services.json','update-watch-cloudflare.json','hatchkit-update-watch.service','hatchkit-update-watch.timer','hatchkit-update-watch-failed.service','image-vulnerabilities.py','hatchkit-image-vulnerabilities.service','hatchkit-image-vulnerabilities.timer','hatchkit-image-vulnerabilities-failed.service','image-rebuilds.py','hatchkit-image-rebuilds.service','hatchkit-image-rebuilds.timer')
 if sorted(payload['files'])!=sorted(names):
  fail('unexpected installer files')
 if not pathlib.Path('/usr/local/bin/grype').is_file():
@@ -684,7 +690,7 @@ except (IndexError,ValueError):
  report={}
 if probe.returncode!=0 or 'findings' not in report:
  fail('the first scan failed ('+str(report.get('error') or 'no report')+'); nothing was installed')
-targets={name:(opt if name.startswith('update-watch') or name=='image-vulnerabilities.py' else units)/name for name in names}
+targets={name:(opt if name.startswith('update-watch') or name in ('image-vulnerabilities.py','image-rebuilds.py') else units)/name for name in names}
 result={'host':report['host'],'mailTo':alerts['to'],'alreadyInstalled':targets['hatchkit-update-watch.timer'].exists(),
  'services':[s['name']+' '+s['version'] for s in report['services']],
  'findingsNow':[f['summary'] for f in report['findings']],'skippedNow':report.get('skipped',[]),'files':[str(t) for t in targets.values()]}
@@ -707,11 +713,11 @@ print(json.dumps(dict(result,applied=True,timerEnabled=True,nextRun=next_run or 
 
 const UNINSTALL = `import json,pathlib,subprocess,sys
 dry=sys.argv[1]=='dry'
-paths=['/etc/systemd/system/hatchkit-image-vulnerabilities-failed.service','/etc/systemd/system/hatchkit-image-vulnerabilities.timer','/etc/systemd/system/hatchkit-image-vulnerabilities.service','/opt/hatchkit-backups/image-vulnerabilities.py','/etc/systemd/system/hatchkit-update-watch.timer','/etc/systemd/system/hatchkit-update-watch.service','/etc/systemd/system/hatchkit-update-watch-failed.service','/opt/hatchkit-backups/update-watch.py','/opt/hatchkit-backups/update-watch-services.json','/opt/hatchkit-backups/update-watch-cloudflare.json']
+paths=['/etc/systemd/system/hatchkit-image-rebuilds.timer','/etc/systemd/system/hatchkit-image-rebuilds.service','/opt/hatchkit-backups/image-rebuilds.py','/etc/systemd/system/hatchkit-image-vulnerabilities-failed.service','/etc/systemd/system/hatchkit-image-vulnerabilities.timer','/etc/systemd/system/hatchkit-image-vulnerabilities.service','/opt/hatchkit-backups/image-vulnerabilities.py','/etc/systemd/system/hatchkit-update-watch.timer','/etc/systemd/system/hatchkit-update-watch.service','/etc/systemd/system/hatchkit-update-watch-failed.service','/opt/hatchkit-backups/update-watch.py','/opt/hatchkit-backups/update-watch-services.json','/opt/hatchkit-backups/update-watch-cloudflare.json']
 present=[p for p in paths if pathlib.Path(p).exists()]
-kept=[p for p in ('/var/lib/hatchkit-backups/update-watch-status.json','/var/lib/hatchkit-backups/image-vulnerability-status.json') if pathlib.Path(p).exists()]
+kept=[p for p in ('/var/lib/hatchkit-backups/update-watch-status.json','/var/lib/hatchkit-backups/image-vulnerability-status.json','/var/lib/hatchkit-backups/image-rebuild-status.json','/etc/hatchkit-security/image-rebuilds.json','/etc/hatchkit-security/image-rebuild-github-token') if pathlib.Path(p).exists()]
 if not dry:
- for unit in ('hatchkit-update-watch.timer','hatchkit-update-watch.service','hatchkit-image-vulnerabilities.timer','hatchkit-image-vulnerabilities.service'):
+ for unit in ('hatchkit-image-rebuilds.timer','hatchkit-image-rebuilds.service','hatchkit-update-watch.timer','hatchkit-update-watch.service','hatchkit-image-vulnerabilities.timer','hatchkit-image-vulnerabilities.service'):
   subprocess.run(['systemctl','disable','--now',unit],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  for p in present:
   pathlib.Path(p).unlink()

@@ -66,6 +66,10 @@ ENV PORT=3000
 # a local `pnpm dev` has no commit it was built from.
 ARG COMMIT_SHA
 ENV COMMIT_SHA=$COMMIT_SHA
+# The CI run that built this image: a base-image refresh rebuilds the same
+# commit, and this is what tells its container from the previous one.
+ARG BUILD_ID
+ENV BUILD_ID=$BUILD_ID
 
 # Self-contained prod bundle from `pnpm deploy` — dist + package.json +
 # node_modules (with @starter/shared materialised, no symlinks).

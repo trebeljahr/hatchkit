@@ -39,6 +39,7 @@ for (const file of [
   "test-database-egress.py",
   "test-file-integrity.py",
   "test-ops-digest.py",
+  "test-image-rebuilds.py",
   "src/templates/docker-discovery/test-metadata-guard.py",
 ]) {
   const python = spawnSync("python3", [file], { stdio: "inherit" });
@@ -91,7 +92,17 @@ for (const [repo, advisories, latest] of fixtures.urls) {
 }
 assert.deepEqual(
   watchedServices().map((s) => s.key),
-  ["coolify", "traefik", "plausible", "listmonk", "uptime-kuma", "glitchtip", "clickhouse", "coredns", "sentinel"],
+  [
+    "coolify",
+    "traefik",
+    "plausible",
+    "listmonk",
+    "uptime-kuma",
+    "glitchtip",
+    "clickhouse",
+    "coredns",
+    "sentinel",
+  ],
 );
 
 const now = new Date("2026-10-19T08:00:00Z");
@@ -447,16 +458,29 @@ try {
   assert.deepEqual(sent.feeds, {});
   assert.deepEqual(argv("ops-vps").slice(0, 2), ["ssh", "root@ops-vps"]);
   const command = argv("app-vps")[2];
-  assert.match(command, /^export PYTHONPYCACHEPREFIX=\/var\/cache\/hatchkit-security\/python; python3 -c '[^']+' scan$/);
+  assert.match(
+    command,
+    /^export PYTHONPYCACHEPREFIX=\/var\/cache\/hatchkit-security\/python; python3 -c '[^']+' scan$/,
+  );
 
   // The command runs the script from stdin under a real shell, with PAYLOAD.
-  const boot = spawnSync("sh", ["-c", command.replace("export PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python;", "export PYTHONDONTWRITEBYTECODE=1;")], {
-    input: JSON.stringify({
-      script: "import json,sys\nprint(json.dumps({'argv': sys.argv, 'feeds': PAYLOAD['feeds']}))",
-      feeds: { x: 1 },
-    }),
-    encoding: "utf8",
-  });
+  const boot = spawnSync(
+    "sh",
+    [
+      "-c",
+      command.replace(
+        "export PYTHONPYCACHEPREFIX=/var/cache/hatchkit-security/python;",
+        "export PYTHONDONTWRITEBYTECODE=1;",
+      ),
+    ],
+    {
+      input: JSON.stringify({
+        script: "import json,sys\nprint(json.dumps({'argv': sys.argv, 'feeds': PAYLOAD['feeds']}))",
+        feeds: { x: 1 },
+      }),
+      encoding: "utf8",
+    },
+  );
   assert.equal(boot.status, 0, boot.stderr);
   assert.deepEqual(JSON.parse(boot.stdout), { argv: ["update-watch.py", "scan"], feeds: { x: 1 } });
 
@@ -523,12 +547,15 @@ esac`,
   assert.equal(payload.dryRun, true);
   assert.deepEqual(Object.keys(payload).sort(), ["boot", "dryRun", "feeds", "files"]);
   assert.deepEqual(Object.keys(payload.files).sort(), [
+    "hatchkit-image-rebuilds.service",
+    "hatchkit-image-rebuilds.timer",
     "hatchkit-image-vulnerabilities-failed.service",
     "hatchkit-image-vulnerabilities.service",
     "hatchkit-image-vulnerabilities.timer",
     "hatchkit-update-watch-failed.service",
     "hatchkit-update-watch.service",
     "hatchkit-update-watch.timer",
+    "image-rebuilds.py",
     "image-vulnerabilities.py",
     "update-watch-cloudflare.json",
     "update-watch-services.json",
@@ -541,9 +568,21 @@ esac`,
   );
   assert.match(payload.files["hatchkit-update-watch.service"], /update-watch\.py check/);
   assert.match(payload.files["hatchkit-update-watch-failed.service"], /update-watch\.py failed/);
-  assert.match(payload.files["hatchkit-image-vulnerabilities.service"], /OnFailure=hatchkit-image-vulnerabilities-failed\.service/);
-  assert.match(payload.files["hatchkit-image-vulnerabilities-failed.service"], /update-watch\.py failed --failed-unit hatchkit-image-vulnerabilities\.service/);
+  assert.match(
+    payload.files["hatchkit-image-vulnerabilities.service"],
+    /OnFailure=hatchkit-image-vulnerabilities-failed\.service/,
+  );
+  assert.match(
+    payload.files["hatchkit-image-vulnerabilities-failed.service"],
+    /update-watch\.py failed --failed-unit hatchkit-image-vulnerabilities\.service/,
+  );
   assert.equal(command.includes(payload.boot), true, "install probes with the same boot line");
+  // Automatic rebuilds are installed, never enabled: the operator's opt-in
+  // file gates every pass, and enabling the timer is a separate, asked-for step.
+  assert.match(
+    payload.files["hatchkit-image-rebuilds.service"],
+    /ExecCondition=\/usr\/bin\/test -f \/etc\/hatchkit-security\/image-rebuilds\.json/,
+  );
   const installer = Buffer.from(
     argv("ops-vps")[2].match(/b64decode\("([^"]+)"\)/)![1],
     "base64",
@@ -551,6 +590,8 @@ esac`,
   const dryExit = installer.indexOf("if payload['dryRun']:");
   assert.ok(dryExit > installer.indexOf("probe=subprocess.run"), "dry-run reports the first scan");
   assert.ok(dryExit < installer.indexOf("temp.write_text"), "dry-run exits before any write");
+  const enableLine = installer.split("\n").find((line) => line.includes("'enable','--now'"))!;
+  assert.ok(!enableLine.includes("image-rebuilds"), "install never enables automatic rebuilds");
   for (const check of [
     "fail('unexpected installer files')",
     "fail('the backup runner is not installed",

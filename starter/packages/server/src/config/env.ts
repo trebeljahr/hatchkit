@@ -106,6 +106,11 @@ export const env = {
   // correct — a local `pnpm dev` has no commit it was built from.
   COMMIT_SHA: getOptional("COMMIT_SHA"),
 
+  // The CI run that built this image. A base-image refresh rebuilds the SAME
+  // commit, so COMMIT_SHA cannot tell the new container from the old one;
+  // .github/workflows/base-refresh.yml polls this instead. Empty outside CI.
+  BUILD_ID: getOptional("BUILD_ID"),
+
   // Seconds the server keeps serving after SIGTERM while it fails the
   // health probe, so the proxy stops routing here before it closes (see
   // src/drain.ts). Set by packages/server/Dockerfile; unset or 0 shuts

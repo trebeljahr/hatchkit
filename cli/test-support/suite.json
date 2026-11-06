@@ -144,6 +144,7 @@
   "test-backup-hosts.ts",
   "test-host-integrity.ts",
   "test-update-watch.ts",
+  "test-base-refresh.ts",
   "test-cloudflare-audit.ts",
   "test-mac-runner.ts",
   "test-release-flow.ts"

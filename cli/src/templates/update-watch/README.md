@@ -204,3 +204,50 @@ manager in independently installed subprojects and verify overrides took effect.
 Rolling tests should prove a late in-flight response finishes and its idle
 keep-alive socket retires within the existing shutdown budget, with clean exit
 and preserved state on the surviving replica.
+
+# Automatic base-image rebuilds
+
+`image-rebuilds.py` rebuilds opted-in app images when the scanner reports
+image-package rows with a fix on the image that runs now. Rebuilding the live
+commit with a re-pulled base image and no layer cache picks up Debian and Alpine
+package fixes. The runner reads the ledger and never writes it: it does not reset
+a deadline, edit a row or hide a finding. The old image's rows leave the ledger
+because the next scan no longer sees that image. Rows the rebuild did not fix keep
+their original clocks.
+
+Opt-in is per image repository in `/etc/hatchkit-security/image-rebuilds.json`
+(root, 0600; start from `image-rebuilds.example.json`). Each entry names the
+GitHub repository, its dispatchable workflow and the ref. The runner dispatches
+with a fine-grained token in `/etc/hatchkit-security/image-rebuild-github-token`
+that has Actions read and write on the opted-in repositories only. The dispatch
+carries the configured ref and inputs, never package data.
+
+It refuses, whatever the config says: images whose name looks like a database or
+other stateful service, and containers with a writable volume or bind mount. It
+dispatches at most one rebuild per hourly pass and `maxDispatchesPerDay` (default
+2, at most 5) across all apps, with at least 12 hours between rebuilds of one app
+(default 24). When a rebuild landed and left the same fixes behind, the base image
+does not have them yet, so the app waits seven days unless a new fix appears. It
+acts only on a ledger less than 26 hours old.
+
+A run counts as done only when it succeeded, this host runs a different image for
+the app, and the scanner covered that image after the run. The digest then lists it
+under Fixed automatically, with the fixable-match counts before and after; it never
+sends a digest by itself. A failed or cancelled run, a run that never started, or a
+success that never landed pauses that app. The digest lists it under Needs you every
+day until `image-rebuilds.py clear <image>`. `image-rebuilds.py plan` shows what a
+pass would do without writing anything.
+
+`hatchkit host updates install` copies the runner and its units but never enables
+the timer, and the service's ExecCondition skips every pass without the opt-in file.
+The repository side is `cli/src/templates/base-refresh/base-refresh.yml`: it reads
+the live commit, runs the repository's tests, builds `<sha>-base-<run id>` with
+`pull` and `no-cache`, records the previous `:live` digests, promotes, deploys
+through the signed webhooks, waits for `/api/health` to report the run's `build`,
+and on any failure restores the recorded digests and fails the run. Port it into
+each repository and make its `test` job match the push pipeline before opting the
+app in. The server must report `build` from `BUILD_ID` (the starter does).
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 cli/test-image-rebuilds.py
+```

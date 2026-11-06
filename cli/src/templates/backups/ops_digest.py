@@ -180,6 +180,75 @@ def workload_items(raw, host):
     return needs, waiting
 
 
+REBUILD_STATUS = 'image-rebuild-status.json'
+REBUILD_TIMER = 'hatchkit-image-rebuilds.timer'
+REBUILD_LIMIT = 3 * 3600
+REBUILD_COMMAND = 'sudo python3 /opt/hatchkit-backups/image-rebuilds.py'
+
+
+def rebuild_items(work, now, units=UNITS):
+    """Automatic base-image rebuilds (update-watch/image-rebuilds.py).
+
+    A rebuild that landed rides along under Fixed automatically; it never sends a
+    digest by itself. Its old image's rows leave the ledger only because the scanner
+    no longer sees that image, and what it did not fix keeps its own clock above.
+    A failed or unverified rebuild pauses that app and stays under Needs you until
+    the operator clears it. Only named fields of the status file are read.
+    """
+    fixed, needs, unchecked = [], [], []
+    status = read_json(work / REBUILD_STATUS)
+    # Installed is not enabled: the unit file alone means nobody opted in yet.
+    enabled = (Path(units) / 'timers.target.wants' / REBUILD_TIMER).exists()
+    if status is None:
+        if enabled:
+            unchecked.append({'what': 'Automatic image rebuilds have no recent result.',
+                              'command': 'systemctl status ' + REBUILD_TIMER})
+        return fixed, needs, unchecked
+    try:
+        checked = dt.datetime.fromisoformat(status['checkedAt'])
+    except (KeyError, TypeError, ValueError):
+        checked = None
+    if enabled and (checked is None or (now - checked).total_seconds() > REBUILD_LIMIT):
+        unchecked.append({'what': 'Automatic image rebuilds have no recent result.',
+                          'command': 'systemctl status ' + REBUILD_TIMER})
+    if status.get('error'):
+        needs.append({'what': str(status['error']), 'detail': 'No app image is rebuilt automatically until this is fixed.',
+                      'command': REBUILD_COMMAND + ' plan'})
+    for refused in status.get('refused') or []:
+        needs.append({'what': '%s is listed for automatic rebuilds but is not rebuilt: %s.'
+                              % (refused.get('image') or 'An image', refused.get('reason') or 'refused'),
+                      'detail': 'Remove it from /etc/hatchkit-security/image-rebuilds.json and update it by hand.',
+                      'command': REBUILD_COMMAND + ' plan'})
+    for image, record in sorted((status.get('apps') or {}).items()):
+        attempts = [a for a in (record or {}).get('attempts') or [] if isinstance(a, dict)]
+        if not attempts:
+            continue
+        last = attempts[-1]
+        names = named(sorted(str(n) for n in last.get('workloads') or [])) or image
+        run = ' Run: ' + str(last['runUrl']) + '.' if last.get('runUrl') else ''
+        if last.get('status') in ('failed', 'not-landed', 'dispatch-failed') and not last.get('cleared'):
+            needs.append({'what': 'Automatic rebuild of %s did not finish: %s.' % (names, last.get('reason') or 'failed'),
+                          'detail': 'Rebuilds of this app are paused until you clear them. The previous image keeps '
+                                    'running and its findings keep their deadlines.' + run,
+                          'command': REBUILD_COMMAND + ' clear ' + image})
+        for attempt in attempts:
+            try:
+                verified = dt.datetime.fromisoformat(attempt['verifiedAt'])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if attempt.get('status') != 'landed' or now - verified >= dt.timedelta(hours=26):
+                continue
+            who = named(sorted(str(n) for n in attempt.get('workloads') or [])) or image
+            after = attempt.get('fixCountAfter')
+            detail = 'Scanner matches with a reported fix: %s before, %s after.' % (attempt.get('fixCountBefore'), after)
+            if after:
+                detail += ' The rest wait for the base image and keep their deadlines.'
+            fixed.append({'what': 'Rebuilt %s on a fresh base image and deployed it after its tests and health checks.' % who,
+                          'detail': detail + (' Run: ' + str(attempt['runUrl']) + '.' if attempt.get('runUrl') else ''),
+                          'command': REBUILD_COMMAND + ' status'})
+    return fixed, needs, unchecked
+
+
 def collect(work, host, now, backup_issues, units=UNITS):
     """Everything open on this host. Reads only named fields of the status files."""
     needs, waiting, unchecked, raw_needs, raw_waiting, paste_rows = [], [], [], [], [], []
@@ -252,6 +321,10 @@ def collect(work, host, now, backup_issues, units=UNITS):
                            'detail': 'Its container, image and read-only content still match, no fixed release '
                                      'exists yet and nothing is known exploited. A fix or a change stops renewal.',
                            'command': updates_command(host)})
+    rebuilt, rebuild_needs, rebuild_unchecked = rebuild_items(work, now, units)
+    auto_fixed += rebuilt
+    needs += rebuild_needs
+    unchecked += rebuild_unchecked
     file_issue = None
     if files.get('error'):
         file_issue = 'The file integrity check crashed: ' + str(files['error']) + '.'

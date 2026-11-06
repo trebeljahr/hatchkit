@@ -132,6 +132,13 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   inside the hourly backup-alerts service. `hatchkit_mail.py` and
   `security-controller/mail-core.mjs` render the same bytes;
   `cli/test-ops-digest.py` pins that, the gating and the size cap.
+- Automatic base-image rebuilds: `cli/src/templates/update-watch/image-rebuilds.py`
+  dispatches an opted-in app's `base-refresh.yml`
+  (`cli/src/templates/base-refresh/`) when the scanner reports package fixes on
+  its running image, follows the run, and reports it in the digest. Installed
+  by `host updates install`, never enabled by it: opt-in file, token and
+  `systemctl enable --now hatchkit-image-rebuilds.timer` are the operator's
+  (production write; ask first). Rules in `update-watch/README.md`.
 - `hatchkit audit cloudflare [--json] [--hours <n>]`: read-only check of the
   Cloudflare account against what hatchkit created: tokens it has no record
   of (by id), audit-log entries by the operator token outside a recorded
