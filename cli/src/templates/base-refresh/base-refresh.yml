@@ -22,6 +22,11 @@ name: base-refresh
 #     report it as `build`. The live commit does not change, so `version`
 #     cannot tell the new container from the old one; `build` can.
 #   · Tests pass before anything is pushed or promoted.
+#   · A refresh can only pick up what the image build installs. Debian fixes
+#     reach it when the base image is republished, or at once when the
+#     runtime stage runs `apt-get upgrade`; npm's own bundled packages in the
+#     base image change only with Node. Remove the global npm from the
+#     runtime stage if the app does not use it.
 #   · The digests `:live` held before are recorded first. Any failure after
 #     that restores them, redeploys, checks the old build serves again, and
 #     fails the run. The host then pauses rebuilds of this app and says so in
@@ -206,22 +211,26 @@ jobs:
             deploy_one client COOLIFY_CLIENT_
             [ "$DEPLOYED" -gt 0 ] || { echo "::error::no COOLIFY_*RESOURCE_UUID is set — nothing was deployed"; return 1; }
           }
-          # Polls until the server reports this commit and a build that
-          # passes the test in $1 ("new": this run's build, "old": any other).
+          # A rolling deploy answers from the old and the new container for a
+          # while, so wait for three matching answers in a row. "new" wants
+          # this run's build; "old" wants any other build of the same commit.
           wait_for_server() {
             [ -n "$API" ] || return 0
-            local got build
-            for i in $(seq 1 40); do
+            local streak=0 got version build
+            for i in $(seq 1 60); do
               got=$(curl -fsSL --max-time 10 "$API/api/health?hatchkit_cb=$i$RANDOM" 2>/dev/null || true)
+              version=$(printf '%s' "$got" | jq -r '.version // empty' 2>/dev/null || true)
               build=$(printf '%s' "$got" | jq -r '.build // empty' 2>/dev/null || true)
-              if [ "$(printf '%s' "$got" | jq -r '.version // empty' 2>/dev/null)" = "$SHA" ]; then
-                if [ "$1" = new ] && [ "$build" = "$BUILD_ID" ]; then echo "✓ server serves build $BUILD_ID"; return 0; fi
-                if [ "$1" = old ] && [ "$build" != "$BUILD_ID" ]; then echo "✓ server serves the previous build (${build:-unmarked}) again"; return 0; fi
+              if [ "$version" = "$SHA" ] && { { [ "$1" = new ] && [ "$build" = "$BUILD_ID" ]; } || { [ "$1" = old ] && [ "$build" != "$BUILD_ID" ]; }; }; then
+                streak=$((streak + 1))
+                if [ "$streak" -ge 3 ]; then echo "✓ server serves $SHA build ${build:-unmarked}"; return 0; fi
+              else
+                streak=0
               fi
-              echo "  server: build ${build:-<none>} — waiting ($i/40)"
-              sleep 15
+              echo "  server: ${version:-<none>} build ${build:-<none>} — waiting ($i/60)"
+              sleep 10
             done
-            echo "::error::the server never served the expected build"
+            echo "::error::the server never served the expected build ($1)"
             return 1
           }
           wait_for_client() {

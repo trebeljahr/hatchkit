@@ -92,6 +92,8 @@ assert.match(
 );
 assert.match(deploy.steps[restore].run!, /exit 1\s*$/);
 assert.match(deploy.steps[verify].run!, /wait_for_server new/);
+// A rolling deploy alternates between containers: one answer proves nothing.
+assert.match(text, /streak" -ge 3/);
 assert.doesNotMatch(text, /cancelled\(\)|always\(\)/);
 
 // No Coolify API token anywhere: signed per-app webhooks only.
