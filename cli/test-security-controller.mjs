@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {sanitize,issuesFor,pendingFor,sweep,CHECKS,issueKind,DIGEST_UTC_HOUR} from './src/templates/security-controller/worker-core.mjs';
+import {sanitize,issuesFor,pendingFor,sweep,CHECKS,issueKind,DIGEST_UTC_HOUR,digestHour,hostsOf} from './src/templates/security-controller/worker-core.mjs';
 const now=Date.parse('2026-10-23T04:00:00Z');
 const healthy={schema:1,checks:Object.fromEntries(Object.keys(CHECKS).map(k=>[k,{checkedAt:new Date(now).toISOString(),ok:true,complete:true,findings:0}]))};
 const clean=sanitize({...healthy,secret:'MUST_NOT_LEAVE_HOST'},now);
@@ -26,7 +26,7 @@ const refreshing=structuredClone(initializing);Object.assign(refreshing.checks.i
 assert.deepEqual(issuesFor('host',refreshing,now),[]);assert.deepEqual(pendingFor('host',refreshing,now),[]);
 refreshing.checks.images.phase='failed';assert(issuesFor('host',refreshing,now).some(x=>x.includes('failed')));
 const data=new Map([['hosts/app-vps.json',clean],['hosts/ops-vps.json',clean]]);let sent=0,fail=false;
-const env={STATE:{get:async k=>data.has(k)?{json:async()=>structuredClone(data.get(k))}:null,put:async(k,v)=>data.set(k,JSON.parse(v))},EMAIL:{send:async()=>{if(fail)throw Error('delivery failed');sent++;return{messageId:'test'};}},MAIL_FROM:'security@example.com',MAIL_TO:'owner@example.com'};
+const env={PING_KEYS:JSON.stringify({'app-vps':'APP_PING_KEY','ops-vps':'OPS_PING_KEY'}),STATE:{get:async k=>data.has(k)?{json:async()=>structuredClone(data.get(k))}:null,put:async(k,v)=>data.set(k,JSON.parse(v))},EMAIL:{send:async()=>{if(fail)throw Error('delivery failed');sent++;return{messageId:'test'};}},MAIL_FROM:'security@example.com',MAIL_TO:'owner@example.com'};
 await sweep(env,now);assert.equal(sent,0);
 data.set('hosts/ops-vps.json',initializing);const setup=await sweep(env,now);assert.equal(sent,0);assert.equal(setup.ok,false);assert.equal(setup.pending.length,1);data.set('hosts/ops-vps.json',clean);
 data.delete('hosts/ops-vps.json');fail=true;await assert.rejects(sweep(env,now),/delivery failed/);assert(!data.get('sweep.json').lastMailedAt);
@@ -56,7 +56,7 @@ assert.equal(issueKind('h: alert mail or the daily digest failed; inspect its lo
  const at=hour=>Date.UTC(2026,9,23,hour,0,0);
  const store=new Map();const put=(host,row,time)=>{store.set(`hosts/${host}.json`,{...row,receivedAt:new Date(time).toISOString(),checks:Object.fromEntries(Object.entries(row.checks).map(([k,v])=>[k,{...v,checkedAt:new Date(time).toISOString()}]))});};
  let mails=[],broken=false;
- const local={STATE:{get:async k=>store.has(k)?{json:async()=>structuredClone(store.get(k))}:null,put:async(k,v)=>store.set(k,JSON.parse(v))},EMAIL:{send:async m=>{if(broken)throw Error('delivery failed');mails.push(m);return{messageId:'m'};}},MAIL_FROM:'security@example.com',MAIL_TO:'owner@example.com'};
+ const local={PING_KEYS:JSON.stringify({'app-vps':'APP_PING_KEY','ops-vps':'OPS_PING_KEY'}),STATE:{get:async k=>store.has(k)?{json:async()=>structuredClone(store.get(k))}:null,put:async(k,v)=>store.set(k,JSON.parse(v))},EMAIL:{send:async m=>{if(broken)throw Error('delivery failed');mails.push(m);return{messageId:'m'};}},MAIL_FROM:'security@example.com',MAIL_TO:'owner@example.com'};
  const tick=async time=>{put('app-vps',clean,time);put('ops-vps',quiet,time);return sweep(local,time);};
  await tick(at(4));await tick(at(5));assert.equal(mails.length,0);
  broken=true;await assert.rejects(tick(at(DIGEST_UTC_HOUR)));broken=false;
@@ -82,11 +82,24 @@ assert.equal(issueKind('h: alert mail or the daily digest failed; inspect its lo
 }
 console.log('External freshness, metadata boundary, quiet healthy runs and delivery retry passed.');
 const {default:api}=await import('./src/templates/security-controller/worker-core.mjs');
-const liveEnv={...env,DEDICATED_PING_KEY:'a'.repeat(43),SHARED_PING_KEY:'b'.repeat(43),READER_KEY:'c'.repeat(43)};
+const liveEnv={...env,APP_PING_KEY:'a'.repeat(43),OPS_PING_KEY:'b'.repeat(43),READER_KEY:'c'.repeat(43)};
 const payload={schema:1,checks:Object.fromEntries(Object.keys(CHECKS).map(k=>[k,{checkedAt:new Date().toISOString(),ok:true,complete:true,findings:0}]))};
 data.delete('hosts/app-vps.json');
 const ping=key=>new Request('https://monitor.test/ping/app-vps',{method:'POST',headers:{Authorization:'Bearer '+key},body:JSON.stringify(payload)});
-assert.equal((await api.fetch(ping(liveEnv.DEDICATED_PING_KEY),liveEnv)).status,200);
-assert.equal((await api.fetch(ping(liveEnv.SHARED_PING_KEY),liveEnv)).status,403);
-assert.equal((await api.fetch(ping(liveEnv.DEDICATED_PING_KEY),liveEnv)).status,429);
+assert.equal((await api.fetch(ping(liveEnv.APP_PING_KEY),liveEnv)).status,200);
+assert.equal((await api.fetch(ping(liveEnv.OPS_PING_KEY),liveEnv)).status,403);
+assert.equal((await api.fetch(ping(liveEnv.APP_PING_KEY),liveEnv)).status,429);
 console.log('Per-host authentication, cross-host denial and replay limiting passed.');
+
+// Hosts come only from PING_KEYS: without it a ping answers 503 and a sweep fails.
+{
+  const bare={STATE:env.STATE,EMAIL:env.EMAIL,READER_KEY:'c'.repeat(43)};
+  assert.equal((await api.fetch(ping('a'.repeat(43)),bare)).status,503);
+  await assert.rejects(sweep(bare,now),/PING_KEYS is not configured/);
+  assert.throws(()=>hostsOf({PING_KEYS:'["app-vps"]'}),/not configured/);
+  assert.throws(()=>hostsOf({PING_KEYS:'{"App VPS":"APP_PING_KEY"}'}),/not configured/);
+  assert.deepEqual(Object.keys(hostsOf(liveEnv)),['app-vps','ops-vps']);
+  assert.equal(digestHour({}),DIGEST_UTC_HOUR);
+  assert.equal(digestHour({DIGEST_UTC_HOUR:'7'}),7);
+  assert.equal(digestHour({DIGEST_UTC_HOUR:'24'}),DIGEST_UTC_HOUR);
+}

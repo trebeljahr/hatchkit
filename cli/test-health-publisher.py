@@ -200,4 +200,13 @@ class PublisherBoundary(unittest.TestCase):
     self.assertEqual(r['delivery'],outcome)
     for private in [cfg['token'],'PRIVATE_PROVIDER_DETAIL','Authorization',cfg['url']]:self.assertNotIn(private,text)
 
+ def test_monitor_url_is_the_https_ping_path_for_this_host(self):
+    ok='https://monitor.example.net/ping/web-1'
+    self.assertEqual(pub.monitor_url(ok,'web-1'),ok)
+    for bad,host in [('http://monitor.example.net/ping/web-1','web-1'),('https://monitor.example.net/ping/web-2','web-1'),
+                     ('https://u:p@monitor.example.net/ping/web-1','web-1'),('https://monitor.example.net:8443/ping/web-1','web-1'),
+                     ('https://monitor.example.net/ping/web-1?x=1','web-1'),('https://monitor.example.net/ping/web-1#x','web-1'),
+                     ('https://monitor.example.net/ping/Web 1','Web 1'),(None,'web-1')]:
+      with self.assertRaisesRegex(ValueError,'Unexpected monitor destination'):pub.monitor_url(bad,host)
+
 if __name__=='__main__':unittest.main()

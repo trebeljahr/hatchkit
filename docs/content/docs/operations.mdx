@@ -68,7 +68,7 @@ AIDE file checks, kernel-audit configuration, and the independent security monit
 - The [file-integrity role](https://github.com/trebeljahr/hatchkit/tree/main/infra/ansible/roles/file_integrity) installs host file/audit coverage. A running audit daemon alone does not prove required rules reached the kernel.
 - The [security-controller templates](https://github.com/trebeljahr/hatchkit/tree/main/cli/src/templates/security-controller) publish fixed timestamps and counts to a separate monitor.
 
-The current health publisher explicitly permits two maintained fleet hosts and one monitor destination. It is not a general-purpose monitor installer for arbitrary hosts. Adapt and review those constraints before deploying it elsewhere. Its five-minute publication sends no logs, records, environment values, or backup keys.
+The monitor Worker reads its hosts from the `PING_KEYS` variable, a JSON object from each host name to the name of that host's ping-secret binding. Without it, every ping answers 503 and every sweep fails. Each host's publisher accepts only `https://<monitor>/ping/<its own hostname>` from `/etc/hatchkit-security/publisher.json`. Hatchkit does not install either part for you; review both before deploying them. Its five-minute publication sends no logs, records, environment values, or backup keys.
 
 AIDE checks run daily at 04:30 UTC with up to 15 minutes of delay. Establish a trusted baseline first. Never accept the current filesystem automatically after updates. A local root attacker can alter local checks; the independent monitor detects missed or stale reports but cannot prove the host is uncompromised.
 

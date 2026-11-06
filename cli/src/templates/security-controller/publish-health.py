@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Publish fixed health counters/timestamps. Never transmit logs, configs or records."""
-import datetime as dt,json,os,pathlib,re,socket,urllib.request,sys,uuid,fcntl
+import datetime as dt,json,os,pathlib,re,socket,urllib.parse,urllib.request,sys,uuid,fcntl
 WORK=pathlib.Path('/var/lib/hatchkit-backups')
 QUICK_EXCLUSIONS={'CPU not measured: the window was under 5 s.','Sustained CPU and outbound peers use the daily full scan.'}
 
@@ -141,6 +141,13 @@ def metadata(diagnostics=None):
  checks['restore']=aggregate('restore-check-all.json',projects,'checkedAt')
  return {'schema':1,'checks':checks}
 
+def monitor_url(url,host):
+ """The configured ping URL, accepted only as https://<monitor host>/ping/<this host>."""
+ parts=urllib.parse.urlsplit(url if isinstance(url,str) else '')
+ if(not re.fullmatch(r'[a-z0-9-]{1,63}',host)or parts.scheme!='https'or not parts.hostname
+    or url!=f'https://{parts.hostname}/ping/{host}'):raise ValueError('Unexpected monitor destination')
+ return url
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*args,**kwargs):raise ValueError('Redirect refused')
 
@@ -148,8 +155,7 @@ def main():
  os.umask(0o077)
  cfg=json.loads(pathlib.Path('/etc/hatchkit-security/publisher.json').read_text())
  host=socket.gethostname()
- expected='https://security-monitor.example.workers.dev/ping/'+host
- if host not in('app-vps','ops-vps')or cfg.get('url')!=expected:raise ValueError('Unexpected monitor destination')
+ expected=monitor_url(cfg.get('url'),host)
  if not re.fullmatch(r'[A-Za-z0-9_-]{43}',cfg.get('token','')):raise ValueError('Invalid ping credential')
  components={};payload=metadata(components);data=json.dumps(payload).encode();assert len(data)<=8192
  attempt=uuid.uuid4().hex;record_receipt(attempt,payload,components,'attempted');delivery='accepted'

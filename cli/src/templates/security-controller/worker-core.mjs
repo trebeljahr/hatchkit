@@ -1,14 +1,28 @@
 // Only fixed health metadata crosses this boundary. No app logs, records or secrets.
 import {renderMail,summaryLine} from './mail-core.mjs';
-export const HOSTS = ['app-vps', 'ops-vps'];
-// The ping secrets keep their original binding names; renaming a binding
-// means re-uploading the secret.
-export const PING_KEYS = {'app-vps': 'DEDICATED_PING_KEY', 'ops-vps': 'SHARED_PING_KEY'};
+// The monitored hosts come from the Worker's PING_KEYS variable: a JSON object
+// from host name to the name of that host's ping-secret binding, for example
+// {"web-1":"WEB_1_PING_KEY","ops-1":"OPS_1_PING_KEY"}. Without it every ping
+// answers 503 and every sweep fails, so a missing setting cannot look healthy.
+export function hostsOf(env) {
+  let keys = null;
+  try { keys = JSON.parse(env.PING_KEYS ?? ''); } catch {}
+  const valid = keys && typeof keys === 'object' && !Array.isArray(keys) && Object.keys(keys).length > 0 &&
+    Object.entries(keys).every(([host, binding]) => /^[a-z0-9-]{1,63}$/.test(host) &&
+      typeof binding === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(binding));
+  if (!valid) throw new Error('PING_KEYS is not configured');
+  return keys;
+}
 export const CHECKS = {process: 15*60, full: 28*3600, advisory: 8*3600,
   images: 36*3600, files: 28*3600, backups: 36*3600, restore: 9*86400};
-// 09:00 in Sydney during daylight time, near the hosts' own digests. Coverage
-// that is only incomplete waits for this hour; a dark check does not wait.
+// Coverage that is only incomplete waits for this UTC hour; a dark check does
+// not wait. Set DIGEST_UTC_HOUR on the Worker to move it near the hosts' own
+// digests.
 export const DIGEST_UTC_HOUR = 22;
+export function digestHour(env) {
+  const hour = Number(env.DIGEST_UTC_HOUR ?? DIGEST_UTC_HOUR);
+  return Number.isInteger(hour) && hour >= 0 && hour < 24 ? hour : DIGEST_UTC_HOUR;
+}
 const iso = ms => new Date(ms).toISOString();
 export function sanitize(body, now=Date.now()) {
   if (!body || typeof body !== 'object' || !body.checks || body.schema !== 1) throw new Error('invalid heartbeat');
@@ -104,7 +118,7 @@ async function readSmall(request) {
 }
 export async function sweep(env, now=Date.now()) {
   const issues=[],pending=[];
-  for(const host of HOSTS) {
+  for(const host of Object.keys(hostsOf(env))) {
     const heartbeat=await jsonObject(env.STATE,`hosts/${host}.json`);
     issues.push(...issuesFor(host,heartbeat,now));pending.push(...pendingFor(host,heartbeat,now));
   }
@@ -113,7 +127,7 @@ export async function sweep(env, now=Date.now()) {
   const added=urgent.some(issue=>!(previous.issues || []).includes(issue));
   const unacknowledged=urgent.some(issue=>!(previous.notifiedIssues || []).includes(issue));
   const reminder=urgent.some(issue=>issueKind(issue)==='dark') && (!previous.lastMailedAt || now-Date.parse(previous.lastMailedAt)>=86400000);
-  const digestDue=quiet.length>0 && new Date(now).getUTCHours()===DIGEST_UTC_HOUR &&
+  const digestDue=quiet.length>0 && new Date(now).getUTCHours()===digestHour(env) &&
     (!previous.lastDigestAt || now-Date.parse(previous.lastDigestAt)>=20*3600000);
   const recovered=!urgent.length && !pending.length && previous.notifiedIssues?.length>0;
   const state={checkedAt:iso(now),ok:!issues.length&&!pending.length,issues,pending,lastMailedAt:previous.lastMailedAt || null,lastDigestAt:previous.lastDigestAt || null,notifiedIssues:previous.notifiedIssues || []};
@@ -135,9 +149,13 @@ export default {
   async fetch(request,env) {
     const url=new URL(request.url);const bearer=request.headers.get('Authorization')?.replace(/^Bearer /,'');
     const name=url.pathname.match(/^\/ping\/([a-z0-9-]+)$/)?.[1];
-    const host=HOSTS.includes(name)?name:undefined;
+    let keys={};
+    if(request.method==='POST' && name) {
+      try {keys=hostsOf(env);} catch {return new Response('Not configured',{status:503});}
+    }
+    const host=Object.hasOwn(keys,name)?name:undefined;
     if(request.method==='POST' && host) {
-      if(!await authorized(bearer,env[PING_KEYS[host]]))return new Response('Forbidden',{status:403});
+      if(!await authorized(bearer,env[keys[host]]))return new Response('Forbidden',{status:403});
       const old=await jsonObject(env.STATE,`hosts/${host}.json`);
       if(old && Date.now()-Date.parse(old.receivedAt)<30000)return new Response('Rate limited',{status:429});
       try {const safe=sanitize(await readSmall(request));await env.STATE.put(`hosts/${host}.json`,JSON.stringify(safe));return Response.json({accepted:true});}
