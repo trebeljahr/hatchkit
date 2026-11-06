@@ -2,6 +2,17 @@
   "name": "@hatchkit/dev-plugin-next",
   "version": "0.3.1",
   "description": "Next.js plugin for hatchkit's local-dev integration. Writes the project's Caddy fragment on `next dev` startup and prints a Tailscale-URL banner alongside Next's own startup output.",
+  "license": "MIT",
+  "author": "Rico Trebeljahr",
+  "homepage": "https://hatchkit.trebeljahr.com/",
+  "bugs": {
+    "url": "https://github.com/trebeljahr/hatchkit/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trebeljahr/hatchkit.git",
+    "directory": "packages/dev-plugin-next"
+  },
   "funding": "https://ricos.site/donate?from=hatchkit",
   "type": "module",
   "main": "./dist/index.js",

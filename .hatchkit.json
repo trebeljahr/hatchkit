@@ -4,7 +4,7 @@
   "scaffoldedAt": "2026-05-11T22:23:17.738Z",
   "name": "hatchkit",
   "domain": "hatchkit.trebeljahr.com",
-  "description": "Interactive CLI for scaffolding full-stack projects with composable ML services",
+  "description": "CLI that scaffolds a TypeScript app and deploys it to a server you own, with repo, DNS, email and analytics set up.",
   "features": [],
   "mlServices": [],
   "s3Provider": "none",

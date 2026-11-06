@@ -2,6 +2,17 @@
   "name": "@hatchkit/dev-shared",
   "version": "0.3.1",
   "description": "Shared runtime utilities for hatchkit's local-dev integration — Caddy fragment writer, Tailscale probes, paths. Consumed by the CLI and the @hatchkit/dev-plugin-{vite,next} packages.",
+  "license": "MIT",
+  "author": "Rico Trebeljahr",
+  "homepage": "https://hatchkit.trebeljahr.com/",
+  "bugs": {
+    "url": "https://github.com/trebeljahr/hatchkit/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trebeljahr/hatchkit.git",
+    "directory": "packages/dev-shared"
+  },
   "funding": "https://ricos.site/donate?from=hatchkit",
   "type": "module",
   "main": "./dist/index.js",
