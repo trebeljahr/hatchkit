@@ -1,10 +1,15 @@
 <!doctype html>
 <!--
-  GitHub social preview card, 1280x640. Four variants, picked with ?v=a|b|c|d:
+  GitHub social preview card, 1280x640. Picked with ?v=<id>.
+  Round 2 (2026-11-06):
     a  dark: what one `hatchkit create` run sets up, drawn as a fan-out from the command
     b  light: the per-project setup checklist, every item ticked by `hatchkit create`
     c  dark: real sandboxed terminal capture of the secrets steps (screenshots/create-secrets.png)
     d  light: six secrets, who makes each one and where hatchkit delivers it
+  Round 3 (2026-11-07), A's fan-out with the text cut to labels:
+    a3-1  dark: wordmark, the `hatchkit create` pill and nine nodes (thing + provider)
+    a3-2  dark: a3-1 plus one plain line under the wordmark
+    a3-3  light: a3-2 in the light palette
   Rendered by scripts/marketing/render-social-preview.mjs. Key content stays
   inside the 64 px safe margin. Every name on the cards is a real command,
   provider or env key; see docs/marketing/README.md for the source of each claim.
@@ -119,6 +124,26 @@
   .d .chip.env { font: 600 14.5px "JetBrains Mono", monospace; color: var(--fg); background: #f0f1f8; border-color: var(--border-strong); }
   .d .note { position: absolute; left: 64px; right: 64px; bottom: 64px; font-size: 16.5px; color: var(--muted); }
   .d .note code { color: var(--accent); font-weight: 600; font-size: 15.5px; }
+
+  /* A3: A's fan-out, labels only. Pill on the left, wider fan, bigger type. */
+  .a3 .brand { position: absolute; left: 64px; top: 64px; }
+  .a3 .line { position: absolute; left: 64px; top: 136px; font-size: 25px; font-weight: 500; color: var(--muted); }
+  .a3 svg.wires { position: absolute; inset: 0; width: 1280px; height: 640px; }
+  .a3 svg.wires g { stroke: rgba(129,140,248,.55); }
+  .a3 .cmd { position: absolute; left: 64px; top: 284px; width: 318px; height: 72px; border-radius: 16px;
+    display: flex; align-items: center; justify-content: center; background: var(--accent-strong); color: #0b0d12;
+    font: 700 27px "JetBrains Mono", monospace; box-shadow: 0 0 0 7px rgba(129,140,248,.16), 0 18px 50px rgba(99,102,241,.35); }
+  .a3 .node { position: absolute; left: 776px; width: 440px; height: 50px; display: flex; align-items: center;
+    justify-content: space-between; padding: 0 20px; border-radius: 12px; background: var(--surface);
+    border: 1px solid var(--border); white-space: nowrap; }
+  .a3 .node b { font-size: 24px; font-weight: 700; letter-spacing: -0.3px; color: var(--head); }
+  .a3 .node span { font-size: 21px; font-weight: 500; color: var(--muted); }
+  .a3 .node.key { border-color: rgba(129,140,248,.55); background: #1a1f33; }
+  .a3.light svg.wires g { stroke: rgba(79,70,229,.45); }
+  .a3.light .cmd { background: var(--accent); color: #ffffff;
+    box-shadow: 0 0 0 7px rgba(79,70,229,.12), 0 18px 44px rgba(79,70,229,.28); }
+  .a3.light .node { border-color: var(--border-strong); box-shadow: 0 4px 14px rgba(17,20,28,.05); }
+  .a3.light .node.key { border-color: rgba(79,70,229,.45); background: #eef0ff; }
 </style>
 </head>
 <body>
@@ -223,10 +248,43 @@
       <tbody>${SECRETS.map(([k, by, to]) => `<tr><td>${k}</td><td>${by}</td><td>${to}</td></tr>`).join("")}</tbody></table>
     <div class="note"><code>.env.production</code> is encrypted with dotenvx and committed. Rotate later with <code>hatchkit keys rotate</code> and <code>hatchkit secrets rotate</code>.</div>`;
 
-  const variants = { a: variantA, b: variantB, c: variantC, d: variantD };
+  // A3: what one create run touches, as a thing and the provider that holds it.
+  // Sources for each pair: docs/marketing/README.md, "Where the card claims come from".
+  const A3_NODES = [
+    ["Repo", "GitHub"],
+    ["DNS", "Cloudflare"],
+    ["Server", "Hetzner"],
+    ["App", "Coolify"],
+    ["Error tracking", "GlitchTip"],
+    ["Analytics", "Plausible"],
+    ["Email", "Listmonk + SES"],
+    ["Backups", "R2"],
+    ["Secrets", "dotenvx", "key"],
+  ];
+  const A3_LINE = "CLI for self-hosted TypeScript apps";
+  function variantA3(withLine) {
+    const pitch = 57.75, top = 64, from = [382, 320], toX = 776;
+    const nodes = A3_NODES.map(([what, who, cls], i) =>
+      `<div class="node ${cls ?? ""}" style="top:${top + i * pitch}px"><b>${what}</b><span>${who}</span></div>`).join("");
+    const wires = A3_NODES.map((_, i) => {
+      const y = top + i * pitch + 25;
+      return `<path d="M${from[0]} ${from[1]} C ${from[0] + 130} ${from[1]}, ${toX - 130} ${y}, ${toX} ${y}" />` +
+        `<circle cx="${toX}" cy="${y}" r="3.5" />`;
+    }).join("");
+    return `<svg class="wires" viewBox="0 0 1280 640"><g fill="none" stroke-width="1.7">${wires}</g></svg>
+      ${brand()}
+      ${withLine ? `<div class="line">${A3_LINE}</div>` : ""}
+      <div class="cmd">hatchkit create</div>
+      ${nodes}`;
+  }
+
+  const variants = {
+    a: variantA, b: variantB, c: variantC, d: variantD,
+    "a3-1": () => variantA3(false), "a3-2": () => variantA3(true), "a3-3": () => variantA3(true),
+  };
   const card = document.getElementById("card");
-  card.classList.add(v);
-  if (v === "b" || v === "d") card.classList.add("light");
+  card.classList.add(v.startsWith("a3") ? "a3" : v);
+  if (v === "b" || v === "d" || v === "a3-3") card.classList.add("light");
   document.getElementById("content").innerHTML = variants[v]();
 </script>
 </body>

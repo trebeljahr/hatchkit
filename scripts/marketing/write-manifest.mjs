@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Writes docs/marketing/manifest.json: every image in the marketing folder
 // with its purpose, pixel size, bytes, SHA-256 and the command that made it.
-// Run after capture-screenshots.mjs and render-social-preview.mjs.
+// Run after capture-screenshots.mjs and render-social-preview.mjs. A file
+// whose SHA-256 is unchanged keeps its previous `modified` date, so a fresh
+// checkout (where every mtime is today) does not rewrite the dates.
 
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { MARKETING_DIR } from "./lib.mjs";
 
@@ -44,7 +46,29 @@ const META = {
     purpose: "GitHub social preview candidate D (light): six secrets, who makes each and where it goes",
     madeBy: SOCIAL,
   },
+  "social-preview/social-preview-a3-1.png": {
+    purpose: "GitHub social preview round 3, A3-1 (dark): wordmark, hatchkit create pill and nine thing/provider nodes, no other text",
+    madeBy: `${SOCIAL} --round 3`,
+  },
+  "social-preview/social-preview-a3-2.png": {
+    purpose: "GitHub social preview round 3, A3-2 (dark): A3-1 plus the line 'CLI for self-hosted TypeScript apps'",
+    madeBy: `${SOCIAL} --round 3`,
+  },
+  "social-preview/social-preview-a3-3.png": {
+    purpose: "GitHub social preview round 3, A3-3 (light): A3-2 in the light palette",
+    madeBy: `${SOCIAL} --round 3`,
+  },
 };
+
+const manifestPath = join(MARKETING_DIR, "manifest.json");
+const previous = new Map(
+  existsSync(manifestPath)
+    ? JSON.parse(readFileSync(manifestPath, "utf8")).files.map((f) => [f.file, f])
+    : [],
+);
+
+// YYYY-MM-DD in the machine's time zone ("sv-SE" formats dates that way).
+const localDate = (d) => d.toLocaleDateString("sv-SE");
 
 function pngSize(buf) {
   if (buf.readUInt32BE(0) !== 0x89504e47) return null;
@@ -59,18 +83,20 @@ for (const dir of ["screenshots", "social-preview"]) {
     const rel = relative(MARKETING_DIR, abs);
     const buf = readFileSync(abs);
     const [width, height] = pngSize(buf) ?? [null, null];
+    const sha256 = createHash("sha256").update(buf).digest("hex");
+    const prev = previous.get(rel);
     files.push({
       file: rel,
       ...(META[rel] ?? { purpose: "", madeBy: "" }),
       width,
       height,
       bytes: buf.length,
-      sha256: createHash("sha256").update(buf).digest("hex"),
-      modified: statSync(abs).mtime.toISOString().slice(0, 10),
+      sha256,
+      modified: prev?.sha256 === sha256 ? prev.modified : localDate(statSync(abs).mtime),
     });
   }
 }
 
 const manifest = { schemaVersion: 1, project: "hatchkit", files };
-writeFileSync(join(MARKETING_DIR, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-console.log(`wrote ${join(MARKETING_DIR, "manifest.json")} (${files.length} files)`);
+writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+console.log(`wrote ${manifestPath} (${files.length} files)`);

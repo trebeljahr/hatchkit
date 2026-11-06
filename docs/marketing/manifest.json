@@ -53,6 +53,36 @@
       "modified": "2026-11-06"
     },
     {
+      "file": "social-preview/social-preview-a3-1.png",
+      "purpose": "GitHub social preview round 3, A3-1 (dark): wordmark, hatchkit create pill and nine thing/provider nodes, no other text",
+      "madeBy": "node scripts/marketing/render-social-preview.mjs --round 3",
+      "width": 1280,
+      "height": 640,
+      "bytes": 182277,
+      "sha256": "89ead5f212c0d43f251f3c9aa766addad23fd4b1e3a2f202592c980a1f637771",
+      "modified": "2026-11-07"
+    },
+    {
+      "file": "social-preview/social-preview-a3-2.png",
+      "purpose": "GitHub social preview round 3, A3-2 (dark): A3-1 plus the line 'CLI for self-hosted TypeScript apps'",
+      "madeBy": "node scripts/marketing/render-social-preview.mjs --round 3",
+      "width": 1280,
+      "height": 640,
+      "bytes": 191104,
+      "sha256": "dce070dc74dd5b2fb15e020654790ff4ae56273b27328a494fd5b843765272ab",
+      "modified": "2026-11-07"
+    },
+    {
+      "file": "social-preview/social-preview-a3-3.png",
+      "purpose": "GitHub social preview round 3, A3-3 (light): A3-2 in the light palette",
+      "madeBy": "node scripts/marketing/render-social-preview.mjs --round 3",
+      "width": 1280,
+      "height": 640,
+      "bytes": 180574,
+      "sha256": "e66d53488f5b230c92a0c5238520eef2534063d7861e4a4fddeb80572cc06d76",
+      "modified": "2026-11-07"
+    },
+    {
       "file": "social-preview/social-preview-b.png",
       "purpose": "GitHub social preview candidate B (light): the per-project setup list, every item ticked",
       "madeBy": "node scripts/marketing/render-social-preview.mjs",
