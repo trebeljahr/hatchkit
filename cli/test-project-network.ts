@@ -1,7 +1,7 @@
 /**
  * One Docker network per project (src/deploy/project-network.ts).
  *
- * Why it exists: on dedicated-vps every app, every app database and
+ * Why it exists: on app-vps every app, every app database and
  * Coolify's own Postgres, Redis and dashboard shared the `coolify`
  * network, so one compromised app could connect to all of them (audit of
  * 2026-10-19). The properties pinned here:

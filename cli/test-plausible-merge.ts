@@ -129,7 +129,7 @@ class FakeHost {
   run: HostRunner = async (step) => {
     this.steps.push(structuredClone(step));
     const text = `${step.argv.join(" ")}\n${step.input ?? ""}`;
-    if (this.failOn?.test(text)) throw new Error("Backup host shared-vps: injected failure");
+    if (this.failOn?.test(text)) throw new Error("Backup host ops-vps: injected failure");
     const [docker, verb, ...rest] = step.argv;
     assert.equal(docker, "docker");
     if (verb === "ps") return `${this.containers.join("\n")}\n`;
@@ -141,7 +141,7 @@ class FakeHost {
     if (container === `plausible-db-${UUID}` && step.out) {
       assert.equal(rest.at(-1), "plausible-db");
       if (this.files.has(step.out))
-        throw new Error(`Backup host shared-vps: cannot write ${step.out}`);
+        throw new Error(`Backup host ops-vps: cannot write ${step.out}`);
       this.files.add(step.out);
       return "48213";
     }
@@ -235,7 +235,7 @@ class FakeHost {
         /^CREATE TABLE (\w+) AS (\w+)$/,
         ([, backup, source]) => {
           if (this.tables.has(backup))
-            throw new Error(`Backup host shared-vps: Table ${backup} already exists.`);
+            throw new Error(`Backup host ops-vps: Table ${backup} already exists.`);
           this.table(source);
           this.tables.set(backup, []);
         },
@@ -283,9 +283,9 @@ class FakeHost {
   rpc(expression: string): string {
     const id = Number(/Plausible\.Repo\.get!\(Plausible\.Site, (\d+)\)/.exec(expression)?.[1]);
     const site = this.sites.get(id);
-    if (!site) throw new Error("Backup host shared-vps: ** (Ecto.NoResultsError)");
+    if (!site) throw new Error("Backup host ops-vps: ** (Ecto.NoResultsError)");
     const domain = /true = site\.domain == "([^"]+)"/.exec(expression)?.[1];
-    if (domain !== site.domain) throw new Error("Backup host shared-vps: ** (MatchError)");
+    if (domain !== site.domain) throw new Error("Backup host ops-vps: ** (MatchError)");
     const payload = /Base\.decode64!\("([^"]+)"\)/.exec(expression)?.[1];
     if (payload && expression.includes("Plausible.Goals.create(site, params)")) {
       for (const params of JSON.parse(Buffer.from(payload, "base64").toString()))
@@ -302,7 +302,7 @@ class FakeHost {
 
   table(name: string): Row[] {
     const rows = this.tables.get(name);
-    if (!rows) throw new Error(`Backup host shared-vps: Table ${name} does not exist.`);
+    if (!rows) throw new Error(`Backup host ops-vps: Table ${name} does not exist.`);
     return rows;
   }
 
@@ -353,7 +353,7 @@ getStore().set("providers.backups", {
   status: "configured",
   repositoryBase: "s3:https://account.eu.r2.cloudflarestorage.com/backups",
   hosts: {
-    "shared-vps": { transport: "tailscale", target: "root@shared-vps", serverUuid: "shared-uuid" },
+    "ops-vps": { transport: "tailscale", target: "root@ops-vps", serverUuid: "shared-uuid" },
   },
   autoRegister: false,
 });
@@ -441,7 +441,7 @@ for (const bad of ["beauty'.trebeljahr.com", "localhost", "a.com/x", "-a.com", "
   ]);
   assert.match(plan.notes.join("\n"), /Timezones differ.*keeps Australia\/Sydney/);
   const text = log.join("\n");
-  assert.match(text, /Plausible merge on shared-vps \(plausible-c8378br07og1w4ta45uxh57l\)/);
+  assert.match(text, /Plausible merge on ops-vps \(plausible-c8378br07og1w4ta45uxh57l\)/);
   assert.match(
     text,
     /1\. pg_dump -Fc of plausible-db to \/root\/plausible-site-merge-2026-10-19\//,
@@ -612,7 +612,7 @@ for (const bad of ["beauty'.trebeljahr.com", "localhost", "a.com/x", "-a.com", "
 {
   const host = new FakeHost();
   host.containers = ["coolify"];
-  await refused(host, [OLD, NEW, "--dry-run"], /No running Plausible service on shared-vps/);
+  await refused(host, [OLD, NEW, "--dry-run"], /No running Plausible service on ops-vps/);
 }
 {
   const host = new FakeHost();
@@ -639,7 +639,7 @@ for (const bad of ["beauty'.trebeljahr.com", "localhost", "a.com/x", "-a.com", "
   );
   assert.match(
     error.message,
-    /Copying site 10's rows failed: Backup host shared-vps: injected failure/,
+    /Copying site 10's rows failed: Backup host ops-vps: injected failure/,
   );
   assert.match(error.hint?.join("\n") ?? "", /premerge_20261019_site10_events_v2/);
   assert.ok(host.sites.has(10));
@@ -700,28 +700,28 @@ for (const bad of ["beauty'.trebeljahr.com", "localhost", "a.com/x", "-a.com", "
     status: "configured",
     repositoryBase: "s3:https://account.eu.r2.cloudflarestorage.com/backups",
     hosts: {
-      "dedicated-vps": { ...meta, target: "root@dedicated-vps", serverUuid: "dedicated-uuid" },
-      "shared-vps": { ...meta, target: "root@shared-vps", serverUuid: "shared-uuid" },
+      "app-vps": { ...meta, target: "root@app-vps", serverUuid: "dedicated-uuid" },
+      "ops-vps": { ...meta, target: "root@ops-vps", serverUuid: "shared-uuid" },
     },
     autoRegister: false,
   });
-  const runnerFor = (h: { name: string }) => (h.name === "shared-vps" ? shared.run : dedicated.run);
+  const runnerFor = (h: { name: string }) => (h.name === "ops-vps" ? shared.run : dedicated.run);
   const plan = (await runPlausibleMerge([OLD, NEW, "--dry-run"], {
     ...deps(shared).deps,
     runnerFor,
   })) as MergePlan;
-  assert.equal(plan.host, "shared-vps", "the one host that runs Plausible");
+  assert.equal(plan.host, "ops-vps", "the one host that runs Plausible");
   await assert.rejects(
-    runPlausibleMerge([OLD, NEW, "--dry-run", "--host", "dedicated-vps"], {
+    runPlausibleMerge([OLD, NEW, "--dry-run", "--host", "app-vps"], {
       ...deps(shared).deps,
       runnerFor,
     }),
-    /No running Plausible service on dedicated-vps/,
+    /No running Plausible service on app-vps/,
   );
   dedicated.containers = shared.containers;
   await assert.rejects(
     runPlausibleMerge([OLD, NEW, "--dry-run"], { ...deps(shared).deps, runnerFor }),
-    /Plausible runs on several backup hosts \(dedicated-vps, shared-vps\)\. Pass --host <name>\./,
+    /Plausible runs on several backup hosts \(app-vps, ops-vps\)\. Pass --host <name>\./,
   );
 }
 
@@ -754,9 +754,9 @@ sys.stdout.write("dump-bytes" if mode == "dump" else "1|row\\n")
   chmodSync(join(bin, "tailscale"), 0o755);
   chmodSync(join(bin, "docker"), 0o755);
   const run = hostRunner({
-    name: "shared-vps",
+    name: "ops-vps",
     transport: "tailscale",
-    target: "root@shared-vps",
+    target: "root@ops-vps",
     serverUuid: "shared-uuid",
   });
   const seen = () => JSON.parse(readFileSync(join(dir, "docker.json"), "utf8"));
@@ -767,7 +767,7 @@ sys.stdout.write("dump-bytes" if mode == "dump" else "1|row\\n")
   assert.deepEqual(seen(), { argv: tricky.slice(1), stdin: "SELECT 1;\n" });
   assert.deepEqual(readFileSync(join(dir, "ssh"), "utf8").split("\n").slice(0, 2), [
     "ssh",
-    "root@shared-vps",
+    "root@ops-vps",
   ]);
 
   // An out step writes the file and returns its size; it never overwrites.
@@ -788,7 +788,7 @@ sys.stdout.write("dump-bytes" if mode == "dump" else "1|row\\n")
   await assert.rejects(
     run({ argv: ["docker", "exec", "db"], input: "SELECT 1;" }),
     // The message first, blank lines dropped, at most six lines of the trace after it.
-    /Backup host shared-vps: psql: warming up \/ ERROR: {2}relation "sites" does not exist \/ at frame 0 \/ at frame 1 \/ at frame 2 \/ at frame 3$/,
+    /Backup host ops-vps: psql: warming up \/ ERROR: {2}relation "sites" does not exist \/ at frame 0 \/ at frame 1 \/ at frame 2 \/ at frame 3$/,
   );
   const partial = join(dir, "backup", "second.pgdump");
   await assert.rejects(run({ argv: ["docker", "exec", "db"], out: partial }), /relation "sites"/);

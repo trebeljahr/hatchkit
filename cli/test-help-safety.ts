@@ -86,8 +86,8 @@ const DANGEROUS_ARGV: string[][] = [
   ["infra", "plan", "ota-updates", "--help"],
   ["infra", "apply", "ota-updates", "--help"],
   ["host", "integrity", "uninstall", "--help"],
-  ["host", "updates", "install", "--host", "dedicated-vps", "--help"],
-  ["host", "updates", "uninstall", "--host", "dedicated-vps", "--help"],
+  ["host", "updates", "install", "--host", "app-vps", "--help"],
+  ["host", "updates", "uninstall", "--host", "app-vps", "--help"],
   ["plausible", "merge", "old.example.com", "new.example.com", "--yes", "--help"],
 ];
 

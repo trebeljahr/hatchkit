@@ -13,13 +13,13 @@ import {
 import type { CoolifyApi } from "./src/utils/coolify-api.js";
 
 const backupHosts = [
-  { transport: "tailscale" as const, target: "root@shared-vps", serverUuid: "shared" },
-  { transport: "tailscale" as const, target: "root@dedicated-vps", serverUuid: "srv" },
+  { transport: "tailscale" as const, target: "root@ops-vps", serverUuid: "shared" },
+  { transport: "tailscale" as const, target: "root@app-vps", serverUuid: "srv" },
 ];
 const asked: string[] = [];
 const tailnet = async (peer: string) => {
   asked.push(peer);
-  return "100.117.14.6";
+  return "100.64.0.30";
 };
 
 // 1. Tailnet address when the backup host is this app's server.
@@ -32,12 +32,12 @@ assert.deepEqual(
   }),
   {
     ok: true,
-    address: "100.117.14.6",
+    address: "100.64.0.30",
     source: "tailnet",
-    detail: "tailnet address of dedicated-vps",
+    detail: "tailnet address of app-vps",
   },
 );
-assert.deepEqual(asked, ["dedicated-vps"], "the host on this server, its target without the user");
+assert.deepEqual(asked, ["app-vps"], "the host on this server, its target without the user");
 
 // 2. The override wins, and no lookup runs.
 asked.length = 0;
@@ -51,7 +51,7 @@ const overridden = await resolveTraefikAddress({
 assert.equal(overridden.ok && overridden.address, "10.0.0.5");
 assert.equal(overridden.ok && overridden.source, "override");
 assert.deepEqual(asked, []);
-for (const override of ["dedicated-vps.tail5ecaf2.ts.net", "fd7a:115c:a1e0::1"]) {
+for (const override of ["app-vps.tail5ecaf2.ts.net", "fd7a:115c:a1e0::1"]) {
   const r = await resolveTraefikAddress({ serverUuid: "srv", override, tailnetIpv4: tailnet });
   assert.equal(r.ok && r.address, override);
 }
@@ -92,7 +92,7 @@ const lookupFails = await resolveTraefikAddress({
   },
 });
 assert.equal(publicOnly(lookupFails), "46.225.212.114");
-assert.match(lookupFails.ok ? lookupFails.detail : "", /tailscale ip -4 dedicated-vps failed/);
+assert.match(lookupFails.ok ? lookupFails.detail : "", /tailscale ip -4 app-vps failed/);
 assert.equal(
   publicOnly(
     await resolveTraefikAddress({
@@ -114,7 +114,7 @@ assert.ok(!isTailnetIpv4("100.128.0.1") && !isTailnetIpv4("100.63.0.1"));
 getStore().set("providers.backups", {
   status: "configured",
   repositoryBase: "s3:https://acct.r2.cloudflarestorage.com/backups",
-  hosts: { "dedicated-vps": backupHosts[1] },
+  hosts: { "app-vps": backupHosts[1] },
   autoRegister: false,
 });
 process.env[TRAEFIK_ADDRESS_ENV] = "10.0.0.9";
@@ -149,7 +149,7 @@ const deps = {
     return { v4: "46.225.212.114" };
   },
   async traefikAddressFor(): Promise<TraefikAddress> {
-    return { ok: true, address: "100.117.14.6", source: "tailnet", detail: "tailnet" };
+    return { ok: true, address: "100.64.0.30", source: "tailnet", detail: "tailnet" };
   },
   async probeViaHost(ip: string, host: string, path: string) {
     probes.push(`${ip} ${host} ${path}`);
@@ -157,7 +157,7 @@ const deps = {
   },
 };
 assert.equal(await checkTraefikReachable(api, plan, deps), true);
-assert.deepEqual(probes, ["100.117.14.6 site.example /"]);
+assert.deepEqual(probes, ["100.64.0.30 site.example /"]);
 assert.equal(
   await checkTraefikReachable(api, plan, { ...deps, probeViaHost: async () => null }),
   false,
