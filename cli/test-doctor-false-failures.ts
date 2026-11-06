@@ -248,7 +248,60 @@ await check("no GitHub App source is a skip that names the command", async () =>
       const rows = await checkCoolifyGithubApp({ url: "https://coolify.example.com", token: "t" });
       assert.equal(rows.length, 1);
       assert.equal(rows[0].status, "skip");
-      assert.match(rows[0].detail ?? "", /hatchkit create --private/);
+      assert.match(rows[0].detail ?? "", /compose runtime/);
+      assert.match(rows[0].detail ?? "", /hatchkit config add coolify-github-app/);
+    },
+  );
+});
+
+// Coolify 4.x reports a real App with html_url https://github.com and
+// is_public false. It used to be read as the seeded public source, so
+// doctor said "no GitHub sources" while one was installed.
+const bareUrlApp = (installationId: number | null) => ({
+  uuid: "app-uuid",
+  name: "trebeljahr-coolify",
+  html_url: "https://github.com",
+  api_url: "https://api.github.com",
+  is_public: false,
+  app_id: 3173728,
+  installation_id: installationId,
+});
+const seededPublic = {
+  uuid: "public-uuid",
+  name: "Public GitHub",
+  html_url: "https://github.com",
+  is_public: true,
+  app_id: null,
+  installation_id: null,
+};
+
+await check("an installed App with a bare-origin URL is ok, read from Coolify", async () => {
+  await withFetch(
+    (url) =>
+      url.includes("/github-apps")
+        ? json(200, [seededPublic, bareUrlApp(118666174)])
+        : json(404, {}),
+    async () => {
+      const rows = await checkCoolifyGithubApp({ url: "https://coolify.example.com", token: "t" });
+      assert.deepEqual(
+        rows.map((r) => [r.name, r.status]),
+        [
+          ["Coolify GitHub App (sources)", "ok"],
+          ["Coolify GitHub App (installation)", "ok"],
+        ],
+      );
+      assert.match(rows[0].detail ?? "", /trebeljahr-coolify/);
+    },
+  );
+});
+
+await check("an App Coolify never saw installed fails with its name", async () => {
+  await withFetch(
+    (url) => (url.includes("/github-apps") ? json(200, [bareUrlApp(null)]) : json(404, {})),
+    async () => {
+      const rows = await checkCoolifyGithubApp({ url: "https://coolify.example.com", token: "t" });
+      assert.equal(rows[1].status, "fail");
+      assert.match(rows[1].detail ?? "", /not installed on GitHub: trebeljahr-coolify/);
     },
   );
 });

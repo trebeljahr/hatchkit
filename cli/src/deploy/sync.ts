@@ -150,6 +150,7 @@ import {
   formatImageRef,
   healthCheckFor,
   healthCheckToConverge,
+  needsCoolifyGithubSource,
   resolveCoolifyRuntime,
 } from "./image-runtime.js";
 import { placeProjectResource } from "./project-network.js";
@@ -1431,10 +1432,11 @@ async function createMissingApps(args: {
   const repoUrl = remote.stdout.trim();
   const slug = repoSlugFromRemote(repoUrl);
 
-  // Visibility decides which Coolify create endpoint applies: a private
-  // repo needs the GitHub App source, a public one takes a plain HTTPS
-  // URL. `gh` knows; assume public when it can't say, which fails loudly
-  // at create time rather than silently wiring the wrong source.
+  // Visibility decides which Coolify create endpoint a compose app uses:
+  // a private repo needs the GitHub App source, a public one takes a
+  // plain HTTPS URL. Image apps clone nothing and use neither. `gh`
+  // knows; assume public when it can't say, which fails loudly at create
+  // time rather than silently wiring the wrong source.
   let isPrivate = false;
   if (slug) {
     const vis = await exec(
@@ -1473,7 +1475,12 @@ async function createMissingApps(args: {
 
   let githubAppUuid: string | undefined;
   let githubAppHtmlUrl: string | undefined;
-  if (isPrivate) {
+  // Only a compose app clones the repo; an image app pulls from GHCR.
+  if (
+    missing.some((routed) =>
+      needsCoolifyGithubSource({ isPrivateRepo: isPrivate, runtime: routed.runtime }),
+    )
+  ) {
     const sources = await api.listGithubSources();
     if (sources.length === 0) {
       throw new Error(

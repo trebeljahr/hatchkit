@@ -142,6 +142,24 @@ export function resolveCoolifyRuntime(value: unknown): CoolifyRuntime {
   return isCoolifyRuntime(value) ? value : "compose";
 }
 
+/** Whether Coolify needs a GitHub App source to deploy this project.
+ *
+ *  Only a `compose` app clones the repo: Coolify reads the compose file
+ *  from it, and a private repo can only be cloned through a GitHub App.
+ *  An `image` app never clones. It pulls the image GitHub Actions pushed
+ *  to GHCR, and its `git_repository` is a placeholder the signed deploy
+ *  webhook matches on. For a private repo the image is private too, so
+ *  what it needs is a `docker login ghcr.io` on the Coolify host
+ *  (`registerGhcrCredsWithCoolify` in deploy/ghcr.ts), not a GitHub App.
+ *  Private apps run this way: private repo, private
+ *  image, no GitHub App source. */
+export function needsCoolifyGithubSource(args: {
+  isPrivateRepo: boolean;
+  runtime: CoolifyRuntime;
+}): boolean {
+  return args.isPrivateRepo && args.runtime === "compose";
+}
+
 /** A registry image split into the two fields Coolify stores
  *  (`docker_registry_image_name`, `docker_registry_image_tag`). */
 export interface ImageRef {

@@ -703,7 +703,17 @@ export class CoolifyApi {
    *  a `github_app_uuid` for private-repo application creation. Coolify
    *  currently exposes these at `/github-apps`; older builds exposed a
    *  broader `/sources` list, so we try both shapes. */
-  async listGithubSources(): Promise<Array<{ uuid: string; name: string; html_url?: string }>> {
+  async listGithubSources(): Promise<
+    Array<{
+      uuid: string;
+      name: string;
+      html_url?: string;
+      /** Coolify's record of the App's installation on GitHub: a number
+       *  once installed, null when registered but never installed.
+       *  Absent on builds that don't send it. */
+      installation_id?: number | null;
+    }>
+  > {
     try {
       const apps = (await this.request("GET", "/github-apps")) as Array<{
         uuid?: string;
@@ -712,6 +722,8 @@ export class CoolifyApi {
         api_url?: string;
         organization?: string;
         is_public?: boolean;
+        app_id?: number | string | null;
+        installation_id?: number | null;
         type?: string;
       }>;
       return apps
@@ -721,6 +733,7 @@ export class CoolifyApi {
           uuid: app.uuid as string,
           name: app.name || (app.organization ? `GitHub App (${app.organization})` : "GitHub App"),
           html_url: app.html_url || app.api_url,
+          ...("installation_id" in app ? { installation_id: app.installation_id ?? null } : {}),
         }));
     } catch {
       // Fall through to the legacy source endpoint.
@@ -1881,17 +1894,24 @@ export interface ApplicationCreateInput {
  *  GitHub App" guidance, and stops `doctor` from reporting a usable
  *  App source when there is none.
  *
- *  Deliberately conservative: a real App is only excluded if Coolify
- *  explicitly flags it public or its URL is the bare github.com origin.
- *  Builds that expose neither field keep every source, so the worst
- *  case stays today's behaviour instead of an empty list. */
+ *  Coolify's own `is_public` flag decides when it is sent, and an
+ *  `app_id` marks a real App when it isn't. Only builds that send
+ *  neither fall back to the URL: a bare origin is the seeded source.
+ *  The URL can't decide on its own: Coolify 4.x reports a real App
+ *  with `html_url: https://github.com` too (seen 2026-11-06 on
+ *  trebeljahr-coolify, `is_public: false`, `app_id` set), and reading
+ *  that as public hid the only App from create, sync and doctor.
+ *  Builds that expose none of these keep every source, so the worst
+ *  case is a source too many, never an empty list. */
 export function isPublicGithubSource(app: {
   name?: string;
   html_url?: string;
   api_url?: string;
   is_public?: boolean;
+  app_id?: number | string | null;
 }): boolean {
-  if (app.is_public === true) return true;
+  if (typeof app.is_public === "boolean") return app.is_public;
+  if (app.app_id !== undefined && app.app_id !== null) return false;
   const url = app.html_url || app.api_url;
   if (!url) return false;
   try {

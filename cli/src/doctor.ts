@@ -168,16 +168,18 @@ async function checkCoolify(): Promise<CheckResult> {
  *  reachable first" precondition:
  *
  *    1. Sources present  — Coolify's /github-apps returns ≥1 entry.
- *       Without this, `hatchkit create --private` can't run at all.
- *    2. Installation     — every source's App is installed on at
- *       least one account/org visible to the user's `gh` CLI. The App
- *       being registered in Coolify but never installed on github.com
- *       is a silent failure mode that only shows up at create time
- *       with a 404 — doctor surfaces it ahead of time.
+ *       Only a private repo on the `compose` runtime needs one (Coolify
+ *       clones it); `image` apps pull from GHCR and clone nothing.
+ *    2. Installation     — every source's App is installed on GitHub.
+ *       The App being registered in Coolify but never installed is a
+ *       silent failure mode that only shows up at create time with a
+ *       404 — doctor surfaces it ahead of time. Coolify's own
+ *       `installation_id` answers this when the build sends it; older
+ *       builds fall back to the installations visible to `gh`.
  *
- *  Step (2) is skipped when `gh` is missing/unauthenticated (we can't
- *  enumerate installations) or when the source's html_url doesn't
- *  resolve to a GitHub App URL. */
+ *  The `gh` fallback is skipped when `gh` is missing/unauthenticated,
+ *  when GitHub refuses to list installations to its token, or when no
+ *  source's html_url resolves to a GitHub App URL. */
 export async function checkCoolifyGithubApp(source?: {
   url: string;
   token: string;
@@ -188,7 +190,12 @@ export async function checkCoolifyGithubApp(source?: {
   const sourcesUrl = `${cfg.url.replace(/\/$/, "")}/sources`;
   const out: CheckResult[] = [];
 
-  let sources: Array<{ uuid: string; name: string; html_url?: string }> = [];
+  let sources: Array<{
+    uuid: string;
+    name: string;
+    html_url?: string;
+    installation_id?: number | null;
+  }> = [];
   try {
     const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
     sources = await api.listGithubSources();
@@ -206,17 +213,17 @@ export async function checkCoolifyGithubApp(source?: {
     ];
   }
 
-  // Optional: only `hatchkit create --private` needs a GitHub App
-  // source, so an instance without one is not a fault. A skip names the
-  // command in its detail, because doctor prints no hint under a skip.
+  // Optional: only a private repo on the compose runtime needs a GitHub
+  // App source, so an instance without one is not a fault. A skip names
+  // the command in its detail, because doctor prints no hint under a skip.
   if (sources.length === 0) {
     out.push({
       name: "Coolify GitHub App (sources)",
       status: "skip",
       detail:
-        "no GitHub sources (optional: only `hatchkit create --private` needs one; `hatchkit config add coolify-github-app`)",
+        "no GitHub sources (optional: only a private repo on the compose runtime needs one; image apps pull from GHCR; `hatchkit config add coolify-github-app`)",
       hint: [
-        "Needed only if you plan to use `hatchkit create --private`. Public repos skip this.",
+        "Needed only for a private repo deployed as a Docker Compose app. Image apps and public repos skip this.",
         "Set up with: `hatchkit config add coolify-github-app`",
         `Or manually at ${sourcesUrl} → 'New' → 'GitHub App'.`,
       ],
@@ -230,9 +237,36 @@ export async function checkCoolifyGithubApp(source?: {
     detail: `${sources.length} source(s): ${sources.map((s) => s.name).join(", ")}`,
   });
 
-  // Installation check: needs gh CLI authenticated to enumerate the
-  // user's installations. Soft-skip when gh is missing — the sources
-  // check above already covers the Coolify-side health.
+  // Installation check, Coolify's answer first: it records the App's
+  // installation id once the App is installed on GitHub. GitHub lists
+  // installations only to a GitHub App's own user token, never to the
+  // OAuth token `gh` holds, so the fallback below can't answer on a
+  // build that sends the field.
+  if (sources.every((s) => s.installation_id !== undefined)) {
+    const notInstalled = sources.filter((s) => s.installation_id === null).map((s) => s.name);
+    if (notInstalled.length === 0) {
+      out.push({
+        name: "Coolify GitHub App (installation)",
+        status: "ok",
+        detail: `installed: ${sources.map((s) => s.name).join(", ")}`,
+      });
+    } else {
+      out.push({
+        name: "Coolify GitHub App (installation)",
+        status: "fail",
+        detail: `registered in Coolify but not installed on GitHub: ${notInstalled.join(", ")}`,
+        hint: [
+          `Open ${sourcesUrl}, pick the App and install it on your account.`,
+          "Then re-run `hatchkit doctor` — or `hatchkit config add coolify-github-app` to walk through it.",
+        ],
+      });
+    }
+    return out;
+  }
+
+  // Older builds: needs gh CLI authenticated to enumerate the user's
+  // installations. Soft-skip when gh is missing — the sources check
+  // above already covers the Coolify-side health.
   if (!(await execOk("gh", ["auth", "status"]))) {
     out.push({
       name: "Coolify GitHub App (installation)",
@@ -258,6 +292,18 @@ export async function checkCoolifyGithubApp(source?: {
     } else {
       missing.push(slug);
     }
+  }
+
+  if (installs.length === 0 || (missing.length === 0 && installed.length === 0)) {
+    // GitHub listed nothing to this token (it refuses the OAuth token
+    // `gh` holds), or no source maps to an App slug: no answer either
+    // way, and "not installed" would be a guess.
+    out.push({
+      name: "Coolify GitHub App (installation)",
+      status: "skip",
+      detail: "can't tell: no source has an App URL, or GitHub listed no installations to `gh`",
+    });
+    return out;
   }
 
   if (missing.length === 0 && installed.length > 0) {

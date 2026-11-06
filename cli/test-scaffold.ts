@@ -2494,6 +2494,16 @@ console.log("\n── coolify api: github app source discovery ─────�
           name: "Personal GitHub App",
           html_url: "https://github.com/apps/coolify-personal",
         },
+        // Coolify 4.x reports a real App with the bare origin as its
+        // URL; only the flag and app_id say it is an App.
+        {
+          uuid: "bare-url-app-uuid",
+          name: "trebeljahr-coolify",
+          html_url: "https://github.com",
+          api_url: "https://api.github.com",
+          is_public: false,
+          app_id: 3173728,
+        },
       ]),
       { status: 200, headers: { "content-type": "application/json" } },
     );
@@ -2509,9 +2519,10 @@ console.log("\n── coolify api: github app source discovery ─────�
 
   const checks: Check[] = [
     ["source discovery uses /github-apps", calls[0]?.endsWith("/github-apps")],
-    ["seeded 'Public GitHub' source filtered out", sources.length === 1],
+    ["seeded 'Public GitHub' source filtered out", sources.length === 2],
     ["source uuid returned", sources[0]?.uuid === "gh-app-uuid"],
     ["source name returned", sources[0]?.name === "Personal GitHub App"],
+    ["real App with a bare-origin URL kept", sources[1]?.uuid === "bare-url-app-uuid"],
     // The predicate itself. Two positive shapes (Coolify's flag, and a
     // bare-origin URL for builds that don't send the flag) and the
     // negatives that must survive — including the two "we can't tell"
@@ -2549,6 +2560,18 @@ console.log("\n── coolify api: github app source discovery ─────�
     [
       "isPublicGithubSource: keeps an explicitly non-public source",
       !isPublicGithubSource({ html_url: "https://github.com/apps/acme", is_public: false }),
+    ],
+    [
+      "isPublicGithubSource: is_public false wins over a bare-origin URL",
+      !isPublicGithubSource({ html_url: "https://github.com", is_public: false }),
+    ],
+    [
+      "isPublicGithubSource: app_id marks an App when the flag is absent",
+      !isPublicGithubSource({ html_url: "https://github.com", app_id: 3173728 }),
+    ],
+    [
+      "isPublicGithubSource: null app_id falls back to the URL",
+      isPublicGithubSource({ html_url: "https://github.com", app_id: null }),
     ],
   ];
   let ok = true;

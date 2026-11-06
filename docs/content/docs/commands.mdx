@@ -122,7 +122,7 @@ prompting. That makes `create` CI-safe.
 |---|---|
 | `--scaffold` / `--no-scaffold` | Write the app repo, or skip straight to provisioning. |
 | `--github` / `--no-github` | Create the GitHub remote, or skip it. |
-| `--github-visibility <value>` | `private` · `public`. `--public` / `--private` are shorthands. |
+| `--github-visibility <value>` | `private` · `public`. `--public` / `--private` are shorthands. A private repo keeps its GHCR images private; the Coolify host pulls them with the `ghcr` token (`hatchkit config add ghcr`). Only the `compose` runtime also needs a Coolify GitHub App (`coolify-github-app`). |
 | `--install` / `--no-install` | Run `pnpm install` after scaffolding. |
 | `--local-dev[=<slug>]` | Enable the Tailscale/Caddy dev URL and optionally set its slug (defaults to the project name). Defaults on for new projects. |
 | `--no-local-dev` | Skip local-dev wiring for this project. |

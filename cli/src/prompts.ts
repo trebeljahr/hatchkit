@@ -13,7 +13,11 @@ import {
   getMlServices,
   getPersonalEmailLocalPart,
 } from "./config.js";
-import { type CoolifyRuntime, DEFAULT_NEW_PROJECT_RUNTIME } from "./deploy/image-runtime.js";
+import {
+  type CoolifyRuntime,
+  DEFAULT_NEW_PROJECT_RUNTIME,
+  needsCoolifyGithubSource,
+} from "./deploy/image-runtime.js";
 import type { Topology } from "./deploy/routing.js";
 import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./email/presets.js";
 import type { AuthSecurityOption } from "./features/auth-account-security/types.js";
@@ -1276,7 +1280,11 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
           if (createGithubRepo) {
             githubRepoVisibility =
               presets.githubRepoVisibility ??
-              (await promptGithubRepoVisibility("GitHub repo visibility:", c.githubRepoVisibility));
+              (await promptGithubRepoVisibility(
+                "GitHub repo visibility:",
+                c.githubRepoVisibility,
+                c.coolifyRuntime ?? DEFAULT_NEW_PROJECT_RUNTIME,
+              ));
           }
           installDeps =
             presets.installDeps ??
@@ -1289,6 +1297,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
           createGithubRepo,
           githubRepoVisibility,
           deploymentMode: c.deploymentMode,
+          runtime: c.coolifyRuntime ?? DEFAULT_NEW_PROJECT_RUNTIME,
           existing: c.coolifyGithubSource,
         });
         return {
@@ -2184,7 +2193,11 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
       ? await confirm({ message: "Create a GitHub repo?", default: cfg.createGithubRepo })
       : false;
     const githubRepoVisibility = createGithubRepo
-      ? await promptGithubRepoVisibility("GitHub repo visibility:", cfg.githubRepoVisibility)
+      ? await promptGithubRepoVisibility(
+          "GitHub repo visibility:",
+          cfg.githubRepoVisibility,
+          cfg.coolifyRuntime ?? DEFAULT_NEW_PROJECT_RUNTIME,
+        )
       : undefined;
     const installDeps = scaffoldRepo
       ? await confirm({
@@ -2209,6 +2222,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
       createGithubRepo,
       githubRepoVisibility,
       deploymentMode: cfg.deploymentMode,
+      runtime: cfg.coolifyRuntime ?? DEFAULT_NEW_PROJECT_RUNTIME,
       existing: cfg.coolifyGithubSource,
     });
     return {
@@ -2229,24 +2243,30 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
 // ---------------------------------------------------------------------------
 
 /** Frontload the Coolify GitHub App source picker when the user selects
- *  a private repo + coolify deploy. Without this, the picker (or App
- *  walkthrough when no sources exist yet) gets wedged between auto-
- *  running deploy steps — the user walks away thinking it's running
- *  unattended and comes back to a stalled inquirer prompt.
+ *  a private repo + coolify deploy on the `compose` runtime. Without
+ *  this, the picker (or App walkthrough when no sources exist yet) gets
+ *  wedged between auto-running deploy steps — the user walks away
+ *  thinking it's running unattended and comes back to a stalled
+ *  inquirer prompt. The `image` runtime never needs a source
+ *  (`needsCoolifyGithubSource` in deploy/image-runtime.ts).
  *
  *  Returns the cached source unchanged when the user didn't touch the
- *  relevant inputs; clears it when private + coolify is no longer the
- *  active combo; re-prompts when entering that combo afresh. */
+ *  relevant inputs; clears it when that combo is no longer active;
+ *  re-prompts when entering it afresh. */
 async function resolveCoolifyGithubSourceForStepper(input: {
   createGithubRepo: boolean;
   githubRepoVisibility: GitHubRepoVisibility | undefined;
   deploymentMode: DeploymentMode;
+  runtime: CoolifyRuntime;
   existing: ProjectConfig["coolifyGithubSource"];
 }): Promise<ProjectConfig["coolifyGithubSource"]> {
   const needsSource =
     input.createGithubRepo &&
-    input.githubRepoVisibility === "private" &&
-    input.deploymentMode === "coolify";
+    input.deploymentMode === "coolify" &&
+    needsCoolifyGithubSource({
+      isPrivateRepo: input.githubRepoVisibility === "private",
+      runtime: input.runtime,
+    });
   if (!needsSource) return undefined;
   if (input.existing) return input.existing;
   try {
@@ -2265,21 +2285,26 @@ async function resolveCoolifyGithubSourceForStepper(input: {
 
 function promptGithubRepoVisibility(
   message: string,
-  current: GitHubRepoVisibility | undefined = "public",
+  current: GitHubRepoVisibility | undefined,
+  runtime: CoolifyRuntime,
 ): Promise<GitHubRepoVisibility> {
+  const image = runtime === "image";
   return select<GitHubRepoVisibility>({
     message,
     choices: [
       {
         name: "Public (recommended — zero extra setup)",
         value: "public",
-        description: "Coolify clones over HTTPS; GHCR is made public after first push.",
+        description: image
+          ? "GHCR images are made public after the first push; Coolify pulls them without a login."
+          : "Coolify clones over HTTPS; GHCR is made public after first push.",
       },
       {
         name: "Private",
         value: "private",
-        description:
-          "Needs a Coolify GitHub App source + GHCR pull credentials. Hatchkit walks you through it if missing.",
+        description: image
+          ? "GHCR images stay private; Coolify's host pulls them with your GHCR token (`hatchkit config add ghcr`)."
+          : "Needs a Coolify GitHub App source + GHCR pull credentials. Hatchkit walks you through it if missing.",
       },
     ],
     default: current ?? "public",

@@ -35,6 +35,7 @@ import {
   healthCheckFor,
   healthCheckPayload,
   healthCheckToConverge,
+  needsCoolifyGithubSource,
   parseImageRef,
   resolveCoolifyRuntime,
   rollingUpdateBlocker,
@@ -88,6 +89,34 @@ check("a manifest without coolifyRuntime is compose — what it was deployed as"
   assert.equal(resolveCoolifyRuntime(undefined), "compose");
   assert.equal(resolveCoolifyRuntime("image"), "image");
   assert.equal(resolveCoolifyRuntime("nonsense"), "compose");
+});
+
+check("only a private repo on the compose runtime needs a Coolify GitHub App source", () => {
+  // A private app: private repo, private GHCR image,
+  // Docker Image app, no GitHub App source. Asking for one on create
+  // stopped a private image project before its Coolify project existed.
+  assert.equal(needsCoolifyGithubSource({ isPrivateRepo: true, runtime: "image" }), false);
+  assert.equal(needsCoolifyGithubSource({ isPrivateRepo: true, runtime: "compose" }), true);
+  assert.equal(needsCoolifyGithubSource({ isPrivateRepo: false, runtime: "compose" }), false);
+  assert.equal(needsCoolifyGithubSource({ isPrivateRepo: false, runtime: "image" }), false);
+});
+
+check("create, its stepper and sync ask the runtime before looking for a GitHub App", () => {
+  const src = (rel: string) => readFileSync(join(REPO, "cli/src", rel), "utf8");
+  // create's Coolify step: the source lookup sits behind the runtime check.
+  const create = src("deploy/coolify.ts");
+  const gate = create.indexOf("needsCoolifyGithubSource({ isPrivateRepo, runtime })");
+  const lookup = create.indexOf("await resolveGithubAppSource(api, cfg.url)");
+  assert.ok(
+    gate > 0 && lookup > gate,
+    "runCoolifySetup resolves a source before the runtime check",
+  );
+  // The stepper's upfront picker and sync's create-missing path.
+  assert.match(src("prompts.ts"), /needsSource =[\s\S]{0,200}needsCoolifyGithubSource\(/);
+  assert.match(
+    src("deploy/sync.ts"),
+    /needsCoolifyGithubSource\(\{ isPrivateRepo: isPrivate, runtime: routed\.runtime \}\)[\s\S]{0,120}listGithubSources/,
+  );
 });
 
 check("server health check is /api/health, everything else /", () => {

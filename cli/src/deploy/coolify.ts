@@ -46,7 +46,7 @@ import {
   ensureCoolifyAppHasRepoAccess,
   installUrlForSlug,
 } from "./github-app-access.js";
-import { formatImageRef, healthCheckFor } from "./image-runtime.js";
+import { formatImageRef, healthCheckFor, needsCoolifyGithubSource } from "./image-runtime.js";
 import { placeProjectResource } from "./project-network.js";
 import { type RoutedApp, computeRoutingPlan } from "./routing.js";
 import { type NativeOriginsOutcome, pushNativeOriginsToServerApps } from "./trusted-origins.js";
@@ -73,14 +73,15 @@ export interface RunCoolifySetupOptions {
    *  in production). Accepted for symmetry with `scaffoldInfra` and so
    *  future build-time / preview deploys have it. */
   clientPort?: number;
-  /** The default `hatchkit create` path creates `gh repo create
-   *  --private`. Private GitHub repos must be wired through a Coolify
-   *  GitHub App source, not the public-repo endpoint, or Coolify accepts
-   *  the app but later cannot clone/pull it. */
+  /** The GitHub repo was created private. Under the `compose` runtime
+   *  Coolify clones it, which only works through a Coolify GitHub App
+   *  source (the public-repo endpoint accepts the app and then can't
+   *  clone it). Under `image` nothing clones the repo — see
+   *  `needsCoolifyGithubSource` in deploy/image-runtime.ts. */
   isPrivateRepo?: boolean;
   /** Pre-resolved Coolify GitHub App source — picked upfront in the
-   *  stepper (or edit loop) when the user selects a private repo, so the
-   *  deploy step doesn't pause for an inline picker / walkthrough. */
+   *  stepper (or edit loop) for a private repo on the `compose` runtime,
+   *  so the deploy step doesn't pause for an inline picker / walkthrough. */
   preresolvedGithubSource?: ResolvedGithubAppSource;
   /** Scaffolded project root. Used to read the compose file so routing
    *  can only ever name services that actually exist — a name that
@@ -159,12 +160,20 @@ export async function runCoolifySetup(
 
   const serverUuid = await resolveServerUuid(api, config);
   const isPrivateRepo = options.isPrivateRepo ?? false;
+  const runtime = config.coolifyRuntime ?? "compose";
   const repoRef = options.repoUrl
     ? normalizeCoolifyGitRepository(options.repoUrl, isPrivateRepo)
     : null;
   let githubAppUuid: string | undefined;
   let githubAppHtmlUrl: string | undefined;
-  if (isPrivateRepo) {
+  if (isPrivateRepo && !needsCoolifyGithubSource({ isPrivateRepo, runtime })) {
+    // Image apps pull from GHCR and never clone, so a private repo needs
+    // no GitHub App source. The Coolify host's pull login for the private
+    // image is set up after the first push (configureGhcrForCreate).
+    console.log(
+      chalk.dim("  Private repo: Coolify pulls the GHCR image, so no GitHub App source is needed."),
+    );
+  } else if (isPrivateRepo) {
     const source = options.preresolvedGithubSource ?? (await resolveGithubAppSource(api, cfg.url));
     githubAppUuid = source.uuid;
     githubAppHtmlUrl = source.htmlUrl;
@@ -235,7 +244,6 @@ export async function runCoolifySetup(
   //     middleware, so `/api/health` would arrive at Express as
   //     `/health`. `stripPrefix` below turns that off.
   const composeServices = composeServicesOf(options.projectDir);
-  const runtime = config.coolifyRuntime ?? "compose";
   const plan = computeRoutingPlan({
     name: config.name,
     domain: config.domain,
