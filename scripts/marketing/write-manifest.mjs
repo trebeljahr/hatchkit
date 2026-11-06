@@ -24,16 +24,24 @@ const META = {
     purpose: "Command overview (hatchkit --help, Getting started and Projects groups)",
     madeBy: SHOTS,
   },
+  "screenshots/create-secrets.png": {
+    purpose: "Social preview C: sandboxed create encrypting .env.production, then secrets rotate --dry-run",
+    madeBy: SHOTS,
+  },
   "social-preview/social-preview-a.png": {
-    purpose: "GitHub social preview candidate A: screenshot-led",
+    purpose: "GitHub social preview candidate A (dark): hatchkit create fanning out to the nine things it sets up",
     madeBy: SOCIAL,
   },
   "social-preview/social-preview-b.png": {
-    purpose: "GitHub social preview candidate B: typographic, docs-site brand",
+    purpose: "GitHub social preview candidate B (light): the per-project setup list, every item ticked",
     madeBy: SOCIAL,
   },
   "social-preview/social-preview-c.png": {
-    purpose: "GitHub social preview candidate C: light, setup/create/sync/backup strip",
+    purpose: "GitHub social preview candidate C (dark): real terminal capture of the secrets steps",
+    madeBy: SOCIAL,
+  },
+  "social-preview/social-preview-d.png": {
+    purpose: "GitHub social preview candidate D (light): six secrets, who makes each and where it goes",
     madeBy: SOCIAL,
   },
 };

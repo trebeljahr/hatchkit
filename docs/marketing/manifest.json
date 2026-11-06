@@ -13,6 +13,16 @@
       "modified": "2026-11-06"
     },
     {
+      "file": "screenshots/create-secrets.png",
+      "purpose": "Social preview C: sandboxed create encrypting .env.production, then secrets rotate --dry-run",
+      "madeBy": "node scripts/marketing/capture-screenshots.mjs",
+      "width": 1312,
+      "height": 916,
+      "bytes": 172783,
+      "sha256": "e596b200edc5bd28ebd23073989b7f2099ca6dce67dfc775da7e35437f6151bd",
+      "modified": "2026-11-06"
+    },
+    {
       "file": "screenshots/help.png",
       "purpose": "Command overview (hatchkit --help, Getting started and Projects groups)",
       "madeBy": "node scripts/marketing/capture-screenshots.mjs",
@@ -34,32 +44,42 @@
     },
     {
       "file": "social-preview/social-preview-a.png",
-      "purpose": "GitHub social preview candidate A: screenshot-led",
+      "purpose": "GitHub social preview candidate A (dark): hatchkit create fanning out to the nine things it sets up",
       "madeBy": "node scripts/marketing/render-social-preview.mjs",
       "width": 1280,
       "height": 640,
-      "bytes": 260606,
-      "sha256": "55813289def1306258ece404b7e1e06dfdea1ab8a45c1f2884fff9fe93180a50",
+      "bytes": 237095,
+      "sha256": "21b8e7b87cc8a2bf6837ddb2c628e9fb504cbf6b31a9f8c092a8968eaf2991b8",
       "modified": "2026-11-06"
     },
     {
       "file": "social-preview/social-preview-b.png",
-      "purpose": "GitHub social preview candidate B: typographic, docs-site brand",
+      "purpose": "GitHub social preview candidate B (light): the per-project setup list, every item ticked",
       "madeBy": "node scripts/marketing/render-social-preview.mjs",
       "width": 1280,
       "height": 640,
-      "bytes": 195189,
-      "sha256": "e32ace9a44397e74fd367dbf2a35afb8837f9df0154934f15c7c0a5ed46efc71",
+      "bytes": 215824,
+      "sha256": "07b7d455bc0ebb06e2f8456aa0cba2d00d5da43baa9e7859def115fa8548e0a9",
       "modified": "2026-11-06"
     },
     {
       "file": "social-preview/social-preview-c.png",
-      "purpose": "GitHub social preview candidate C: light, setup/create/sync/backup strip",
+      "purpose": "GitHub social preview candidate C (dark): real terminal capture of the secrets steps",
       "madeBy": "node scripts/marketing/render-social-preview.mjs",
       "width": 1280,
       "height": 640,
-      "bytes": 137315,
-      "sha256": "8d18f510dc163e2b222ce561451a75aba37cb9a8cd661958f99263e218d45af5",
+      "bytes": 250027,
+      "sha256": "d58535ede21ebd686f091c5a1d74bf38f3740f09c8013ebaa23ab1f2dd6b0458",
+      "modified": "2026-11-06"
+    },
+    {
+      "file": "social-preview/social-preview-d.png",
+      "purpose": "GitHub social preview candidate D (light): six secrets, who makes each and where it goes",
+      "madeBy": "node scripts/marketing/render-social-preview.mjs",
+      "width": 1280,
+      "height": 640,
+      "bytes": 193587,
+      "sha256": "8046cc0fbaecd659e0bf66b192fc8ec522a769c8bf3a99a35e73890f80c47f4f",
       "modified": "2026-11-06"
     }
   ]

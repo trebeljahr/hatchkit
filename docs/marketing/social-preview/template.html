@@ -1,11 +1,13 @@
 <!doctype html>
 <!--
-  GitHub social preview card, 1280x640. Three variants, picked with ?v=a|b|c:
-    a  screenshot-led: headline beside the real `hatchkit create --dry-run` screenshot
-    b  typographic: logo, headline and the command, in the docs site's brand
-    c  light: the four commands of a project's life, from setup to restore
+  GitHub social preview card, 1280x640. Four variants, picked with ?v=a|b|c|d:
+    a  dark: what one `hatchkit create` run sets up, drawn as a fan-out from the command
+    b  light: the per-project setup checklist, every item ticked by `hatchkit create`
+    c  dark: real sandboxed terminal capture of the secrets steps (screenshots/create-secrets.png)
+    d  light: six secrets, who makes each one and where hatchkit delivers it
   Rendered by scripts/marketing/render-social-preview.mjs. Key content stays
-  inside the 64 px safe margin.
+  inside the 64 px safe margin. Every name on the cards is a real command,
+  provider or env key; see docs/marketing/README.md for the source of each claim.
 -->
 <html lang="en">
 <head>
@@ -13,56 +15,110 @@
 <title>hatchkit social preview</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=block">
 <style>
+  /* Docs-site palette (docs/app/(home)/page.module.css). */
   :root {
-    --bg: #0b0d12; --hatch: #161a26; --fg: #ffffff; --muted: #9aa3b2;
-    --accent: #818cf8; --accent-soft: #a5b4fc; --ok: #34d399;
+    --bg: #0b0d12; --bg-alt: #11141c; --surface: #161a24; --hatch: #151925;
+    --fg: #e6e8ee; --head: #ffffff; --muted: #9aa3b2; --dim: #6b7280;
+    --accent: #a5b4fc; --accent-strong: #818cf8; --ok: #34d399;
+    --border: rgba(255,255,255,.09); --border-strong: rgba(255,255,255,.16);
+    --glow: rgba(99,102,241,.32);
+  }
+  .light {
+    --bg: #f6f7fb; --bg-alt: #ffffff; --surface: #ffffff; --hatch: #e8eaf3;
+    --fg: #11141c; --head: #11141c; --muted: #4b5563; --dim: #6b7280;
+    --accent: #4f46e5; --accent-strong: #4338ca; --ok: #047857;
+    --border: rgba(17,20,28,.09); --border-strong: rgba(17,20,28,.16);
+    --glow: rgba(99,102,241,.20);
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; }
-  body { width: 1280px; height: 640px; overflow: hidden; font-family: Inter, sans-serif; color: var(--fg); background: var(--bg); }
-  .card { position: relative; width: 1280px; height: 640px; overflow: hidden; background: var(--bg); }
+  body { width: 1280px; height: 640px; overflow: hidden; font-family: Inter, sans-serif; }
+  .card { position: relative; width: 1280px; height: 640px; overflow: hidden; background: var(--bg); color: var(--fg); }
   .hatch { position: absolute; inset: 0;
     background-image: repeating-linear-gradient(45deg, var(--hatch) 0 1px, transparent 1px 34px); }
-  .glow { position: absolute; inset: 0;
-    background: radial-gradient(ellipse 70% 60% at 30% 0%, rgba(99,102,241,.38), rgba(99,102,241,.04) 60%, transparent 100%); }
-  .topline { position: absolute; left: 0; top: 0; right: 0; height: 4px; background: var(--accent); }
-  .brand { display: flex; align-items: center; gap: 18px; }
-  .brand svg { width: 64px; height: 64px; flex: none; }
-  .brand span { font-size: 40px; font-weight: 700; letter-spacing: -1px; }
+  .glow { position: absolute; inset: 0; background: radial-gradient(ellipse 70% 65% at 18% -5%, var(--glow), transparent 70%); }
+  .topline { position: absolute; left: 0; top: 0; right: 0; height: 4px; background: var(--accent-strong); }
+  .layer { position: absolute; inset: 0; }
   code, .mono { font-family: "JetBrains Mono", monospace; font-variant-ligatures: none; }
-  .url { display: flex; align-items: center; gap: 12px; font: 500 22px "JetBrains Mono", monospace; color: var(--muted); }
-  .url i { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); display: block; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .brand svg { width: 52px; height: 52px; flex: none; }
+  .brand span { font-size: 34px; font-weight: 700; letter-spacing: -0.8px; color: var(--head); }
+  .brand.small svg { width: 38px; height: 38px; }
+  .brand.small span { font-size: 26px; letter-spacing: -0.5px; }
+  .url { display: flex; align-items: center; gap: 10px; font: 500 19px "JetBrains Mono", monospace; color: var(--muted); }
+  .url i { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); display: block; }
+  h1 { margin: 0; color: var(--head); font-weight: 800; }
+  h1 code { color: var(--accent); font-weight: 700; letter-spacing: -1px; }
 
-  /* A: screenshot-led */
-  .a .text { position: absolute; left: 64px; top: 64px; width: 520px; bottom: 64px; display: flex; flex-direction: column; }
-  .a h1 { margin: 52px 0 0; font-size: 60px; line-height: 1.04; letter-spacing: -2px; font-weight: 800; }
-  .a p { margin: 26px 0 0; font-size: 25px; line-height: 1.38; color: #c3c9d4; }
-  .a p code { color: var(--accent-soft); font-size: 23px; }
+  /* A: fan-out from the command to everything it sets up */
+  .a .text { position: absolute; left: 64px; top: 64px; width: 410px; bottom: 64px; display: flex; flex-direction: column; }
+  .a h1 { margin-top: 36px; font-size: 50px; line-height: 1.05; letter-spacing: -1.8px; }
+  .a p { margin: 26px 0 0; font-size: 21px; line-height: 1.42; color: #c3c9d4; }
+  .a p code { color: var(--accent); font-size: 19.5px; }
   .a .url { margin-top: auto; }
-  .a .shot { position: absolute; left: 640px; top: 72px; width: 760px; height: 640px; overflow: hidden;
-    border-radius: 16px 0 0 0; box-shadow: 0 30px 80px rgba(0,0,0,.55), 0 0 0 1px #2a3044; }
-  .a .shot img { display: block; width: 1100px; margin: 0; }
+  .a svg.wires { position: absolute; inset: 0; width: 1280px; height: 640px; }
+  .a .cmd { position: absolute; left: 520px; top: 288px; width: 214px; height: 64px; border-radius: 14px;
+    display: flex; align-items: center; justify-content: center; background: var(--accent-strong); color: #0b0d12;
+    font: 700 21px "JetBrains Mono", monospace; box-shadow: 0 0 0 6px rgba(129,140,248,.16), 0 18px 50px rgba(99,102,241,.35); }
+  .a .cmdnote { position: absolute; left: 520px; top: 366px; width: 214px; text-align: center;
+    font: 500 14.5px/1.45 "JetBrains Mono", monospace; color: var(--muted); }
+  .a .cmdnote b { color: var(--accent); font-weight: 500; }
+  .a .node { position: absolute; left: 830px; width: 386px; height: 48px; display: flex; align-items: center; gap: 12px;
+    padding: 0 16px; border-radius: 11px; background: var(--surface); border: 1px solid var(--border); white-space: nowrap; }
+  .a .node b { font-size: 20.5px; font-weight: 700; color: var(--head); }
+  .a .node span { font-size: 17.5px; color: var(--muted); }
+  .a .node.key { border-color: rgba(129,140,248,.55); background: #1a1f33; }
 
-  /* B: typographic */
-  .b .wrap { position: absolute; inset: 64px; display: flex; flex-direction: column; }
-  .b h1 { margin: 56px 0 0; font-size: 74px; line-height: 1.06; letter-spacing: -2.6px; font-weight: 800;
-    background: linear-gradient(#ffffff, #c7d2fe); -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .b h1 code { font-size: 64px; letter-spacing: -1px; color: var(--accent-soft); -webkit-text-fill-color: var(--accent-soft); }
-  .b p { margin: 28px 0 0; max-width: 1040px; font-size: 27px; line-height: 1.4; color: var(--muted); }
-  .b .url { margin-top: auto; }
+  /* B: the checklist */
+  .b h1 { position: absolute; left: 64px; top: 64px; width: 1152px; font-size: 50px; line-height: 1.12; letter-spacing: -1.7px; }
+  .b h1 code { font-size: 46px; }
+  .b .label { position: absolute; left: 64px; top: 216px; font: 600 15px Inter, sans-serif; letter-spacing: 1.6px;
+    text-transform: uppercase; color: var(--dim); }
+  .b .list { position: absolute; left: 64px; top: 248px; width: 730px; display: grid; grid-template-columns: 1fr 1fr;
+    grid-auto-flow: column; grid-template-rows: repeat(7, 38px); column-gap: 26px; }
+  .b .item { display: flex; align-items: center; gap: 12px; font-size: 20px; color: #374151; }
+  .b .item s { text-decoration-color: rgba(79,70,229,.55); text-decoration-thickness: 1.5px; }
+  .b .box { width: 20px; height: 20px; flex: none; border-radius: 5px; background: var(--accent); display: grid; place-items: center; }
+  .b .box svg { width: 13px; height: 13px; }
+  .b .panel { position: absolute; left: 836px; top: 216px; width: 380px; height: 300px; padding: 26px 28px;
+    border-radius: 16px; background: var(--surface); border: 1px solid var(--border-strong);
+    box-shadow: 0 14px 40px rgba(17,20,28,.08); display: flex; flex-direction: column; }
+  .b .panel .run { font: 700 27px "JetBrains Mono", monospace; color: var(--accent); }
+  .b .panel .run i { font-style: normal; color: var(--dim); font-weight: 500; }
+  .b .panel p { margin: 16px 0 0; font-size: 19.5px; line-height: 1.42; color: var(--fg); }
+  .b .panel small { margin-top: auto; font-size: 16.5px; color: var(--muted); }
+  .b .panel small code { color: var(--accent); }
+  .b .foot { position: absolute; left: 64px; right: 64px; bottom: 64px; height: 38px; display: flex; align-items: center; justify-content: space-between; }
 
-  /* C: light, command lifecycle */
-  .c { --bg: #f5f6fb; --hatch: #e7e9f3; --fg: #10131b; --muted: #535b6d; background: var(--bg); color: var(--fg); }
-  .c .glow { background: radial-gradient(ellipse 60% 60% at 85% 0%, rgba(129,140,248,.30), transparent 70%); }
-  .c .wrap { position: absolute; inset: 64px; display: flex; flex-direction: column; }
-  .c h1 { margin: 40px 0 0; font-size: 56px; line-height: 1.08; letter-spacing: -1.8px; font-weight: 800; max-width: 1060px; }
-  .c .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px; margin-top: 52px; }
-  .c .step { position: relative; background: #ffffff; border: 1px solid #dcdfeb; border-radius: 14px; padding: 18px 20px 20px;
-    box-shadow: 0 6px 20px rgba(16,19,27,.06); }
-  .c .step + .step::before { content: ""; position: absolute; left: -23px; top: 50%; width: 22px; height: 2px; background: var(--accent); }
-  .c .step code { display: block; font-size: 21px; font-weight: 700; color: #4f46e5; }
-  .c .step span { display: block; margin-top: 10px; font-size: 19px; line-height: 1.35; color: var(--muted); }
-  .c .url { margin-top: auto; color: var(--muted); }
+  /* C: real terminal capture */
+  .c .text { position: absolute; left: 64px; top: 64px; width: 448px; bottom: 64px; display: flex; flex-direction: column; }
+  .c h1 { margin-top: 34px; font-size: 50px; line-height: 1.05; letter-spacing: -1.8px; }
+  .c p { margin: 24px 0 0; font-size: 20.5px; line-height: 1.45; color: #c3c9d4; }
+  .c p + p { margin-top: 14px; }
+  .c p code { color: var(--accent); font-size: 19px; }
+  .c .url { margin-top: auto; }
+  .c .shot { position: absolute; left: 560px; top: 91px; width: 656px; border-radius: 15px;
+    box-shadow: 0 30px 80px rgba(0,0,0,.55), 0 0 0 1px #2a3044; }
+  .c .shot img { display: block; width: 656px; }
+
+  /* D: six secrets, made by and delivered to */
+  .d .top { position: absolute; left: 64px; right: 64px; top: 64px; display: flex; align-items: center; justify-content: space-between; }
+  .d h1 { position: absolute; left: 64px; top: 124px; font-size: 50px; line-height: 1.1; letter-spacing: -1.7px; }
+  .d .sub { position: absolute; left: 64px; top: 186px; font-size: 22px; color: var(--muted); }
+  .d .sub code { color: var(--accent); font-size: 20.5px; font-weight: 600; }
+  .d table { position: absolute; left: 64px; top: 236px; width: 1152px; border-collapse: collapse;
+    background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 14px 40px rgba(17,20,28,.07); }
+  .d th { text-align: left; padding: 9px 18px; font: 600 14px Inter, sans-serif; letter-spacing: 1.4px; text-transform: uppercase;
+    color: var(--dim); background: #f0f1f8; border-bottom: 1px solid var(--border); }
+  .d td { height: 43px; padding: 0 18px; border-top: 1px solid var(--border); font-size: 18.5px; color: var(--muted); white-space: nowrap; }
+  .d td:first-child { width: 410px; font: 600 18px "JetBrains Mono", monospace; color: var(--fg); }
+  .d td:nth-child(2) { width: 330px; }
+  .d .chip { display: inline-block; margin-right: 6px; padding: 3px 10px; border-radius: 7px; font-size: 15.5px; font-weight: 600;
+    color: var(--accent-strong); background: rgba(79,70,229,.09); border: 1px solid rgba(79,70,229,.18); }
+  .d .chip.env { font: 600 14.5px "JetBrains Mono", monospace; color: var(--fg); background: #f0f1f8; border-color: var(--border-strong); }
+  .d .note { position: absolute; left: 64px; right: 64px; bottom: 64px; font-size: 16.5px; color: var(--muted); }
+  .d .note code { color: var(--accent); font-weight: 600; font-size: 15.5px; }
 </style>
 </head>
 <body>
@@ -70,46 +126,108 @@
   <div class="hatch"></div>
   <div class="glow"></div>
   <div class="topline"></div>
-  <div id="content"></div>
+  <div class="layer" id="content"></div>
 </div>
 
 <template id="logo">
-  <svg viewBox="0 0 120 120" aria-hidden="true">
-    <rect width="120" height="120" rx="28" fill="#818cf8"/>
-    <path d="M34 18 L102 86" stroke="#0b0d12" stroke-width="9" stroke-linecap="round"/>
-    <path d="M18 34 L86 102" stroke="#0b0d12" stroke-width="9" stroke-linecap="round"/>
-    <path d="M50 18 L102 70" stroke="#0b0d12" stroke-width="9" stroke-linecap="round" stroke-opacity="0.55"/>
-    <path d="M18 50 L70 102" stroke="#0b0d12" stroke-width="9" stroke-linecap="round" stroke-opacity="0.55"/>
+  <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+    <rect x="2" y="2" width="28" height="28" rx="7" fill="#818cf8"/>
+    <path d="M9 5 L27 23" stroke="#0b0d12" stroke-width="2.25" stroke-linecap="round"/>
+    <path d="M5 9 L23 27" stroke="#0b0d12" stroke-width="2.25" stroke-linecap="round"/>
+    <path d="M13 5 L27 19" stroke="#0b0d12" stroke-width="2.25" stroke-linecap="round" stroke-opacity="0.55"/>
+    <path d="M5 13 L19 27" stroke="#0b0d12" stroke-width="2.25" stroke-linecap="round" stroke-opacity="0.55"/>
   </svg>
 </template>
 
 <script>
   const v = new URLSearchParams(location.search).get("v") || "a";
   const logo = document.getElementById("logo").innerHTML;
-  const brand = `<div class="brand">${logo}<span>hatchkit</span></div>`;
+  const brand = (cls = "") => `<div class="brand ${cls}">${logo}<span>hatchkit</span></div>`;
   const url = `<div class="url"><i></i>hatchkit.trebeljahr.com</div>`;
-  const variants = {
-    a: `<div class="text">${brand}
-          <h1>Start a TypeScript app on a server you own.</h1>
-          <p><code>hatchkit create</code> sets up the GitHub repo, DNS, a Hetzner server and the Coolify deploy in one run.</p>
-          ${url}</div>
-        <div class="shot"><img src="../screenshots/create-dry-run.png" alt=""></div>`,
-    b: `<div class="wrap">${brand}
-          <h1>From <code>hatchkit create</code><br>to a running app on your own server.</h1>
-          <p>Repo, DNS, server, deploy, error tracking and analytics, set up by one open&#8209;source CLI.</p>
-          ${url}</div>`,
-    c: `<div class="wrap">${brand}
-          <h1>Set up once. Then create, deploy and maintain apps on servers you own.</h1>
-          <div class="steps">
-            <div class="step"><code>hatchkit setup</code><span>Provider tokens go to the OS keychain</span></div>
-            <div class="step"><code>hatchkit create</code><span>Repo, DNS, server and first deploy</span></div>
-            <div class="step"><code>hatchkit sync</code><span>Domains, env and deploy secrets kept in step</span></div>
-            <div class="step"><code>hatchkit backup</code><span>Snapshots and isolated restore tests</span></div>
-          </div>
-          ${url}</div>`,
-  };
-  document.getElementById("card").classList.add(v);
-  document.getElementById("content").innerHTML = variants[v];
+  const tick = `<span class="box"><svg viewBox="0 0 12 12"><path d="M2.2 6.3 4.8 8.8 9.8 3.4" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+
+  // A: what one create run touches. Name + what hatchkit makes there.
+  const NODES = [
+    ["GitHub", "repo, Actions secrets"],
+    ["Cloudflare", "DNS records"],
+    ["Hetzner", "server, through Terraform"],
+    ["Coolify", "app, database, deploy hook"],
+    ["GlitchTip", "error-tracking DSN"],
+    ["Plausible", "analytics site"],
+    ["Listmonk + SES", "DKIM, lists, API user"],
+    ["R2", "bucket token, daily backups"],
+    ["OS keychain", "dotenvx private key", "key"],
+  ];
+  function variantA() {
+    const pitch = 58, top = 64, from = [734, 320], toX = 830;
+    const nodes = NODES.map(([name, what, cls], i) =>
+      `<div class="node ${cls ?? ""}" style="top:${top + i * pitch}px"><b>${name}</b><span>${what}</span></div>`).join("");
+    const wires = NODES.map((_, i) => {
+      const y = top + i * pitch + 24;
+      return `<path d="M${from[0]} ${from[1]} C ${from[0] + 56} ${from[1]}, ${toX - 56} ${y}, ${toX} ${y}" />` +
+        `<circle cx="${toX}" cy="${y}" r="3.5" />`;
+    }).join("");
+    return `<svg class="wires" viewBox="0 0 1280 640"><g fill="none" stroke="rgba(129,140,248,.55)" stroke-width="1.6">${wires}</g></svg>
+      <div class="text">${brand()}
+        <h1>Your app, live on your own server. Every secret wired.</h1>
+        <p><code>hatchkit create</code> sets up all nine in one run, mints the project's secrets and delivers each one. You paste provider tokens once, at setup.</p>
+        ${url}</div>
+      <div class="cmd">hatchkit create</div>
+      <div class="cmdnote">secrets go into<br><b>.env.production</b><br>encrypted with dotenvx</div>
+      ${nodes}`;
+  }
+
+  // B: the per-project checklist, two columns of seven, read top to bottom.
+  const CHORES = [
+    "Create the GitHub repo", "Add DNS records on Cloudflare", "Order a Hetzner server", "Create the Coolify app",
+    "Start a database, copy its URL", "Register it for daily backups", "Add a Plausible site",
+    "Copy a GlitchTip DSN", "Verify SES, publish DKIM", "Make a Listmonk API user", "Mint an R2 bucket token",
+    "Generate an auth secret", "Encrypt .env.production", "Paste secrets into Coolify, GitHub",
+  ];
+  const variantB = () => `
+    <h1>The setup list for every new app.<br><code>hatchkit create</code> does all of it.</h1>
+    <div class="label">By hand, per project</div>
+    <div class="list">${CHORES.map((c) => `<div class="item">${tick}<s>${c}</s></div>`).join("")}</div>
+    <div class="panel">
+      <div class="run"><i>$</i> hatchkit create</div>
+      <p>One run, in your own accounts. Secrets go into <code>.env.production</code>, encrypted with dotenvx. The key goes to your keychain, Coolify and GitHub.</p>
+      <small>Provider tokens go in once, with <code>hatchkit&nbsp;setup</code>.</small>
+    </div>
+    <div class="foot">${brand("small")}${url}</div>`;
+
+  // C: the real capture, made by scripts/marketing/capture-screenshots.mjs.
+  const variantC = () => `
+    <div class="text">${brand()}
+      <h1>Your secrets, committed as ciphertext.</h1>
+      <p><code>hatchkit create</code> encrypts each value with dotenvx. The private key goes to your keychain, Coolify and GitHub Actions, never into git.</p>
+      <p><code>hatchkit secrets rotate</code> swaps a DSN or token and pushes it to Coolify and GitHub.</p>
+      ${url}</div>
+    <div class="shot"><img src="../screenshots/create-secrets.png" alt=""></div>`;
+
+  // D: six secrets. Made by = where the value comes from; chips = where it lands.
+  const env = `<span class="chip env">.env.production</span>`;
+  const chip = (t) => `<span class="chip">${t}</span>`;
+  const SECRETS = [
+    ["DOTENV_PRIVATE_KEY_PRODUCTION", "dotenvx, at scaffold time", chip("OS keychain") + chip("Coolify") + chip("GitHub Actions")],
+    ["COOLIFY_DEPLOY_SECRET", "32 random bytes, one per app", chip("Coolify webhook") + chip("GitHub Actions")],
+    ["SENTRY_DSN", "GlitchTip API", env + chip("Coolify")],
+    ["LISTMONK_API_TOKEN", "Listmonk API user", env],
+    ["R2_SECRET_ACCESS_KEY", "Cloudflare, scoped to the bucket", env],
+    ["BETTER_AUTH_SECRET", "32 random bytes", env],
+  ];
+  const variantD = () => `
+    <div class="top">${brand("small")}${url}</div>
+    <h1>Six secrets you no longer copy by hand.</h1>
+    <div class="sub"><code>hatchkit create</code> makes each one and writes it where it is read.</div>
+    <table><thead><tr><th>Secret</th><th>Made by</th><th>Delivered to</th></tr></thead>
+      <tbody>${SECRETS.map(([k, by, to]) => `<tr><td>${k}</td><td>${by}</td><td>${to}</td></tr>`).join("")}</tbody></table>
+    <div class="note"><code>.env.production</code> is encrypted with dotenvx and committed. Rotate later with <code>hatchkit keys rotate</code> and <code>hatchkit secrets rotate</code>.</div>`;
+
+  const variants = { a: variantA, b: variantB, c: variantC, d: variantD };
+  const card = document.getElementById("card");
+  card.classList.add(v);
+  if (v === "b" || v === "d") card.classList.add("light");
+  document.getElementById("content").innerHTML = variants[v]();
 </script>
 </body>
 </html>

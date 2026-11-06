@@ -1,13 +1,14 @@
 #!/usr/bin/env node
-// Renders the three GitHub social preview candidates (1280x640 PNG) from
+// Renders the four GitHub social preview candidates (1280x640 PNG) from
 // docs/marketing/social-preview/template.html, plus a labelled review sheet.
 //
 //   node scripts/marketing/render-social-preview.mjs [--review-dir <dir>]
 //   (or: pnpm marketing:social)
 //
-// Writes social-preview-{a,b,c}.png next to the template. With --review-dir,
-// also copies the three PNGs there and writes review-sheet.jpg (A/B/C side by
-// side). Run capture-screenshots.mjs first: variant A embeds its output.
+// Writes social-preview-{a,b,c,d}.png next to the template. With --review-dir,
+// also copies the four PNGs there and writes review-sheet.jpg (A-D in a
+// labelled 2x2 grid). Run capture-screenshots.mjs first: variant C embeds
+// its create-secrets.png.
 
 import { copyFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -15,9 +16,10 @@ import { pathToFileURL } from "node:url";
 import { FONTS_HREF, SOCIAL_DIR, launchChromium } from "./lib.mjs";
 
 const VARIANTS = [
-  ["a", "A: screenshot-led"],
-  ["b", "B: typographic, docs-site brand"],
-  ["c", "C: light, the four commands of a project's life"],
+  ["a", "A (dark): one command, nine things set up, keys included"],
+  ["b", "B (light): the per-project setup list, all ticked"],
+  ["c", "C (dark): real capture of the secrets steps"],
+  ["d", "D (light): six secrets, made by and delivered to"],
 ];
 const reviewIdx = process.argv.indexOf("--review-dir");
 const reviewDir = reviewIdx > -1 ? process.argv[reviewIdx + 1] : null;
@@ -47,12 +49,12 @@ try {
     }).join("");
     const html = `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="${FONTS_HREF}">
 <style>body{margin:0;background:#e9ebf2;font-family:Inter,sans-serif}
-.sheet{display:flex;gap:32px;padding:40px;width:max-content}
+.sheet{display:grid;grid-template-columns:640px 640px;gap:36px 32px;padding:40px;width:max-content}
 figure{margin:0;display:flex;flex-direction:column;gap:14px}
 img{width:640px;height:320px;display:block;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,.18)}
 figcaption{font-size:22px;font-weight:600;color:#10131b}</style></head>
 <body><div class="sheet">${tiles}</div></body></html>`;
-    const page = await browser.newPage({ viewport: { width: 2100, height: 460 }, deviceScaleFactor: 1 });
+    const page = await browser.newPage({ viewport: { width: 1400, height: 900 }, deviceScaleFactor: 1 });
     await page.setContent(html, { waitUntil: "networkidle" });
     await page.evaluate(() => document.fonts.ready);
     const out = join(reviewDir, "review-sheet.jpg");
