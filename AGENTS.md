@@ -86,6 +86,20 @@ operator credential out of CI; use the per-Worker deployment token.
 - Ask before running rollback, cleanup, Terraform, DNS, Coolify, keychain, or
   provider API mutations.
 
+## Public repository: no operator data
+
+Hatchkit is public. Commit generic tooling only. Never commit one operator's
+fleet: host names, tailnet names or addresses, public IPs, Coolify resource
+UUIDs, Worker URLs, mail addresses, per-app rollout notes, or run scripts and
+evidence written for specific hosts. Keep those in the operator's private
+repository. Tests and docs use made-up names (`app-vps`, `ops-vps`,
+`example.com`, `203.0.113.0/24`, `100.64.0.0/10`).
+
+The pre-push hook refuses a push that adds `infra/maintenance/`, or whose added
+lines contain a fixed string from `~/.config/hatchkit/fleet-denylist` (or the
+file named by `$HATCHKIT_FLEET_DENYLIST`). The denylist lives outside the repo,
+so the repo never names what it guards against.
+
 ## Break/Fix Workflow
 
 If Hatchkit is breaking, agents should report the issue and can write a repair

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Pre-push gate. Lint only — nothing else.
+# Pre-push gate: operator data first, then lint. Nothing else.
 #
 # The rule that keeps this hook alive: it must finish in seconds. A
 # pre-push hook that runs the build or the test suite costs a minute on
@@ -8,6 +8,13 @@
 # cheap (biome over the CLI and MCP sources), catches the class of
 # mistake that is embarrassing in review, and leaves the slow
 # checks to CI where they belong.
+#
+# The operator-data check reads the commits being pushed. Hatchkit is
+# public, and one operator's hosts, addresses and run records do not
+# belong in it (AGENTS.md → "Public repository: no operator data"). It
+# refuses a push that adds infra/maintenance/, or whose added lines hold
+# a fixed string from the denylist file. That file lives outside the
+# repo, so the repo never names what it guards against.
 #
 # Wired up by the root `prepare` script:
 #   git config core.hooksPath .githooks
@@ -19,10 +26,62 @@ set -u
 # from a linked worktree or a submodule. Anchor explicitly so the root
 # `lint` script resolves.
 root=$(git rev-parse --show-toplevel 2>/dev/null) || {
-  echo "pre-push: not inside a git work tree — skipping lint." >&2
+  echo "pre-push: not inside a git work tree — skipping checks." >&2
   exit 0
 }
 cd "$root" || exit 1
+
+denylist=${HATCHKIT_FLEET_DENYLIST:-$HOME/.config/hatchkit/fleet-denylist}
+zero=0000000000000000000000000000000000000000
+patterns=""
+if [ -r "$denylist" ]; then
+  patterns=$(mktemp) || exit 1
+  trap 'rm -f "$patterns"' EXIT
+  # One fixed string per line; blank lines and # comments are ignored.
+  grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$denylist" >"$patterns" || :
+fi
+
+refused=0
+# Git feeds one line per ref: <local ref> <local sha> <remote ref> <remote sha>
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  case "$local_sha" in "$zero"*) continue ;; esac # a deletion pushes nothing
+  case "$remote_sha" in
+    "$zero"*) range="$local_sha --not --remotes" ;;
+    *) range="$remote_sha..$local_sha" ;;
+  esac
+
+  # shellcheck disable=SC2086 # $range is two or three words on purpose
+  added=$(git log --format= --diff-filter=A --name-only $range -- infra/maintenance)
+  if [ -n "$added" ]; then
+    echo "pre-push: these commits add infra/maintenance/, which holds one operator's run records:" >&2
+    echo "$added" | sort -u | head -5 | sed 's/^/  /' >&2
+    refused=1
+  fi
+
+  if [ -n "$patterns" ] && [ -s "$patterns" ]; then
+    # shellcheck disable=SC2086
+    hits=$(git log -p --format= --no-color $range |
+      awk '/^\+\+\+ b\//{file=substr($0,7);next} /^\+/{print file "\t" substr($0,2)}' |
+      grep -F -f "$patterns" | cut -f1 | sort -u)
+    if [ -n "$hits" ]; then
+      echo "pre-push: added lines match $denylist in:" >&2
+      echo "$hits" | head -20 | sed 's/^/  /' >&2
+      refused=1
+    fi
+  fi
+done
+
+if [ "$refused" -ne 0 ]; then
+  cat >&2 <<'MSG'
+
+pre-push: operator data found — push aborted.
+
+  Move it to the operator's private repository, or replace it with
+  example values, then rewrite the unpushed commits that added it.
+
+MSG
+  exit 1
+fi
 
 # Without an install there is no linter to run, and failing here would
 # block perfectly ordinary pushes from a fresh clone. Say what is
