@@ -164,6 +164,12 @@ export interface MigrationPlanInput {
    *  planner then plans the step and lets the idempotent executor find
    *  out. */
   emailRouting?: { newDomain?: EmailRoutingFacts; oldDomain?: EmailRoutingFacts };
+  /** Paid unlock, read by the orchestrator before planning. Present when
+   *  the project has an `unlocks.json` or a stored paid-unlock webhook
+   *  id; `keyStored` says whether a Stripe key that can reach that
+   *  webhook (organization, project or master) is stored here. Absent:
+   *  the plan has no paid-unlock row. */
+  paidUnlock?: { keyStored: boolean };
 }
 
 // ---------------------------------------------------------------------------
@@ -909,39 +915,60 @@ export function planSearchConsole(input: MigrationPlanInput): MigrationAction[] 
   return actions;
 }
 
-/** Stripe webhook endpoints. Updating an endpoint's URL keeps its
- *  signing secret, so nothing in `.env` has to change and there is no
- *  window where an event arrives signed by a key the app doesn't hold.
- *  That makes this a pure cutover step with no prepare and no cleanup. */
+/** Stripe webhook endpoints: the starter's `/api/stripe/webhook` and,
+ *  for a project with paid unlock, the `/api/unlock/webhook` that
+ *  `hatchkit stripe sync` made. Updating an endpoint's URL keeps its
+ *  signing secret, so nothing in `.env` (or the Worker's secrets) has
+ *  to change and there is no window where an event arrives signed by a
+ *  key the app doesn't hold. That makes both pure cutover steps with no
+ *  prepare and no cleanup. */
 export function planStripe(input: MigrationPlanInput): MigrationAction[] {
-  if (!input.manifest.features.includes("stripe")) {
-    return [
-      {
-        provider: "stripe",
-        id: "stripe:webhook",
-        phase: "cutover",
-        kind: "noop",
-        summary: "project has no stripe feature",
-      },
-    ];
-  }
-  return [
-    gatedOnCredential(
-      {
-        provider: "stripe",
-        id: "stripe:webhook",
-        phase: "cutover",
-        kind: "update",
-        summary: `webhook URL → https://${input.newDomain}/api/stripe/webhook`,
-        detail: [
-          "test + live endpoints, whichever hatchkit registered",
-          "the whsec_ signing secret survives the update — no env rewrite",
-        ],
-      },
-      input.configured.stripe,
-      "hatchkit config add stripe",
-    ),
+  const actions: MigrationAction[] = [
+    input.manifest.features.includes("stripe")
+      ? gatedOnCredential(
+          {
+            provider: "stripe",
+            id: "stripe:webhook",
+            phase: "cutover",
+            kind: "update",
+            summary: `webhook URL → https://${input.newDomain}/api/stripe/webhook`,
+            detail: [
+              "test + live endpoints, whichever hatchkit registered",
+              "the whsec_ signing secret survives the update — no env rewrite",
+            ],
+          },
+          input.configured.stripe,
+          "hatchkit config add stripe",
+        )
+      : {
+          provider: "stripe",
+          id: "stripe:webhook",
+          phase: "cutover",
+          kind: "noop",
+          summary: "project has no stripe feature",
+        },
   ];
+  if (input.paidUnlock) {
+    actions.push(
+      gatedOnCredential(
+        {
+          provider: "stripe",
+          id: "stripe:unlock-webhook",
+          phase: "cutover",
+          kind: "update",
+          summary: `paid-unlock webhook URL → https://${input.newDomain}/api/unlock/webhook`,
+          detail: [
+            "test + live endpoints `hatchkit stripe sync` registered, in the account that holds them",
+            `only while on ${input.oldDomain}; a --webhook-url elsewhere is left alone`,
+            "the whsec_ signing secret survives the update — no env or wrangler secret change",
+          ],
+        },
+        input.paidUnlock.keyStored,
+        "hatchkit stripe org-key --mode live",
+      ),
+    );
+  }
+  return actions;
 }
 
 /**

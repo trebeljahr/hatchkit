@@ -5899,7 +5899,8 @@ function printHelp(topic?: HelpTopic): void {
     rewrite as its first step, then moves the provider identities that
     carry the domain and cannot simply be renamed — the SES sending
     identity, the R2 assets custom domain, the Search Console property,
-    the Stripe webhook URL, the Coolify routing.
+    the Stripe webhook URLs (starter and paid unlock), the Coolify
+    routing.
 
   ${chalk.bold("Three phases, and why:")}
     ${chalk.green("prepare")}  Additive. Creates the new SES identity beside the old one and
@@ -5912,7 +5913,7 @@ function printHelp(topic?: HelpTopic): void {
              keeps the old origin on the assets bucket's CORS rule.
              Nothing that works today stops working. This is the default.
     ${chalk.yellow("cutover")}  Moves the pointers: FROM address (manifest + SES_FROM_EMAIL /
-             LISTMONK_FROM in the env files), assets URL, webhook URL,
+             LISTMONK_FROM in the env files), assets URL, webhook URLs,
              Coolify FQDN. Every step re-checks a gate first (is SES
              verified? is the certificate issued?) and refuses rather
              than half-moving. Listmonk's default sender (app.from_email)

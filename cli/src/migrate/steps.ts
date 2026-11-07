@@ -73,7 +73,7 @@ import {
 } from "../provision/ses.js";
 import { type ProjectManifest, readManifest, writeManifest } from "../scaffold/manifest.js";
 import { CloudflareApi, isEmailDestinationVerified } from "../utils/cloudflare-api.js";
-import { getCloudflareTokenValue } from "../utils/secrets.js";
+import { type StripeWebhookEndpoint, getCloudflareTokenValue } from "../utils/secrets.js";
 import { readSesFromEnv, rewriteFromAddress, rewriteSesFromEnv } from "./ses-env.js";
 
 // ---------------------------------------------------------------------------
@@ -1215,42 +1215,62 @@ export const stepSearchConsoleRetire: StepFn = async (ctx) => {
 // Stripe
 // ---------------------------------------------------------------------------
 
-/** Repoint both webhook endpoints. Updating in place keeps the `whsec_`
- *  signing secret, so `.env.production` stays correct and no event
- *  arrives signed by a key the deployed app doesn't hold. */
-export const stepStripeWebhook: StepFn = async (ctx) => {
+/** Repoint one kind of hatchkit webhook endpoint in test and live, each
+ *  in the account that holds it. Updating in place keeps the `whsec_`
+ *  signing secret, so the deployed app's secret stays correct and no
+ *  event arrives signed by a key it doesn't hold. */
+async function moveStripeWebhooks(
+  ctx: StepContext,
+  endpoint: StripeWebhookEndpoint,
+): Promise<StepOutcome> {
   const manifest = manifestOf(ctx);
   const { updateStripeProjectWebhookUrl } = await import("../provision/stripe.js");
-  const url = `https://${ctx.newDomain}/api/stripe/webhook`;
+  const unlock = endpoint === "unlock";
+  const url = `https://${ctx.newDomain}/api/${unlock ? "unlock" : "stripe"}/webhook`;
+  const what = unlock ? "paid-unlock webhook" : "webhook";
   const detail: string[] = [];
   let changed = 0;
 
   for (const mode of ["test", "live"] as const) {
-    const res = await updateStripeProjectWebhookUrl(
-      manifest.name,
-      mode,
-      url,
-      manifest.stripe?.accounts?.[mode],
-    );
+    const res = await updateStripeProjectWebhookUrl(manifest.name, mode, url, {
+      endpoint,
+      account: manifest.stripe?.accounts?.[mode],
+      // The starter endpoint is always created on the project's domain;
+      // a paid-unlock one may follow `stripe sync --webhook-url` anywhere.
+      onlyFromHost: unlock ? ctx.oldDomain : undefined,
+    });
     if (res.result === "updated") {
       changed += 1;
       detail.push(`${mode}: ${res.endpointId} → ${url}`);
     } else if (res.result === "unchanged") {
       detail.push(`${mode}: already ${url}`);
+    } else if (res.result === "elsewhere") {
+      detail.push(`${mode}: ${res.endpointId} points at ${res.currentUrl} — left alone`);
     } else {
       detail.push(`${mode}: no hatchkit-registered endpoint — nothing to move`);
     }
   }
-  detail.push("signing secret unchanged — STRIPE_WEBHOOK_SECRET stays valid");
+  detail.push(
+    `signing secret unchanged — ${unlock ? "UNLOCK_WEBHOOK_SECRET" : "STRIPE_WEBHOOK_SECRET"} stays valid`,
+  );
   return {
     status: changed > 0 ? "done" : "skipped",
     message:
       changed > 0
-        ? `${changed} Stripe webhook endpoint(s) repointed`
-        : "no Stripe webhook needed moving",
+        ? `${changed} Stripe ${what} endpoint(s) repointed`
+        : `no Stripe ${what} needed moving`,
     detail,
   };
-};
+}
+
+/** The starter's `/api/stripe/webhook`, test + live. */
+export const stepStripeWebhook: StepFn = (ctx) => moveStripeWebhooks(ctx, "starter");
+
+/** The paid-unlock `/api/unlock/webhook` from `hatchkit stripe sync`,
+ *  test + live. Without this move the endpoint keeps posting to the old
+ *  domain, and the next `stripe sync` (which looks for the new URL)
+ *  creates a second endpoint with a secret the deployed app lacks. */
+export const stepStripeUnlockWebhook: StepFn = (ctx) => moveStripeWebhooks(ctx, "unlock");
 
 // ---------------------------------------------------------------------------
 // Registry — action id → executor
@@ -1273,6 +1293,7 @@ export const STEPS: Record<string, StepFn> = {
   "search-console:create": stepSearchConsoleCreate,
   "search-console:retire": stepSearchConsoleRetire,
   "stripe:webhook": stepStripeWebhook,
+  "stripe:unlock-webhook": stepStripeUnlockWebhook,
 };
 
 /** Every planned action must have an executor. A plan that emits an id

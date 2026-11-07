@@ -66,7 +66,7 @@ import {
   deferralForStep,
   persistDeferredSteps,
 } from "../provision/deferrals.js";
-import { findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
+import { type ProjectManifest, findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { validateDomain } from "../utils/validate.js";
 import {
@@ -184,6 +184,39 @@ export async function detectConfigured(
   };
 }
 
+/** Does this project sell through paid unlock, and can a key stored
+ *  here reach its webhook? Local files and the keychain only, no Stripe
+ *  call. Undefined (no paid-unlock row in the plan) when there is
+ *  neither an `unlocks.json` nor a stored paid-unlock webhook id, so
+ *  plans for other projects stay as they were. An unreadable keychain
+ *  degrades to "no key" rather than aborting the plan. */
+export async function detectPaidUnlock(
+  projectDir: string,
+  manifest: ProjectManifest,
+): Promise<MigrationPlanInput["paidUnlock"]> {
+  const { findUnlocks, resolveWebhookClients } = await import("../provision/stripe-sync-cli.js");
+  const { SECRET_KEYS, getSecret } = await import("../utils/secrets.js");
+  const hasConfig = findUnlocks(projectDir) !== null;
+  const modes = ["test", "live"] as const;
+  try {
+    const ids = await Promise.all(
+      modes.map((mode) => getSecret(SECRET_KEYS.stripeProjectUnlockWebhookId(manifest.name, mode))),
+    );
+    if (!hasConfig && !ids.some(Boolean)) return undefined;
+    for (const mode of modes) {
+      const clients = await resolveWebhookClients(
+        manifest.name,
+        mode,
+        manifest.stripe?.accounts?.[mode],
+      );
+      if (clients.length > 0) return { keyStored: true };
+    }
+    return { keyStored: false };
+  } catch {
+    return hasConfig ? { keyStored: false } : undefined;
+  }
+}
+
 /** Read (GET-only) Email Routing state for both sides so the plan can
  *  tell "already receiving" from "needs setup" from "token can't see
  *  it". Any failure degrades to `unknown` — the executor re-probes. */
@@ -285,6 +318,7 @@ export async function runMigrateDomain(opts: MigrateDomainOptions): Promise<void
     oldDomainSource: inferred.source,
     configured,
     emailRouting: await probeEmailRoutingFacts(newDomain, inferred.domain),
+    paidUnlock: await detectPaidUnlock(projectDir, manifest),
     // Cleanup actions are always planned so the table shows the whole
     // arc — what will eventually be retired is part of the blast radius
     // an operator needs to see before starting.

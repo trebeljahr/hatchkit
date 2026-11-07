@@ -18,9 +18,15 @@
  *   4. `hatchkit stripe sync` records the paid-unlock webhook once, and
  *      `hatchkit destroy` deletes it in the project's account with
  *      `Stripe-Context` and forgets its keychain entries. Products stay.
- *   5. An older ledger's `keychain` webhook-id entry deletes its endpoint
+ *   5. `hatchkit migrate-domain` plans and moves the paid-unlock webhook
+ *      beside the starter's, each in the account that holds it, keeping
+ *      ids and secrets, so a later `stripe sync` finds the endpoint
+ *      instead of creating a second one. A test endpoint `--webhook-url`
+ *      put on another host stays there. Projects without paid unlock get
+ *      no paid-unlock row.
+ *   6. An older ledger's `keychain` webhook-id entry deletes its endpoint
  *      (through the master key, where it was made).
- *   6. With no key stored, destroy keeps the entry for a later run, and an
+ *   7. With no key stored, destroy keeps the entry for a later run, and an
  *      unreadable ledger is never overwritten.
  *
  * Run: `node scripts/test.mjs test-stripe-webhook-account.ts`.
@@ -45,6 +51,10 @@ const { provisionStripeProject, updateStripeProjectWebhookUrl } = await import(
 );
 const { wireStripeForProject } = await import("./src/provision/stripe-wiring.js");
 const { printRecipe, runRollback } = await import("./src/deploy/rollback.js");
+const { detectPaidUnlock } = await import("./src/migrate/index.js");
+const { planDomainMigration, selectActions } = await import("./src/migrate/plan.js");
+const { executorFor } = await import("./src/migrate/steps.js");
+const { readManifest } = await import("./src/scaffold/manifest.js");
 const { fakeStripe } = await import("./test-support/fake-stripe.js");
 type FakeStripe = import("./test-support/fake-stripe.js").FakeStripe;
 
@@ -312,7 +322,7 @@ await test("rename-domain moves the endpoint in the account that holds it", asyn
 
 // ── 4. stripe sync → destroy ─────────────────────────────────────────
 
-function unlockProject(name: string): string {
+function unlockProject(name: string, extra: Record<string, unknown> = {}): string {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -329,6 +339,7 @@ function unlockProject(name: string): string {
         deployTarget: "existing",
         ports: { server: 5000, client: 3000 },
         surfaces: "static",
+        ...extra,
       },
       null,
       2,
@@ -415,7 +426,172 @@ await test("destroy deletes the starter webhook create recorded, with the projec
   assert.ok(await getSecret(SECRET_KEYS.stripeProjectSecretKey("shop", "test")), "app key stays");
 });
 
-// ── 5. older ledgers ─────────────────────────────────────────────────
+// ── 5. migrate-domain ────────────────────────────────────────────────
+
+/** Every endpoint URL in one fake account, sorted. */
+const urlsIn = (id: string) => [...account(id).webhooks.values()].map((h) => String(h.url)).sort();
+
+await test("migrate-domain moves the starter and the paid-unlock webhook, each in its account", async () => {
+  const dir = unlockProject("studio", {
+    features: ["stripe"],
+    stripe: { accounts: { live: "acct_1StudioLive" } },
+  });
+  await projectKeys("studio");
+  await setSecret(SECRET_KEYS.stripeOrgSecretKey("live"), KEYS.orgLive);
+  try {
+    // Starter: test with the project's own key, live with the
+    // organization key in the manifest's account.
+    await quiet(() =>
+      provisionStripeProject({
+        projectName: "studio",
+        domain: "studio.example.com",
+        accounts: { live: "acct_1StudioLive" },
+      }),
+    );
+    // Paid unlock: live by default, test only with --webhook-url.
+    await quiet(() => runStripeCli(["sync", dir, "--mode", "live", "--yes"]));
+    await quiet(() =>
+      runStripeCli([
+        "sync",
+        dir,
+        "--mode",
+        "test",
+        "--webhook-url",
+        "https://studio.example.com/api/unlock/webhook",
+      ]),
+    );
+    const old = [
+      "https://studio.example.com/api/stripe/webhook",
+      "https://studio.example.com/api/unlock/webhook",
+    ];
+    assert.deepEqual(urlsIn("acct_studio_test"), old);
+    assert.deepEqual(urlsIn("acct_1StudioLive"), old);
+    assert.equal(account("acct_studio_live").webhooks.size, 0);
+    const hooksBefore = new Map(
+      ["acct_studio_test", "acct_1StudioLive"].flatMap((a) =>
+        [...account(a).webhooks.values()].map((h) => [h.id, h.secret] as const),
+      ),
+    );
+
+    const manifest = readManifest(dir);
+    assert.ok(manifest);
+    const paidUnlock = await detectPaidUnlock(dir, manifest);
+    assert.deepEqual(paidUnlock, { keyStored: true });
+    const plan = planDomainMigration({
+      manifest,
+      newDomain: "studio.example.org",
+      oldDomain: "studio.example.com",
+      oldDomainSource: "manifest.domain",
+      configured: { stripe: true },
+      paidUnlock,
+    });
+    const cutover = selectActions(plan, { phase: "cutover", only: "stripe" }).map((a) => a.id);
+    assert.deepEqual(cutover, ["stripe:webhook", "stripe:unlock-webhook"]);
+
+    const ctx = {
+      projectDir: dir,
+      monorepoRoot: dir,
+      oldDomain: "studio.example.com",
+      newDomain: "studio.example.org",
+    };
+    const before = calls.length;
+    for (const id of cutover) {
+      const outcome = await executorFor(id)(ctx);
+      assert.equal(outcome.status, "done", `${id}: ${outcome.message}`);
+    }
+    const moved = [
+      "https://studio.example.org/api/stripe/webhook",
+      "https://studio.example.org/api/unlock/webhook",
+    ];
+    assert.deepEqual(urlsIn("acct_studio_test"), moved);
+    assert.deepEqual(urlsIn("acct_1StudioLive"), moved);
+    assert.equal(account("acct_studio_live").webhooks.size, 0);
+    assert.equal(account("acct_master").webhooks.size, 1, "only the legacy endpoint from test 3");
+    // Each update went to the account that holds the endpoint, with the
+    // key that reaches it, and no endpoint was created or deleted.
+    const writes = calls.slice(before).filter((c) => c.method !== "GET");
+    assert.deepEqual(writes.map((c) => [c.account, c.key, c.context ?? null]).sort(), [
+      ["acct_1StudioLive", KEYS.orgLive, "acct_1StudioLive"],
+      ["acct_1StudioLive", KEYS.orgLive, "acct_1StudioLive"],
+      ["acct_studio_test", "sk_test_studio_fixture", null],
+      ["acct_studio_test", "sk_test_studio_fixture", null],
+    ]);
+    assert.ok(writes.every((c) => c.method === "POST" && c.path !== "/v1/webhook_endpoints"));
+    // Same endpoints, same signing secrets: no env or wrangler change.
+    for (const a of ["acct_studio_test", "acct_1StudioLive"]) {
+      for (const h of account(a).webhooks.values()) assert.equal(hooksBefore.get(h.id), h.secret);
+    }
+
+    // A second cutover changes nothing.
+    for (const id of cutover) {
+      const again = await executorFor(id)(ctx);
+      assert.equal(again.status, "skipped");
+      assert.match((again.detail ?? []).join("\n"), /live: already https:\/\/studio\.example\.org/);
+    }
+
+    // A later sync on the new domain finds the moved endpoint and keeps it.
+    writeFileSync(
+      join(dir, ".hatchkit.json"),
+      `${JSON.stringify({ ...manifest, domain: "studio.example.org" }, null, 2)}\n`,
+    );
+    const beforeSync = calls.length;
+    await quiet(() => runStripeCli(["sync", dir, "--mode", "live", "--yes"]));
+    assert.ok(
+      !calls
+        .slice(beforeSync)
+        .some((c) => c.path === "/v1/webhook_endpoints" && c.method === "POST"),
+      "no second endpoint",
+    );
+    assert.deepEqual(urlsIn("acct_1StudioLive"), moved);
+  } finally {
+    await deleteSecret(SECRET_KEYS.stripeOrgSecretKey("live"));
+  }
+});
+
+await test("migrate-domain leaves a paid-unlock test endpoint on another host alone", async () => {
+  const dir = unlockProject("kiosk");
+  await projectKeys("kiosk", ["test"]);
+  const tunnel = "https://tunnel.example.net/api/unlock/webhook";
+  await quiet(() => runStripeCli(["sync", dir, "--mode", "test", "--webhook-url", tunnel]));
+  const ctx = {
+    projectDir: dir,
+    monorepoRoot: dir,
+    oldDomain: "kiosk.example.com",
+    newDomain: "kiosk.example.org",
+  };
+  const outcome = await executorFor("stripe:unlock-webhook")(ctx);
+  assert.equal(outcome.status, "skipped");
+  assert.match(
+    (outcome.detail ?? []).join("\n"),
+    /test: we_\w+ points at https:\/\/tunnel\.example\.net\/api\/unlock\/webhook — left alone/,
+  );
+  assert.deepEqual(urlsIn("acct_kiosk_test"), [tunnel]);
+});
+
+await test("a project without paid unlock gets no paid-unlock row", async () => {
+  // "shop" has the starter webhook and no unlocks.json or unlock id.
+  const dir = join(root, "shop");
+  const manifest = {
+    name: "shop",
+    domain: "shop.example.com",
+    features: ["stripe"],
+  } as unknown as import("./src/scaffold/manifest.js").ProjectManifest;
+  assert.equal(await detectPaidUnlock(dir, manifest), undefined);
+  const plan = planDomainMigration({
+    manifest,
+    newDomain: "shop.example.org",
+    oldDomain: "shop.example.com",
+    oldDomainSource: "manifest.domain",
+    configured: { stripe: true },
+    paidUnlock: undefined,
+  });
+  assert.deepEqual(
+    plan.actions.filter((a) => a.provider === "stripe").map((a) => a.id),
+    ["stripe:webhook"],
+  );
+});
+
+// ── 6. older ledgers ─────────────────────────────────────────────────
 
 await test("an older ledger's keychain webhook-id entry deletes its endpoint via the master", async () => {
   account("acct_master").webhooks.set("we_older_create", {
@@ -440,7 +616,7 @@ await test("an older ledger's keychain webhook-id entry deletes its endpoint via
   assert.equal(RunLedger.load("older"), null);
 });
 
-// ── 6. no key, unreadable ledger ─────────────────────────────────────
+// ── 7. no key, unreadable ledger ─────────────────────────────────────
 
 await test("with no Stripe key stored, destroy keeps the entry for a later run", async () => {
   await deleteSecret(SECRET_KEYS.stripeMasterLiveSecretKey);

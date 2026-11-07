@@ -56,8 +56,9 @@ function str(args: Args, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** Locate unlocks.json the way `hatchkit add … paid-unlock` writes it. */
-function findUnlocks(
+/** Locate unlocks.json the way `hatchkit add … paid-unlock` writes it.
+ *  Also tells `migrate-domain` that a project sells through paid unlock. */
+export function findUnlocks(
   projectDir: string,
 ): { path: string; runtime: "worker" | "server"; envDir: string } | null {
   const worker = join(projectDir, "workers", "unlock", "src", "unlocks.json");

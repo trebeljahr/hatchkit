@@ -705,38 +705,60 @@ export async function deleteStripeProjectWebhook(
   return result;
 }
 
+/** Host of a URL, lower-cased; null when it does not parse. */
+function hostOf(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Repoint the webhook endpoint hatchkit registered for `project` in
- * `mode` at a new URL. Used by the cutover phase of
+ * Repoint a webhook endpoint hatchkit registered for `project` in
+ * `mode` at a new URL: the starter's `/api/stripe/webhook` (default) or
+ * the paid-unlock `/api/unlock/webhook` that `hatchkit stripe sync`
+ * made (`endpoint: "unlock"`). Used by the cutover phase of
  * `hatchkit migrate-domain`.
  *
  * The important property, and the reason this is an update rather than
  * a delete-and-recreate: Stripe keeps the endpoint's `whsec_` signing
  * secret across a URL change. Recreating the endpoint would mint a new
- * secret, which means `STRIPE_WEBHOOK_SECRET` in `.env.production` goes
- * stale the instant the new endpoint exists — every event between the
- * swap and the redeploy fails signature verification. Updating in place
- * has no such window and needs no env rewrite.
+ * secret, which means `STRIPE_WEBHOOK_SECRET` / `UNLOCK_WEBHOOK_SECRET`
+ * goes stale the instant the new endpoint exists — every event between
+ * the swap and the redeploy fails signature verification. Updating in
+ * place has no such window and needs no env or `wrangler secret` change.
  *
- * The endpoint is looked up by id in the project's account (`account`
- * is the manifest's `stripe.accounts[mode]`, used with the organization
- * key), then in the master key's account for endpoints made before
- * 2026-11-07; the update goes to the account that has it.
+ * The endpoint is looked up by the id in the keychain, in the project's
+ * account (`account` is the manifest's `stripe.accounts[mode]`, used
+ * with the organization key), then in the master key's account for
+ * endpoints made before 2026-11-07; the update goes to the account that
+ * has it.
+ *
+ * `onlyFromHost` moves the endpoint only while its URL is on that host.
+ * `stripe sync --webhook-url` can point a test endpoint at a tunnel or
+ * a staging host, and a domain move must not drag that onto production.
  *
  * Returns "not-found" when no Stripe key is stored, the endpoint id
  * isn't in the keychain (nothing hatchkit created, nothing hatchkit
- * should move) or no account has it, and "unchanged" when Stripe already
- * holds the target URL — so re-running a cutover is free.
+ * should move) or no account has it; "unchanged" when Stripe already
+ * holds the target URL — so re-running a cutover is free; "elsewhere"
+ * (with `currentUrl`) when `onlyFromHost` kept it where it is.
  */
 export async function updateStripeProjectWebhookUrl(
   project: string,
   mode: StripeMode,
   url: string,
-  account?: string,
-): Promise<{ result: "updated" | "unchanged" | "not-found"; endpointId?: string }> {
-  const endpointId = await getSecret(SECRET_KEYS.stripeProjectWebhookId(project, mode));
+  opts: { endpoint?: StripeWebhookEndpoint; account?: string; onlyFromHost?: string } = {},
+): Promise<{
+  result: "updated" | "unchanged" | "not-found" | "elsewhere";
+  endpointId?: string;
+  currentUrl?: string;
+}> {
+  const endpointId = await getSecret(webhookKeychain(project, mode, opts.endpoint ?? "starter").id);
   if (!endpointId) return { result: "not-found" };
-  const clients = await resolveWebhookClients(project, mode, account);
+  const clients = await resolveWebhookClients(project, mode, opts.account);
   if (clients.length === 0) return { result: "not-found" };
 
   const path = `/v1/webhook_endpoints/${encodeURIComponent(endpointId)}`;
@@ -749,6 +771,8 @@ export async function updateStripeProjectWebhookUrl(
       throw new Error(`Stripe read webhook failed (${mode}): ${(err as Error).message}`);
     }
     if (existing.url === url) return { result: "unchanged", endpointId };
+    if (opts.onlyFromHost && hostOf(existing.url) !== opts.onlyFromHost.toLowerCase())
+      return { result: "elsewhere", endpointId, currentUrl: existing.url };
     try {
       await stripeRequest(client, "POST", path, { url });
     } catch (err) {

@@ -123,6 +123,8 @@ Test mode creates no endpoint unless you pass `--webhook-url`. Locally, `stripe 
 
 If the keychain lost the secret of an existing endpoint, sync says so. `--recreate-webhook` deletes and recreates the endpoint; deploy the new secret right after.
 
+`hatchkit migrate-domain` moves the endpoint to the new domain in its cutover phase. Stripe keeps the endpoint's id and secret, so `UNLOCK_WEBHOOK_SECRET` stays valid and the next sync finds the endpoint. A test endpoint on another host stays where it is.
+
 Sync records each webhook endpoint it creates in the project's run ledger. `hatchkit destroy` deletes that endpoint by its id, in the same account. Destroy keeps the Stripe products and prices. Archive them in the Stripe dashboard when a project ends.
 
 Sync pins `Stripe-Version: 2025-03-31.basil`. `HATCHKIT_STRIPE_API_VERSION` overrides it for sync, and the runtime's optional `STRIPE_API_VERSION` setting overrides it there.

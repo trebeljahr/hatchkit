@@ -70,4 +70,6 @@ Dry-run probes the selected Traefik address. Use the registered backup host's ta
 
 `migrate-domain --to HOST --dry-run` plans the coordinated provider migration. Read `hatchkit help migrate-domain` for its prepare, cutover, and cleanup phases. Review DNS, routing, auth origins, and mail identity changes together. Keep the old route until the new deployment and clients are verified.
 
+The cutover phase moves hatchkit's Stripe webhook endpoints to the new domain, in the account that holds each one. That is the starter's `/api/stripe/webhook` and, with [paid unlocks](./paid-unlocks), the `/api/unlock/webhook` from `hatchkit stripe sync`. Each endpoint keeps its id and signing secret, so no env file or Worker secret changes. A paid-unlock test endpoint on another host (`--webhook-url`) stays where it is.
+
 `regen-infra --dry-run` previews regeneration of tfvars and Coolify stack env files. It does not replace the runtime/client/domain migration checks above.

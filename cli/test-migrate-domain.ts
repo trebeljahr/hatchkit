@@ -305,6 +305,30 @@ await expect("Stripe is a no-op — tracktime has no stripe feature", () => {
   assert.equal(byId(plan, "stripe:webhook")[0].kind, "noop");
 });
 
+await expect("no paid-unlock row for a project without paid unlock", () => {
+  assert.equal(plan.actions.filter((a) => a.id === "stripe:unlock-webhook").length, 0);
+});
+
+await expect(
+  "paid unlock adds a cutover move of /api/unlock/webhook, stripe feature or not",
+  () => {
+    const withUnlock = planFor(TRACKTIME, "trackyourtime.dev", { paidUnlock: { keyStored: true } });
+    assert.equal(byId(withUnlock, "stripe:webhook")[0].kind, "noop");
+    const move = byId(withUnlock, "stripe:unlock-webhook")[0];
+    assert.equal(move.provider, "stripe");
+    assert.equal(move.phase, "cutover");
+    assert.equal(move.kind, "update");
+    assert.match(move.summary, /https:\/\/trackyourtime\.dev\/api\/unlock\/webhook/);
+    assert.match((move.detail ?? []).join("\n"), /no env or wrangler secret change/);
+    assert.doesNotThrow(() => executorFor(move.id));
+
+    const noKey = planFor(TRACKTIME, "trackyourtime.dev", { paidUnlock: { keyStored: false } });
+    const gated = byId(noKey, "stripe:unlock-webhook")[0];
+    assert.equal(gated.kind, "manual");
+    assert.match((gated.detail ?? []).join("\n"), /hatchkit stripe org-key/);
+  },
+);
+
 await expect("Search Console is a no-op — no property recorded for this project", () => {
   assert.equal(byId(plan, "search-console:create")[0].kind, "noop");
 });
