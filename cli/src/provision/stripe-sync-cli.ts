@@ -76,6 +76,10 @@ let fetchOverride: typeof fetch | undefined;
 export function _setStripeFetchForTests(fake: typeof fetch | undefined): void {
   fetchOverride = fake;
 }
+/** The fetch Stripe clients use: the test fake, else the global one. */
+export function _stripeFetch(): typeof fetch | undefined {
+  return fetchOverride;
+}
 
 let confirmOverride: ((message: string) => Promise<boolean>) | undefined;
 export function _setConfirmForTests(
@@ -232,11 +236,24 @@ async function runSync(args: Args): Promise<void> {
       `${relative(projectDir, found.path)} names project "${config.project}", the manifest "${manifest.name}".`,
     );
 
-  const account = str(args, "--account") ?? manifest.stripe?.accounts?.[mode];
+  let account = str(args, "--account") ?? manifest.stripe?.accounts?.[mode];
   if (account && !/^acct_[A-Za-z0-9]+$/.test(account))
     throw new Error("--account must look like acct_…");
   if (asJson && mode === "live" && !dryRun && !args.flags.has("--yes"))
     throw new Error("--json with --mode live needs --yes. Read the plan with --dry-run first.");
+  if (!asJson) {
+    // No key that writes to the project's account yet: in a terminal,
+    // set one up now (the flow waits while you create it in the
+    // dashboard) or skip, which ends in the usual "no key" error.
+    const { ensureStripeForProject } = await import("./stripe-setup.js");
+    const plan = await ensureStripeForProject({
+      project: manifest.name,
+      accounts: { ...manifest.stripe?.accounts, ...(account ? { [mode]: account } : {}) },
+      only: mode,
+      ownKey: "paste",
+    });
+    if (plan.modes[mode] === "org") account = plan.accounts[mode];
+  }
   const { client, label, usesAccount } = await resolveSyncClient(manifest.name, mode, account);
   const webhookUrl =
     str(args, "--webhook-url") ??
@@ -298,12 +315,9 @@ async function runSync(args: Args): Promise<void> {
 
   // Saved only when it was used: an account recorded beside a project key
   // would steer a later organization-key run somewhere nobody checked.
-  if (
-    usesAccount &&
-    str(args, "--account") &&
-    !dryRun &&
-    manifest.stripe?.accounts?.[mode] !== account
-  ) {
+  // From --account or from the setup prompt; the manifest's own value
+  // compares equal and writes nothing.
+  if (usesAccount && account && !dryRun && manifest.stripe?.accounts?.[mode] !== account) {
     manifest.stripe = {
       ...manifest.stripe,
       accounts: { ...manifest.stripe?.accounts, [mode]: account },

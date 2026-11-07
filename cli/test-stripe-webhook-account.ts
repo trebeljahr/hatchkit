@@ -51,7 +51,7 @@ const { provisionStripeProject, updateStripeProjectWebhookUrl } = await import(
 );
 const { wireStripeForProject } = await import("./src/provision/stripe-wiring.js");
 const { printRecipe, runRollback } = await import("./src/deploy/rollback.js");
-const { detectPaidUnlock } = await import("./src/migrate/index.js");
+const { detectStripeFacts } = await import("./src/migrate/index.js");
 const { planDomainMigration, selectActions } = await import("./src/migrate/plan.js");
 const { executorFor } = await import("./src/migrate/steps.js");
 const { readManifest } = await import("./src/scaffold/manifest.js");
@@ -154,6 +154,9 @@ const router = (async (input: string | URL | Request, init: RequestInit = {}) =>
   return account(target).fetch(input, init);
 }) as typeof fetch;
 _setStripeFetchForTests(router);
+// No terminal prompts, even when the suite runs from one.
+const { _setStripeSetupPromptsForTests } = await import("./src/provision/stripe-setup.js");
+_setStripeSetupPromptsForTests(null);
 
 /** A project's own key per mode, cached the way collectPerProjectKeys
  *  leaves it, each in its own account. */
@@ -475,15 +478,16 @@ await test("migrate-domain moves the starter and the paid-unlock webhook, each i
 
     const manifest = readManifest(dir);
     assert.ok(manifest);
-    const paidUnlock = await detectPaidUnlock(dir, manifest);
-    assert.deepEqual(paidUnlock, { keyStored: true });
+    const stripe = await detectStripeFacts(dir, manifest);
+    assert.deepEqual(stripe, { keyStored: true, paidUnlock: true });
     const plan = planDomainMigration({
       manifest,
       newDomain: "studio.example.org",
       oldDomain: "studio.example.com",
       oldDomainSource: "manifest.domain",
-      configured: { stripe: true },
-      paidUnlock,
+      // No master-key config: the project and organization keys decide.
+      configured: { stripe: false },
+      stripe,
     });
     const cutover = selectActions(plan, { phase: "cutover", only: "stripe" }).map((a) => a.id);
     assert.deepEqual(cutover, ["stripe:webhook", "stripe:unlock-webhook"]);
@@ -576,19 +580,50 @@ await test("a project without paid unlock gets no paid-unlock row", async () => 
     domain: "shop.example.com",
     features: ["stripe"],
   } as unknown as import("./src/scaffold/manifest.js").ProjectManifest;
-  assert.equal(await detectPaidUnlock(dir, manifest), undefined);
+  // Only the project's own keys: no master, no organization key.
+  await deleteSecret(SECRET_KEYS.stripeMasterTestSecretKey);
+  await deleteSecret(SECRET_KEYS.stripeMasterLiveSecretKey);
+  let stripe: Awaited<ReturnType<typeof detectStripeFacts>>;
+  try {
+    stripe = await detectStripeFacts(dir, manifest);
+  } finally {
+    await setSecret(SECRET_KEYS.stripeMasterTestSecretKey, KEYS.masterTest);
+    await setSecret(SECRET_KEYS.stripeMasterLiveSecretKey, KEYS.masterLive);
+  }
+  assert.deepEqual(stripe, { keyStored: true, paidUnlock: false });
   const plan = planDomainMigration({
     manifest,
     newDomain: "shop.example.org",
     oldDomain: "shop.example.com",
     oldDomainSource: "manifest.domain",
-    configured: { stripe: true },
-    paidUnlock: undefined,
+    configured: { stripe: false },
+    stripe,
   });
+  const rows = plan.actions.filter((a) => a.provider === "stripe");
   assert.deepEqual(
-    plan.actions.filter((a) => a.provider === "stripe").map((a) => a.id),
-    ["stripe:webhook"],
+    rows.map((a) => [a.id, a.kind]),
+    [["stripe:webhook", "update"]],
+    "the project's own key is enough; no master key needed",
   );
+});
+
+await test("with no key that reaches the project, the starter row is manual and says what to store", async () => {
+  const manifest = {
+    name: "nokeys",
+    domain: "nokeys.example.com",
+    features: ["stripe"],
+  } as unknown as import("./src/scaffold/manifest.js").ProjectManifest;
+  const plan = planDomainMigration({
+    manifest,
+    newDomain: "nokeys.example.org",
+    oldDomain: "nokeys.example.com",
+    oldDomainSource: "manifest.domain",
+    configured: { stripe: true },
+    stripe: { keyStored: false, paidUnlock: false },
+  });
+  const [row] = plan.actions.filter((a) => a.id === "stripe:webhook");
+  assert.equal(row.kind, "manual");
+  assert.match((row.detail ?? []).join("\n"), /hatchkit stripe org-key/);
 });
 
 // ── 6. older ledgers ─────────────────────────────────────────────────

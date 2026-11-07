@@ -52,6 +52,9 @@ export interface WireStripeResult {
    *  caller records them on its run ledger so `destroy` / rollback
    *  deletes them in the account they were created in. */
   ledgerSteps: LedgerStep[];
+  /** `stripe.accounts` including any account entered during this run.
+   *  The caller saves it into `.hatchkit.json` (`saveStripeAccounts`). */
+  accounts?: { test?: string; live?: string };
 }
 
 export async function wireStripeForProject(args: WireStripeArgs): Promise<WireStripeResult> {
@@ -112,10 +115,11 @@ export async function wireStripeForProject(args: WireStripeArgs): Promise<WireSt
 
     const configured =
       result.test?.kind === "configured" || result.live?.kind === "configured" || false;
-    if (configured) return { configured: true, ledgerSteps };
+    if (configured) return { configured: true, ledgerSteps, accounts: result.accounts };
     return {
       configured: false,
       ledgerSteps,
+      accounts: result.accounts,
       deferred: deferralForStripe({
         project: args.projectName,
         kind: "declined",

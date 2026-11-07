@@ -289,7 +289,7 @@ export async function collectInventory(
     scanS3Other(identity),
     scanGitHub(identity, { github: expectations.github, githubPages: expectations.githubPages }),
     scanGlitchtip(identity, expectations.glitchtip),
-    scanStripe(identity, expectations.stripe),
+    scanStripe(identity, local.manifest, expectations.stripe),
     scanSesMailFrom(identity, local.manifest, expectations.sesMailFrom),
   ]);
 
@@ -1691,7 +1691,11 @@ async function scanGlitchtip(input: InventoryInput, expected: boolean): Promise<
   return { provider, findings, skipped };
 }
 
-async function scanStripe(input: InventoryInput, expected: boolean): Promise<ScanResult> {
+async function scanStripe(
+  input: InventoryInput,
+  manifest: ProjectManifest | undefined,
+  expected: boolean,
+): Promise<ScanResult> {
   const provider = "stripe";
   const findings: InventoryFinding[] = [];
   const skipped: Array<{ provider: string; reason: string }> = [];
@@ -1713,7 +1717,7 @@ async function scanStripe(input: InventoryInput, expected: boolean): Promise<Sca
     const master = mode === "test" ? cfg.testSecretKey : cfg.liveSecretKey;
     try {
       const clients = input.name
-        ? await resolveWebhookClients(input.name, mode, undefined)
+        ? await resolveWebhookClients(input.name, mode, manifest?.stripe?.accounts?.[mode])
         : master
           ? [{ client: { secretKey: master }, label: `the ${mode} master key` }]
           : [];

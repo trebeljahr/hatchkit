@@ -30,6 +30,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyPaidUnlock, parseMajorAmount } from "./src/features/paid-unlock/index.ts";
 import { type UnlockConfig, stripeLookupKey } from "./src/paid-unlock/core.ts";
+import { _setStripeSetupPromptsForTests } from "./src/provision/stripe-setup.ts";
 import {
   _setConfirmForTests,
   _setStripeFetchForTests,
@@ -38,6 +39,9 @@ import {
 import { type StripeSyncInput, syncStripe, zoneOf } from "./src/provision/stripe-sync.ts";
 import { SECRET_KEYS, getSecret, setSecret } from "./src/utils/secrets.ts";
 import { fakeStripe } from "./test-support/fake-stripe.ts";
+
+// No terminal prompts, even when the suite runs from one.
+_setStripeSetupPromptsForTests(null);
 
 const results: Record<string, boolean> = {};
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {

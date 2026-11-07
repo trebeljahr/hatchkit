@@ -108,6 +108,8 @@ Each project should have its own Stripe account, so one project's key cannot rea
 
 `hatchkit add <project> stripe`, `create` and `adopt` pick the key the same way for the starter's `/api/stripe/webhook`. With an organization key, they use the account in `stripe.accounts`. Without one, the project's own key creates the endpoint in its own account. A restricted project key then needs Webhook Endpoints write.
 
+`hatchkit config add stripe` (also in `hatchkit setup`) stores the organization key for each mode. When you add Stripe to a project and a mode has no usable key, hatchkit shows the dashboard steps and waits. You paste the organization key and enter the project's `acct_…`, and hatchkit checks the pair with one read. You can also use the project's own key or skip the mode for now. The account goes into `stripe.accounts`. `hatchkit stripe sync` asks the same way for its mode. There you can paste the project's own secret key directly, which is how a static site without `hatchkit add <project> stripe` stores one.
+
 The runtime uses a separate restricted key of the project's account: Checkout Sessions write, Customer portal write, PaymentIntents write, Subscriptions write, Charges read, Disputes read, Prices read. The customer portal needs a saved configuration in the Stripe dashboard before "manage" works in live mode.
 
 ### The webhook secret

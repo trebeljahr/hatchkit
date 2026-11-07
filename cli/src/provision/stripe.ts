@@ -52,6 +52,7 @@ import {
   setSecret,
 } from "../utils/secrets.js";
 import { type Step, runSteps } from "../utils/step-runner.js";
+import { type StripeAccounts, ensureStripeForProject } from "./stripe-setup.js";
 import { resolveSyncClient, resolveWebhookClients } from "./stripe-sync-cli.js";
 
 /** CHANGE_ME_<KEY> values the starter looks for to log a "Stripe is
@@ -139,6 +140,9 @@ export interface ProvisionStripeProjectOptions {
 export interface ProvisionStripeProjectResult {
   test?: StripeModeOutcome;
   live?: StripeModeOutcome;
+  /** `stripe.accounts` including any account entered during this run;
+   *  the caller saves it into `.hatchkit.json` (`saveStripeAccounts`). */
+  accounts: StripeAccounts;
 }
 
 /** Per-mode tone for prompts and dashboard deep-links. */
@@ -183,7 +187,35 @@ const MODE_INFO: Record<
 export async function provisionStripeProject(
   opts: ProvisionStripeProjectOptions,
 ): Promise<ProvisionStripeProjectResult> {
+  // Which key creates each mode's webhook: the organization key with
+  // the project's account, or the project's own key. When neither is
+  // there yet, the setup subflow explains, waits for the user to set
+  // one up, or lets them skip the mode. A skipped mode leaves Stripe
+  // untouched and writes CHANGE_ME placeholders + a recipe comment; the
+  // starter then shows a clear "Stripe not configured" notice.
+  const plan = await ensureStripeForProject({
+    project: opts.projectName,
+    accounts: opts.accounts,
+  });
+
   console.log(chalk.bold(`\n  ── Stripe (${opts.projectName}) ─────────────────────────────\n`));
+
+  if (plan.modes.test === "skip" && plan.modes.live === "skip") {
+    console.log(
+      chalk.yellow(
+        `  Stripe skipped for both modes — emitting placeholder env values. The\n` +
+          `  scaffolded project still ships the Stripe surface; the billing screen\n` +
+          `  shows an "unconfigured" notice with the exact dotenvx commands.\n` +
+          `    Wire it later: hatchkit add ${opts.projectName} stripe\n`,
+      ),
+    );
+    return {
+      test: { kind: "skipped", mode: "test" },
+      live: { kind: "skipped", mode: "live" },
+      accounts: plan.accounts,
+    };
+  }
+
   console.log(
     chalk.dim(
       `  Hatchkit provisions Stripe in two modes per project:\n` +
@@ -196,14 +228,23 @@ export async function provisionStripeProject(
     ),
   );
 
-  const result: ProvisionStripeProjectResult = {};
+  const result: ProvisionStripeProjectResult = { accounts: plan.accounts };
   for (const mode of ["test", "live"] as const) {
+    if (plan.modes[mode] === "skip") {
+      console.log(
+        chalk.yellow(
+          `  · Skipping ${MODE_INFO[mode].label}. Wire it later: hatchkit add ${opts.projectName} stripe`,
+        ),
+      );
+      result[mode] = { kind: "skipped", mode };
+      continue;
+    }
     result[mode] = await provisionMode({
       projectName: opts.projectName,
       domain: opts.domain,
       events: opts.events ?? DEFAULT_STRIPE_EVENTS,
       mode,
-      account: opts.accounts?.[mode],
+      account: plan.accounts[mode],
       onLedgerStep: opts.onLedgerStep,
       reprompt: opts.reprompt ?? false,
     });
@@ -698,11 +739,12 @@ function hostOf(url: string | undefined): string | null {
  * `stripe sync --webhook-url` can point a test endpoint at a tunnel or
  * a staging host, and a domain move must not drag that onto production.
  *
- * Returns "not-found" when no Stripe key is stored, the endpoint id
- * isn't in the keychain (nothing hatchkit created, nothing hatchkit
- * should move) or no account has it; "unchanged" when Stripe already
- * holds the target URL — so re-running a cutover is free; "elsewhere"
- * (with `currentUrl`) when `onlyFromHost` kept it where it is.
+ * Returns "not-found" when the endpoint id isn't in the keychain
+ * (nothing hatchkit created, nothing hatchkit should move) or no
+ * account has it; "no-key" when hatchkit recorded one but no key stored
+ * here can reach it; "unchanged" when Stripe already holds the target
+ * URL — so re-running a cutover is free; "elsewhere" (with
+ * `currentUrl`) when `onlyFromHost` kept it where it is.
  */
 export async function updateStripeProjectWebhookUrl(
   project: string,
@@ -710,14 +752,14 @@ export async function updateStripeProjectWebhookUrl(
   url: string,
   opts: { endpoint?: StripeWebhookEndpoint; account?: string; onlyFromHost?: string } = {},
 ): Promise<{
-  result: "updated" | "unchanged" | "not-found" | "elsewhere";
+  result: "updated" | "unchanged" | "not-found" | "no-key" | "elsewhere";
   endpointId?: string;
   currentUrl?: string;
 }> {
   const endpointId = await getSecret(webhookKeychain(project, mode, opts.endpoint ?? "starter").id);
   if (!endpointId) return { result: "not-found" };
   const clients = await resolveWebhookClients(project, mode, opts.account);
-  if (clients.length === 0) return { result: "not-found" };
+  if (clients.length === 0) return { result: "no-key", endpointId };
 
   const path = `/v1/webhook_endpoints/${encodeURIComponent(endpointId)}`;
   for (const { client } of clients) {

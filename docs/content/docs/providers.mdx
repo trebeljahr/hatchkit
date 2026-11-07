@@ -230,7 +230,7 @@ Each project uses its own Stripe account, so one project's key cannot read anoth
 
 Hatchkit needs no global Stripe key. With the project's own key, it creates the webhook endpoint in the project's account. A restricted live key then needs Webhook Endpoints write.
 
-An organization key is optional. It lets one key write webhooks, products and prices into every project's account, through the `Stripe-Context` header. Hatchkit uses it when `.hatchkit.json` names the project's account under `stripe.accounts`. See [Which key writes](/docs/paid-unlocks#which-key-writes).
+An organization key is optional. It lets one key write webhooks, products and prices into every project's account, through the `Stripe-Context` header. Hatchkit uses it when `.hatchkit.json` names the project's account under `stripe.accounts`. When a mode has neither key yet, `create`, `adopt`, `add <project> stripe` and `stripe sync` show the dashboard steps and wait for the organization key and the project's `acct_…`, take the project's own key, or skip that mode. See [Which key writes](/docs/paid-unlocks#which-key-writes).
 
 Configure (optional): `hatchkit config add stripe` or `hatchkit stripe org-key --mode test|live`.
 

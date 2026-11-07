@@ -360,6 +360,8 @@ hatchkit add raptor-runner search-console        # verify domain + add Search Co
 
 `stripe` and `signing` are standalone targets — run them by name; they are not part of `all`.
 
+Before `stripe` asks for the project's keys, it checks each mode for a key that can create the webhook in the project's own account. That is the organization key with the project's `acct_…`, or the project's own key. When a mode has neither, hatchkit shows the Stripe dashboard steps. It then waits for the organization key and the account id, or for the project's own key, or you skip that mode for now. `create` and `adopt` run the same check when Stripe is selected. A skipped mode gets placeholder env values; run `hatchkit add <project> stripe` later to finish it.
+
 `hatchkit add <project> paid-unlock` writes the paid-unlock runtime (a Cloudflare Worker or the starter's Express route) and edits its `unlocks.json`; `hatchkit stripe sync <project> --mode test|live` creates the matching Stripe products, prices and webhook. Both are local or Stripe-only; see [Paid unlocks](/docs/paid-unlocks).
 
 Values are written into the project, never to stdout: production values encrypted into `.env.production`, development values into the gitignored `.env.development.local`. The committed `.env.development` keeps only local defaults; `add` moves any provisioned credential it finds there into `.env.development.local` and warns. A 0600 copy of every value is also cached under `<config-dir>/provisioned/<project>.*.env`.
@@ -706,6 +708,8 @@ Run from inside a project whose Dockerfile's final stage is `FROM nginx`, and `d
 With SES and Listmonk configured, `doctor` checks the [bounce feedback path](/docs/email#bounces-and-complaints) across the whole SES account. It fails on a verified identity whose Bounce or Complaint notifications go to no SNS topic, on a missing or unconfirmed subscription from the `ses-feedback-listmonk` topic to Listmonk's SES webhook, on account suppression that doesn't cover `BOUNCE` and `COMPLAINT`, and on Listmonk bounce settings that are off. A read the IAM policy doesn't allow is a `warn` that names the missing action.
 
 Run from inside a project directory and it also lists that project's [deferred steps](#deferred-steps) with the command to finish each one. Deferred steps never make `doctor` exit non-zero — they're work you postponed, not a broken credential.
+
+The Stripe rows show each stored organization key and check any legacy master key. Each recorded webhook endpoint that no stored key reaches is a warning, because `migrate-domain` and `destroy` cannot move or delete it. The warning prints the command that stores the key it needs.
 
 With a backup host configured, `doctor` also runs the [host integrity scan](#hatchkit-host-integrity) on each backup host and reports the quick-check timer and daily CPU sample. It also shows one [update watch](#hatchkit-host-updates) row for the shared services on every backup host.
 

@@ -144,6 +144,7 @@ await test("without a TTY, a project with no stored keys is skipped once, with n
   assert.deepEqual(result, {
     test: { kind: "skipped", mode: "test" },
     live: { kind: "skipped", mode: "live" },
+    accounts: {},
   });
 });
 

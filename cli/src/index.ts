@@ -102,7 +102,7 @@ import {
   parseCreateFlags,
 } from "./utils/flags.js";
 import { RunLedger } from "./utils/run-ledger.js";
-import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
+import { SECRET_KEYS } from "./utils/secrets.js";
 import { getCliVersion } from "./utils/version.js";
 
 // ---------------------------------------------------------------------------
@@ -1390,6 +1390,8 @@ async function handleAdd(): Promise<void> {
         }
       },
     });
+    const { saveStripeAccounts } = await import("./provision/stripe-setup.js");
+    saveStripeAccounts(projectDir, result.accounts);
     persistDeferredSteps(
       projectDir,
       result.deferred ? [result.deferred] : [],
@@ -2772,29 +2774,29 @@ async function ensureRequiredProviders(config: ProjectConfig): Promise<void> {
 
   if (!config.dryRun) await ensureCreateProvisionProviders(config);
 
+  // Stripe needs a server runtime; a static project never wires it.
   if (
     config.features.includes("stripe") &&
+    config.surfaces !== "static" &&
     !createPreflightDeferrals.some((s) => s.key === "stripe")
   ) {
     try {
+      // Which key creates each mode's webhook. When none is set up yet,
+      // the subflow shows what to create in the Stripe dashboard and
+      // waits for it, or lets the user skip a mode. Its answers hold for
+      // the rest of the run, so the wiring step does not ask again.
+      const { ensureStripeForProject } = await import("./provision/stripe-setup.js");
+      const plan = await ensureStripeForProject({ project: config.name });
+      if (plan.modes.test === "skip" && plan.modes.live === "skip") {
+        const { deferStep } = await import("./provision/deferrals.js");
+        deferStep("Stripe skipped at the key setup");
+      }
       // Pre-collect per-project Stripe keys so execution doesn't prompt.
-      // No global key is needed: each project's own key (or the optional
-      // organization key) writes to its own account. Keys are cached in
-      // keychain; a skipped mode is remembered for this run.
-      if (config.surfaces !== "static") {
-        const { collectPerProjectKeys } = await import("./provision/stripe.js");
-        const keys = await Promise.all(
-          (["test", "live"] as const).map((mode) =>
-            getSecret(SECRET_KEYS.stripeProjectSecretKey(config.name, mode)),
-          ),
-        );
-        if (keys.some((k) => !k) && !process.stdin.isTTY) {
-          const { deferStep } = await import("./provision/deferrals.js");
-          deferStep("Stripe keys are not stored and there's no TTY to paste them");
-        }
-        for (const mode of ["test", "live"] as const) {
-          await collectPerProjectKeys({ projectName: config.name, mode, reprompt: false });
-        }
+      // Keys are cached in keychain — subsequent calls return instantly.
+      const { collectPerProjectKeys } = await import("./provision/stripe.js");
+      for (const mode of ["test", "live"] as const) {
+        if (plan.modes[mode] === "skip") continue;
+        await collectPerProjectKeys({ projectName: config.name, mode, reprompt: false });
       }
     } catch (error) {
       await deferCreateProvider(config, error, "stripe");
@@ -3060,6 +3062,8 @@ async function handleCreate(): Promise<void> {
           envLabelPrefix: "packages/server",
           onLedgerStep: (step) => ledger?.record(step),
         });
+        const { saveStripeAccounts } = await import("./provision/stripe-setup.js");
+        saveStripeAccounts(appDir, stripeResult.accounts);
         if (stripeResult.configured) {
           configuredSteps.push("Stripe (payments)");
           resolvedStepKeys.push(STANDALONE_STEP_KEYS.stripe);

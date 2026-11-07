@@ -1230,6 +1230,7 @@ async function moveStripeWebhooks(
   const what = unlock ? "paid-unlock webhook" : "webhook";
   const detail: string[] = [];
   let changed = 0;
+  const unreachable: string[] = [];
 
   for (const mode of ["test", "live"] as const) {
     const res = await updateStripeProjectWebhookUrl(manifest.name, mode, url, {
@@ -1246,6 +1247,11 @@ async function moveStripeWebhooks(
       detail.push(`${mode}: already ${url}`);
     } else if (res.result === "elsewhere") {
       detail.push(`${mode}: ${res.endpointId} points at ${res.currentUrl} — left alone`);
+    } else if (res.result === "no-key") {
+      unreachable.push(mode);
+      detail.push(
+        `${mode}: ${res.endpointId} — no key stored here reaches it: hatchkit stripe org-key --mode ${mode} (with stripe.accounts.${mode}), or the project's own key`,
+      );
     } else {
       detail.push(`${mode}: no hatchkit-registered endpoint — nothing to move`);
     }
@@ -1253,6 +1259,14 @@ async function moveStripeWebhooks(
   detail.push(
     `signing secret unchanged — ${unlock ? "UNLOCK_WEBHOOK_SECRET" : "STRIPE_WEBHOOK_SECRET"} stays valid`,
   );
+  // Recorded as deferred with its retry command; a re-run after a key
+  // is stored moves the rest (the moved mode then reads "already").
+  if (unreachable.length > 0)
+    return {
+      status: "gated",
+      message: `Stripe ${what} endpoint(s) in ${unreachable.join(" + ")} need a key stored here`,
+      detail,
+    };
   return {
     status: changed > 0 ? "done" : "skipped",
     message:

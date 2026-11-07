@@ -164,12 +164,14 @@ export interface MigrationPlanInput {
    *  planner then plans the step and lets the idempotent executor find
    *  out. */
   emailRouting?: { newDomain?: EmailRoutingFacts; oldDomain?: EmailRoutingFacts };
-  /** Paid unlock, read by the orchestrator before planning. Present when
-   *  the project has an `unlocks.json` or a stored paid-unlock webhook
-   *  id; `keyStored` says whether a Stripe key that can reach that
-   *  webhook (organization, project or master) is stored here. Absent:
-   *  the plan has no paid-unlock row. */
-  paidUnlock?: { keyStored: boolean };
+  /** This project's Stripe facts, read (keychain + files, no Stripe
+   *  call) by the orchestrator before planning. `keyStored`: a key that
+   *  reaches its webhooks is stored here — the organization key with
+   *  `stripe.accounts[mode]`, the project's own key, or an older master
+   *  key. `paidUnlock`: it has an `unlocks.json` or a stored paid-unlock
+   *  webhook id. Absent: the starter row falls back to the master-key
+   *  config and there is no paid-unlock row. */
+  stripe?: { keyStored: boolean; paidUnlock: boolean };
 }
 
 // ---------------------------------------------------------------------------
@@ -922,6 +924,8 @@ export function planSearchConsole(input: MigrationPlanInput): MigrationAction[] 
  *  to change and there is no window where an event arrives signed by a
  *  key the app doesn't hold. That makes both pure cutover steps with no
  *  prepare and no cleanup. */
+const STRIPE_KEY_SETUP = "hatchkit stripe org-key --mode <test|live>";
+
 export function planStripe(input: MigrationPlanInput): MigrationAction[] {
   const actions: MigrationAction[] = [
     input.manifest.features.includes("stripe")
@@ -937,8 +941,8 @@ export function planStripe(input: MigrationPlanInput): MigrationAction[] {
               "the whsec_ signing secret survives the update — no env rewrite",
             ],
           },
-          input.configured.stripe,
-          "hatchkit config add stripe",
+          input.stripe?.keyStored ?? input.configured.stripe,
+          STRIPE_KEY_SETUP,
         )
       : {
           provider: "stripe",
@@ -948,7 +952,7 @@ export function planStripe(input: MigrationPlanInput): MigrationAction[] {
           summary: "project has no stripe feature",
         },
   ];
-  if (input.paidUnlock) {
+  if (input.stripe?.paidUnlock) {
     actions.push(
       gatedOnCredential(
         {
@@ -963,8 +967,8 @@ export function planStripe(input: MigrationPlanInput): MigrationAction[] {
             "the whsec_ signing secret survives the update — no env or wrangler secret change",
           ],
         },
-        input.paidUnlock.keyStored,
-        "hatchkit stripe org-key --mode live",
+        input.stripe.keyStored,
+        STRIPE_KEY_SETUP,
       ),
     );
   }

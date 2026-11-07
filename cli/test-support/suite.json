@@ -52,6 +52,7 @@
   "test-stripe-config.ts",
   "test-stripe-sync.ts",
   "test-stripe-webhook-account.ts",
+  "test-stripe-setup.ts",
   "test-image-runtime.ts",
   "test-traefik-drain.ts",
   "test-split-readiness.ts",

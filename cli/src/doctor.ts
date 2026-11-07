@@ -1144,14 +1144,20 @@ function checkStripeOrgKey(mode: "test" | "live", key: string): CheckResult {
   return { name, status: "ok", detail: "stored (used with each project's stripe.accounts)" };
 }
 
+/** Organization keys, legacy master keys, and the recorded webhook
+ *  endpoints: one ok row for those a stored key reaches, a warning with
+ *  the fix for each project and mode no key reaches (migrate-domain and
+ *  destroy cannot move or delete those). */
 async function checkStripe(): Promise<CheckResult[]> {
   const { getStripeConfig } = await import("./config.js");
+  const { stripeWebhookRows } = await import("./provision/stripe-setup.js");
   const cfg = await getStripeConfig();
   const out: CheckResult[] = [];
   if (cfg.testOrgKey) out.push(checkStripeOrgKey("test", cfg.testOrgKey));
   if (cfg.liveOrgKey) out.push(checkStripeOrgKey("live", cfg.liveOrgKey));
   if (cfg.testSecretKey) out.push(await checkStripeLegacyMaster("test", cfg.testSecretKey));
   if (cfg.liveSecretKey) out.push(await checkStripeLegacyMaster("live", cfg.liveSecretKey));
+  out.push(...(await stripeWebhookRows()));
   // No global key is normal: each project's own key writes to its account.
   if (out.length === 0) return [{ name: "Stripe", status: "skip" }];
   return out;

@@ -3191,6 +3191,8 @@ async function executePlan(
               // deletes it in the account it was created in.
               onLedgerStep: (step) => ledger.record(step),
             });
+            const { saveStripeAccounts } = await import("./provision/stripe-setup.js");
+            saveStripeAccounts(state.repoRoot, result.accounts);
             const devLabel = relative(state.projectDir, devEnvPath);
             const prodLabel = relative(state.projectDir, prodEnvPath);
 
@@ -4123,6 +4125,7 @@ export function buildAdoptManifest(
     ...(existing?.s3Buckets ? { s3Buckets: existing.s3Buckets } : {}),
     ...(existing?.integrations ? { integrations: existing.integrations } : {}),
     ...(existing?.signing ? { signing: existing.signing } : {}),
+    ...(existing?.stripe ? { stripe: existing.stripe } : {}),
     ...(existing?.gpuPlatforms ? { gpuPlatforms: existing.gpuPlatforms } : {}),
     ...(existing?.customHfModelId ? { customHfModelId: existing.customHfModelId } : {}),
     ...(existing?.customHfGpuType ? { customHfGpuType: existing.customHfGpuType } : {}),

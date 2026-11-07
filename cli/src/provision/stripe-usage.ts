@@ -22,8 +22,10 @@ export const STRIPE_USAGE = `
 
     ${chalk.cyan("org-key --mode test|live")}
                        Store a Stripe organization API key (restricted: Products,
-                       Prices, Webhook Endpoints write). With it, sync writes into
-                       each project's own account via Stripe-Context.
+                       Prices, Webhook Endpoints write). With it, sync, create,
+                       adopt and \`add <project> stripe\` write into each project's
+                       own account via Stripe-Context. \`hatchkit setup\` → Stripe
+                       stores it too, and \`doctor\` checks it.
 
     ${chalk.cyan("webhook-secret [dir] --mode test|live")}
                        Print the stored paid-unlock webhook secret, for piping into
