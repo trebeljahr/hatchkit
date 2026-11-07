@@ -47,8 +47,7 @@
  *   · Cloudflare DNS token + default
  *     forwarding inbox                (service:email)
  *   · Google OAuth + DNS token        (service:search-console)
- *   · Stripe master + per-project
- *     sk/pk pairs                     (stripe)
+ *   · Stripe per-project sk/pk pairs  (stripe)
  *   · dotenvx key push to Coolify     (keys-push-coolify)
  *   · GitHub Pages wiring             (gh-pages)
  *   · GHCR pull credentials           (adopt: already a caveat, see adopt.ts)
@@ -306,7 +305,6 @@ export function deferralForStripe(args: {
     kind: args.kind,
     reason: args.reason,
     command: `hatchkit add ${args.project} stripe`,
-    hint: ["hatchkit config add stripe"],
     deferredAt: new Date().toISOString(),
   };
 }

@@ -49,6 +49,7 @@
   "test-newsletter-worker.ts",
   "test-lead-magnet.ts",
   "test-paid-unlock.ts",
+  "test-stripe-config.ts",
   "test-stripe-sync.ts",
   "test-stripe-webhook-account.ts",
   "test-image-runtime.ts",

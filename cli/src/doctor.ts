@@ -1106,44 +1106,53 @@ async function checkGoogleSearchConsole(): Promise<CheckResult> {
   );
 }
 
-async function checkStripeMode(mode: "test" | "live", secretKey: string): Promise<CheckResult> {
-  return check(
-    `Stripe (${mode} master)`,
-    async () => {
-      const res = await fetch("https://api.stripe.com/v1/balance", {
-        headers: { Authorization: `Bearer ${secretKey}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // The webhook_endpoints:write scope can't be cheaply tested with
-      // a GET, so /balance is the proxy: it proves the key is live and
-      // the account is reachable. A scope-mismatched key still passes
-      // /balance — at provision time, POST /v1/webhook_endpoints will
-      // surface the scope error inline (and `hatchkit create` already
-      // soft-fails to a manual fallback when that happens).
-      return "master key valid";
-    },
-    (detail) => {
-      const code = httpCode(detail);
-      if (code === 401) {
-        return [
-          `Stripe ${mode} master key is invalid or was rotated.`,
-          `Create a new restricted key (${mode} mode) at https://dashboard.stripe.com/apikeys`,
-          "Required scope: Webhook Endpoints — Write",
-          "Then re-run: `hatchkit config add stripe`",
-        ];
-      }
-      return undefined;
-    },
-  );
+/** A legacy master key (asked for until 2026-11-08). hatchkit reads it
+ *  only to find webhooks it created in the master's account, so a dead
+ *  one is a warning, not a failure. */
+async function checkStripeLegacyMaster(
+  mode: "test" | "live",
+  secretKey: string,
+): Promise<CheckResult> {
+  const name = `Stripe (${mode} legacy master)`;
+  const hint = [
+    "Only used to find webhooks hatchkit made before 2026-11-08 in this key's account.",
+    `Delete it once none are left: security delete-generic-password -s hatchkit -a stripe:master:${mode}:secret-key`,
+  ];
+  try {
+    const res = await fetch("https://api.stripe.com/v1/balance", {
+      headers: { Authorization: `Bearer ${secretKey}` },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return { name, status: "ok", detail: "key valid (legacy: finds older webhooks only)" };
+  } catch (err) {
+    return { name, status: "warn", detail: (err as Error).message, hint };
+  }
+}
+
+/** Organization keys: checked offline. Stripe answers an organization key
+ *  only with a `Stripe-Context` account, which is per project. */
+function checkStripeOrgKey(mode: "test" | "live", key: string): CheckResult {
+  const name = `Stripe (${mode} organization key)`;
+  const other = mode === "test" ? "live" : "test";
+  if (key.includes(`_${other}_`))
+    return {
+      name,
+      status: "fail",
+      detail: `stored key is a ${other} key`,
+      hint: [`Store the ${mode} key again: hatchkit stripe org-key --mode ${mode}`],
+    };
+  return { name, status: "ok", detail: "stored (used with each project's stripe.accounts)" };
 }
 
 async function checkStripe(): Promise<CheckResult[]> {
   const { getStripeConfig } = await import("./config.js");
   const cfg = await getStripeConfig();
-  if (!cfg) return [{ name: "Stripe", status: "skip" }];
   const out: CheckResult[] = [];
-  if (cfg.testSecretKey) out.push(await checkStripeMode("test", cfg.testSecretKey));
-  if (cfg.liveSecretKey) out.push(await checkStripeMode("live", cfg.liveSecretKey));
+  if (cfg.testOrgKey) out.push(checkStripeOrgKey("test", cfg.testOrgKey));
+  if (cfg.liveOrgKey) out.push(checkStripeOrgKey("live", cfg.liveOrgKey));
+  if (cfg.testSecretKey) out.push(await checkStripeLegacyMaster("test", cfg.testSecretKey));
+  if (cfg.liveSecretKey) out.push(await checkStripeLegacyMaster("live", cfg.liveSecretKey));
+  // No global key is normal: each project's own key writes to its account.
   if (out.length === 0) return [{ name: "Stripe", status: "skip" }];
   return out;
 }

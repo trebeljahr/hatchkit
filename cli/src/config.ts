@@ -255,14 +255,12 @@ export interface GoogleSearchConsoleMeta extends ProviderStatus {
 }
 
 export interface StripeMeta extends ProviderStatus {
-  /** Account id (`acct_…`) derived from the live master key during
-   *  verification. Surfaced in `hatchkit doctor` so a silent
-   *  account-swap (rotated key now points at a *different* Stripe
-   *  account) shows up as a warning instead of a green check. */
+  /** Whether an organization key is stored per mode. */
+  hasTestOrgKey?: boolean;
+  hasLiveOrgKey?: boolean;
+  /** Legacy (until 2026-11-08): master key per mode and the account it
+   *  belonged to. Setup no longer writes these; status still shows them. */
   accountId?: string;
-  /** Whether each master key is configured. Both are independent —
-   *  a user can wire test-only or live-only and we just skip webhook
-   *  provisioning for the missing mode. */
   hasTestMaster?: boolean;
   hasLiveMaster?: boolean;
 }
@@ -337,13 +335,13 @@ export interface GoogleSearchConsoleConfig extends GoogleSearchConsoleMeta {
   refreshToken: string;
 }
 export interface StripeConfig extends StripeMeta {
-  /** Master secret key for test/sandbox-mode operations. Used by
-   *  hatchkit ONLY to mint webhook endpoints in test mode. Never
-   *  written into a project. */
+  /** Organization key per mode: writes into each project's account via
+   *  Stripe-Context. Never written into a project. */
+  testOrgKey?: string;
+  liveOrgKey?: string;
+  /** Legacy master key per mode (asked for until 2026-11-08). Read only
+   *  to find webhook endpoints it created in its own account. */
   testSecretKey?: string;
-  /** Master secret key for live-mode operations. Used by hatchkit
-   *  ONLY to mint webhook endpoints in live mode. Never written into
-   *  a project. */
   liveSecretKey?: string;
 }
 export interface GhcrConfig extends GhcrMeta {
@@ -2953,240 +2951,149 @@ export async function getGoogleSearchConsoleConfig(): Promise<GoogleSearchConsol
 // Provider: Stripe (payments)
 // ---------------------------------------------------------------------------
 //
-// Stripe's public API does NOT support programmatically minting restricted
-// API keys (`rk_*`) — that operation is dashboard-only. The only resource
-// hatchkit can auto-create is the webhook endpoint (POST /v1/webhook_endpoints),
-// which returns a signing secret (`whsec_…`) that the project needs at runtime.
+// One Stripe account per project. Stripe's public API cannot mint API keys
+// (dashboard only), so each project's own sk + pk are pasted at create /
+// adopt / `hatchkit add <project> stripe` time, stored in the keychain
+// under `stripe:project:<name>:<mode>:*` and written into that project's
+// env files. Best practice, and what those prompts steer toward: one
+// Sandbox per project in test mode, a project-scoped restricted key live.
 //
-// So the model here is:
+// hatchkit's own writes (webhook endpoints, `hatchkit stripe sync`
+// products and prices) go to the project's account: with an optional
+// **organization key** per mode (`stripe:org:<mode>:secret-key`, from
+// `hatchkit config add stripe` or `hatchkit stripe org-key`) plus
+// `Stripe-Context: <acct_…>` when `.hatchkit.json` names the account,
+// else with the project's own key. No global key is required.
 //
-//   1. **Master keys** (set up once, stored in keychain): one secret key per
-//      mode — `sk_test_*` (or `rk_test_*`) for sandbox, `sk_live_*` (or
-//      `rk_live_*`) for live. These are NEVER injected into a project's
-//      env files. Their only job is to call POST /v1/webhook_endpoints
-//      while a project is being created/adopted. The minimum sufficient
-//      scope is therefore `webhook_endpoints:write` — we recommend a
-//      Standard restricted key with exactly that permission per mode so
-//      a leak of the master key alone can't reach customer/charge data.
-//
-//   2. **Per-project keys** (collected at create/adopt time, stored in
-//      keychain keyed by project, written into the project's `.env.*`):
-//      separate sk + pk for each mode. The user pastes these once per
-//      project. Best practice — and what the create/adopt prompts steer
-//      the user toward — is one dedicated Sandbox per project (so test
-//      data is fully isolated) plus a project-scoped restricted key in
-//      live mode.
-//
-// This split is what enables: project-scoped blast radius on leak, sandbox
-// + live envs per run, and Stripe's official "use separate accounts /
-// separate restricted keys per independent project" recommendation
-// (https://docs.stripe.com/get-started/account/multiple-accounts,
-// https://docs.stripe.com/keys-best-practices).
+// Until 2026-11-08 setup asked for a **master key** per mode
+// (`stripe:master:<mode>:secret-key`), which created every project's
+// webhook in the master's own account. Setup no longer asks for one; a
+// stored master key is read only to find webhooks made that way
+// (rename-domain, destroy, inventory), and `hatchkit doctor` lists it.
+// See https://docs.stripe.com/get-started/account/multiple-accounts.
 
-/** Mode + secret key prefix used as a sanity check before storing the
- *  master key for that mode. Restricted keys (`rk_*`) follow the same
+/** Mode + secret key prefix used as a sanity check before storing a
+ *  Stripe key for that mode. Restricted keys (`rk_*`) follow the same
  *  prefix convention as raw secret keys (`sk_*`). */
-function classifyStripeSecret(value: string): "test" | "live" | null {
+export function classifyStripeSecret(value: string): "test" | "live" | null {
   if (/^(sk|rk)_test_/.test(value)) return "test";
   if (/^(sk|rk)_live_/.test(value)) return "live";
   return null;
 }
 
-/** Hit /v1/balance — cheapest authenticated GET — to confirm the master
- *  key works AND infer the Stripe account it belongs to (`acct_…` is
- *  surfaced via the Stripe-Account-Id response header so doctor can warn
- *  on a silent account swap after rotation). Returns the account id, or
- *  null if Stripe withheld it (some restricted keys do). */
-async function verifyStripeMasterKey(
-  secretKey: string,
-  modeLabel: "test" | "live",
-): Promise<{ accountId: string | null }> {
-  const res = await fetch("https://api.stripe.com/v1/balance", {
-    headers: { Authorization: `Bearer ${secretKey}` },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Stripe ${modeLabel} key verification failed: HTTP ${res.status} ${text}`);
-  }
-  const accountId = res.headers.get("stripe-account") ?? null;
-  return { accountId };
+/** One line for status/setup: which organization keys are stored, and
+ *  any legacy master keys still kept for older webhooks. */
+export function describeStripeMeta(meta: StripeMeta | undefined): string | undefined {
+  if (!meta || meta.status !== "configured") return undefined;
+  const list = (test?: boolean, live?: boolean) =>
+    [test && "test", live && "live"].filter(Boolean).join(" + ");
+  const org = list(meta.hasTestOrgKey, meta.hasLiveOrgKey);
+  const legacy = list(meta.hasTestMaster, meta.hasLiveMaster);
+  return [
+    org ? `organization key: ${org}` : "per-project keys",
+    legacy ? `legacy master key: ${legacy}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
-/** Prompt for + verify ONE master key (test or live). Returns the
- *  pasted value, or null if the user opts to skip configuring this mode. */
-async function promptForMasterKey(mode: "test" | "live"): Promise<string | null> {
-  const wantConfigure = await confirm({
-    message:
-      mode === "test"
-        ? "Configure Stripe TEST/sandbox master key now? (skip if you only run live)"
-        : "Configure Stripe LIVE master key now? (skip if you only run sandbox)",
-    default: true,
-  });
-  if (!wantConfigure) return null;
-
-  const value = await confirmPastedSecret(
-    mode === "test"
-      ? "Stripe TEST secret key (sk_test_… or rk_test_… with webhook_endpoints:write)"
-      : "Stripe LIVE secret key (sk_live_… or rk_live_… with webhook_endpoints:write)",
-  );
-
-  const classified = classifyStripeSecret(value);
+/** Store one Stripe organization key and note it in `providers.stripe`.
+ *  Refuses a key whose prefix names the other mode. */
+export async function storeStripeOrgKey(mode: "test" | "live", key: string): Promise<void> {
+  const classified = classifyStripeSecret(key);
   if (classified !== mode) {
     throw new Error(
-      `Pasted key is ${classified ?? "not a recognized Stripe key"}; expected ${mode}. ` +
-        `Re-run \`hatchkit config add stripe\`.`,
+      `The pasted key is ${classified ? `a ${classified} key` : "not a Stripe secret key"}, not ${mode}.`,
     );
   }
-
-  const verify = ora(`Verifying Stripe ${mode} master key...`).start();
-  try {
-    const result = await verifyStripeMasterKey(value, mode);
-    verify.succeed(
-      `Stripe ${mode} master key verified${result.accountId ? ` (${result.accountId})` : ""}`,
-    );
-    return value;
-  } catch (err) {
-    verify.fail(`Could not verify Stripe ${mode} master key`);
-    throw err;
-  }
+  await setSecret(SECRET_KEYS.stripeOrgSecretKey(mode), key);
+  const meta = (store.get("providers.stripe") as StripeMeta | undefined) ?? {};
+  store.set("providers.stripe", {
+    ...meta,
+    status: "configured",
+    ...(mode === "test" ? { hasTestOrgKey: true } : { hasLiveOrgKey: true }),
+    lastVerified: new Date().toISOString(),
+  } satisfies StripeMeta);
 }
 
+/** Where to make the organization key, printed before the paste. */
+export function stripeOrgKeyHint(mode: "test" | "live"): string {
+  return [
+    "",
+    "  Stripe dashboard → your organization → API keys → Create restricted key.",
+    "  Permissions: Products write, Prices write, Webhook Endpoints write.",
+    `  ${mode === "test" ? "Use the sandbox/test variant." : "Live key: it can write to every account in the organization."}`,
+    "",
+  ].join("\n");
+}
+
+/** `hatchkit config add stripe`: optional organization keys. Stripe needs
+ *  no global key; without an organization key every project's own key
+ *  writes to its own account. Marks the provider configured either way,
+ *  so `status` and the setup stepper stop listing it as missing. */
 export async function ensureStripe(): Promise<StripeConfig> {
   const existing = store.get("providers.stripe") as StripeMeta | undefined;
-  const existingTest = await getSecret(SECRET_KEYS.stripeMasterTestSecretKey);
-  const existingLive = await getSecret(SECRET_KEYS.stripeMasterLiveSecretKey);
+  if (existing?.status === "configured") return getStripeConfig();
 
-  if (existing?.status === "configured" && (existingTest || existingLive)) {
-    return {
-      ...existing,
-      testSecretKey: existingTest ?? undefined,
-      liveSecretKey: existingLive ?? undefined,
-    };
-  }
-
-  console.log(chalk.yellow("\n  Stripe is not configured yet. Let's set it up."));
   console.log(
     chalk.dim(
-      "  Hatchkit asks for ONE master key per mode (test/sandbox + live). A\n" +
-        "  master key turns on Stripe wiring for that mode, and lets rename-domain\n" +
-        "  and destroy reach webhook endpoints older hatchkit versions created\n" +
-        "  with it. It is NEVER copied into a project's .env. Per-project API keys\n" +
-        "  are collected at `hatchkit create` / `hatchkit adopt` time, and each\n" +
-        "  project's webhook is created in its own account with them (or with\n" +
-        "  the organization key: `hatchkit stripe org-key`).\n",
+      "\n  Stripe: each project uses its own Stripe account. Its keys are asked for\n" +
+        "  when a project gets Stripe (`hatchkit create`, `adopt`, `add <project> stripe`).\n" +
+        "  An organization key (Stripe Organizations) is optional: with it, hatchkit\n" +
+        "  writes webhooks, products and prices into each project's account with one\n" +
+        "  key (Stripe-Context). It is NEVER copied into a project.\n",
     ),
   );
-  tokenHint(
-    "https://dashboard.stripe.com/apikeys",
-    "Restricted key — TEST mode — `Webhook Endpoints: Write` only",
-    "Toggle to test mode in the dashboard before clicking 'Create restricted key'.",
-  );
-  tokenHint(
-    "https://dashboard.stripe.com/apikeys",
-    "Restricted key — LIVE mode — `Webhook Endpoints: Write` only",
-    "Toggle to live mode in the dashboard before clicking 'Create restricted key'.",
-  );
 
-  // Migrate from the legacy single-key layout: if the deprecated keychain
-  // entry exists, surface it as a one-time hint and clear it. Don't auto-
-  // promote — the legacy key was account-wide secret-key, not the
-  // narrowly-scoped restricted key we want now.
+  // A pre-2026-09 single key: it was account-wide and is no longer used.
   const legacy = await getSecret(SECRET_KEYS.stripeSecretKey);
   if (legacy) {
-    console.log(
-      chalk.yellow(
-        "  Found a legacy Stripe key from a previous hatchkit version. The new\n" +
-          "  model uses two narrowly-scoped restricted keys (test + live) instead.\n" +
-          "  The legacy entry will be removed.\n",
-      ),
-    );
+    console.log(chalk.yellow("  Removing a legacy Stripe key from an old hatchkit version.\n"));
     await deleteSecret(SECRET_KEYS.stripeSecretKey);
     await deleteSecret(SECRET_KEYS.stripePublishableKey);
   }
 
-  const stripeSteps: Step<{
-    testKey: string | null;
-    liveKey: string | null;
-  }>[] = [
-    {
-      name: "Stripe TEST/sandbox master key",
-      run: async (s) => ({ ...s, testKey: await promptForMasterKey("test") }),
+  const steps: Step<Record<string, never>>[] = (["test", "live"] as const).map((mode) => ({
+    name: `Stripe ${mode} organization key`,
+    run: async (s) => {
+      const want = await confirm({
+        message: `Store a Stripe organization key for ${mode.toUpperCase()} now? (optional)`,
+        default: false,
+      });
+      if (!want) return s;
+      console.log(chalk.dim(stripeOrgKeyHint(mode)));
+      const key = await confirmPastedSecret(`Stripe organization ${mode} key`);
+      await storeStripeOrgKey(mode, key);
+      return s;
     },
-    {
-      name: "Stripe LIVE master key",
-      run: async (s) => ({ ...s, liveKey: await promptForMasterKey("live") }),
-    },
-  ];
+  }));
+  await runSteps(steps, {});
 
-  const { testKey, liveKey } = await runSteps(stripeSteps, { testKey: null, liveKey: null });
-
-  if (!testKey && !liveKey) {
-    // User opted to skip BOTH master keys. We don't abort — the project
-    // still gets scaffolded with the Stripe surface in place; hatchkit
-    // writes CHANGE_ME_* placeholders into the env files and the starter
-    // renders an "unconfigured" fallback at runtime. Persist an
-    // `unconfigured` provider entry so `hatchkit doctor` / `status` show
-    // the deferred state, and `hatchkit config add stripe` can resume.
-    const deferredMeta: StripeMeta = {
-      status: "unconfigured",
-      hasTestMaster: false,
-      hasLiveMaster: false,
-      lastVerified: new Date().toISOString(),
-    };
-    store.set("providers.stripe", deferredMeta);
-    console.log(
-      chalk.yellow(
-        "  · Stripe master keys deferred — continuing without auto-provisioned webhooks.\n" +
-          "    The scaffolded project will be wired with placeholder env values and a\n" +
-          '    "Stripe not configured" notice in the billing UI. Add real keys later via:\n' +
-          "      hatchkit config add stripe\n" +
-          "    then per-project keys via dotenvx (commands are written next to the\n" +
-          "    placeholders in each .env file).",
-      ),
-    );
-    return {
-      ...deferredMeta,
-      testSecretKey: undefined,
-      liveSecretKey: undefined,
-    };
-  }
-
-  // Account id from whichever master key we have — prefer live since
-  // sandbox keys may report a sandbox-scoped acct_id rather than the
-  // owning live account.
-  let accountId: string | null = null;
-  if (liveKey) accountId = (await verifyStripeMasterKey(liveKey, "live")).accountId;
-  else if (testKey) accountId = (await verifyStripeMasterKey(testKey, "test")).accountId;
-
-  const meta: StripeMeta = {
-    status: "configured",
-    accountId: accountId ?? undefined,
-    hasTestMaster: !!testKey,
-    hasLiveMaster: !!liveKey,
-    lastVerified: new Date().toISOString(),
-  };
-  store.set("providers.stripe", meta);
-  if (testKey) await setSecret(SECRET_KEYS.stripeMasterTestSecretKey, testKey);
-  if (liveKey) await setSecret(SECRET_KEYS.stripeMasterLiveSecretKey, liveKey);
-  console.log(
-    chalk.green(
-      `  ✓ Stripe configured (${[testKey && "test", liveKey && "live"].filter(Boolean).join(" + ")} master)`,
-    ),
-  );
-  return {
+  const meta = (store.get("providers.stripe") as StripeMeta | undefined) ?? {};
+  store.set("providers.stripe", {
     ...meta,
-    testSecretKey: testKey ?? undefined,
-    liveSecretKey: liveKey ?? undefined,
-  };
+    status: "configured",
+    lastVerified: new Date().toISOString(),
+  } satisfies StripeMeta);
+  const stored = await getStripeConfig();
+  console.log(chalk.green(`  ✓ Stripe: ${describeStripeMeta(stored) ?? "per-project keys"}`));
+  return stored;
 }
 
-export async function getStripeConfig(): Promise<StripeConfig | null> {
-  const meta = store.get("providers.stripe") as StripeMeta | undefined;
-  if (!meta || meta.status !== "configured") return null;
-  const testSecretKey = (await getSecret(SECRET_KEYS.stripeMasterTestSecretKey)) ?? undefined;
-  const liveSecretKey = (await getSecret(SECRET_KEYS.stripeMasterLiveSecretKey)) ?? undefined;
-  if (!testSecretKey && !liveSecretKey) return null;
-  return { ...meta, testSecretKey, liveSecretKey };
+/** Stripe keys hatchkit holds outside any project: organization keys and
+ *  legacy master keys. Never prompts; an empty result is normal. */
+export async function getStripeConfig(): Promise<StripeConfig> {
+  const meta = (store.get("providers.stripe") as StripeMeta | undefined) ?? {
+    status: "unconfigured",
+  };
+  const value = async (account: string) => (await getSecret(account)) ?? undefined;
+  return {
+    ...meta,
+    testOrgKey: await value(SECRET_KEYS.stripeOrgSecretKey("test")),
+    liveOrgKey: await value(SECRET_KEYS.stripeOrgSecretKey("live")),
+    testSecretKey: await value(SECRET_KEYS.stripeMasterTestSecretKey),
+    liveSecretKey: await value(SECRET_KEYS.stripeMasterLiveSecretKey),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -3546,17 +3453,22 @@ export async function reconfigureProvider(
   } else if (name === "stripe") {
     // NB: per-project Stripe entries (`stripe:project:<name>:*`) are
     // intentionally NOT swept here — those belong to individual scaffolded
-    // projects and are removed by `hatchkit destroy <project>`. Wiping
-    // them on a master-key rotation would orphan the user's webhook IDs
-    // and leave projects unable to verify incoming webhook signatures.
+    // projects and are removed by `hatchkit destroy <project>`. Legacy
+    // master keys stay too: they still find webhooks they created.
+    const legacy = store.get("providers.stripe") as StripeMeta | undefined;
     await wipeProvider("providers.stripe", [
-      SECRET_KEYS.stripeMasterTestSecretKey,
-      SECRET_KEYS.stripeMasterLiveSecretKey,
-      // Legacy entries — remove if present so the next ensureStripe
-      // doesn't re-promote them.
+      SECRET_KEYS.stripeOrgSecretKey("test"),
+      SECRET_KEYS.stripeOrgSecretKey("live"),
       SECRET_KEYS.stripeSecretKey,
       SECRET_KEYS.stripePublishableKey,
     ]);
+    if (legacy?.hasTestMaster || legacy?.hasLiveMaster)
+      store.set("providers.stripe", {
+        status: "unconfigured",
+        accountId: legacy.accountId,
+        hasTestMaster: legacy.hasTestMaster,
+        hasLiveMaster: legacy.hasLiveMaster,
+      } satisfies StripeMeta);
     await ensureStripe();
   } else if (name === "ghcr") {
     await wipeProvider("providers.ghcr", [SECRET_KEYS.ghcrPullToken]);
@@ -3803,10 +3715,7 @@ function buildSetupGroups(): SetupGroup[] {
           status: () => {
             const m = store.get("providers.stripe") as StripeMeta | undefined;
             if (m?.status !== "configured") return { configured: false };
-            const modes = [m.hasTestMaster && "test", m.hasLiveMaster && "live"]
-              .filter(Boolean)
-              .join(" + ");
-            return { configured: true, summary: modes || "configured" };
+            return { configured: true, summary: describeStripeMeta(m) ?? "configured" };
           },
           run: () => reconfigureProvider("stripe"),
         },

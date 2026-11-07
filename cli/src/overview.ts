@@ -503,13 +503,17 @@ async function probeGlitchtip(): Promise<ProbeOutput> {
 async function probeStripe(): Promise<ProbeOutput> {
   const key = "stripe";
   const label = "Stripe";
+  // Webhooks live in each project's own account (`hatchkit inventory`
+  // per project). Only a legacy master key has a list of its own: the
+  // webhooks hatchkit made in its account before 2026-11-08.
   const cfg = await getStripeConfig();
-  if (!cfg) return { provider: { key, label, status: "skip", detail: "not configured" } };
   const modes: Array<{ mode: "test" | "live"; key: string }> = [];
   if (cfg.testSecretKey) modes.push({ mode: "test", key: cfg.testSecretKey });
   if (cfg.liveSecretKey) modes.push({ mode: "live", key: cfg.liveSecretKey });
   if (modes.length === 0) {
-    return { provider: { key, label, status: "skip", detail: "no master keys stored" } };
+    return {
+      provider: { key, label, status: "skip", detail: "webhooks live in each project's account" },
+    };
   }
   const resources: Array<{ kind: string; identity: string; detail?: string }> = [];
   for (const m of modes) {
@@ -524,7 +528,7 @@ async function probeStripe(): Promise<ProbeOutput> {
       for (const w of body.data ?? []) {
         if (!w.id || !w.url) continue;
         resources.push({
-          kind: `webhook (${m.mode})`,
+          kind: `webhook (${m.mode}, legacy master account)`,
           identity: w.url,
           detail: `${w.id} · ${w.status ?? "?"}`,
         });

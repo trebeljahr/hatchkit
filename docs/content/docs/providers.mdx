@@ -224,6 +224,20 @@ Configure: `hatchkit config add plausible`.
 
 ---
 
+## Payments — Stripe
+
+Each project uses its own Stripe account, so one project's key cannot read another project's customers. Hatchkit asks for the project's secret and publishable keys when the project gets Stripe: `hatchkit create`, `hatchkit adopt` or `hatchkit add <project> stripe`. You can skip either mode; the env file then gets placeholders.
+
+Hatchkit needs no global Stripe key. With the project's own key, it creates the webhook endpoint in the project's account. A restricted live key then needs Webhook Endpoints write.
+
+An organization key is optional. It lets one key write webhooks, products and prices into every project's account, through the `Stripe-Context` header. Hatchkit uses it when `.hatchkit.json` names the project's account under `stripe.accounts`. See [Which key writes](/docs/paid-unlocks#which-key-writes).
+
+Configure (optional): `hatchkit config add stripe` or `hatchkit stripe org-key --mode test|live`.
+
+Hatchkit versions before 2026-11-08 asked for a master key and created webhooks in the master key's account. A stored master key is now read only to find those older webhooks. `hatchkit doctor` lists it.
+
+---
+
 ## GPU / ML platforms
 
 For deploying ML services. See [ML services](./ml-services) for the end-to-end flow.

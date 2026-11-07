@@ -10,7 +10,13 @@ import { isKeychainUnavailable } from "./utils/keychain-access.js";
  */
 
 import chalk from "chalk";
-import { type BackupProviderMeta, getConfig, getConfigPath, getMlServices } from "./config.js";
+import {
+  type BackupProviderMeta,
+  describeStripeMeta,
+  getConfig,
+  getConfigPath,
+  getMlServices,
+} from "./config.js";
 import {
   clientWorkerName,
   isRoutedWorkerSite,
@@ -263,7 +269,7 @@ export function collectStatus(projectDir: string = process.cwd()): StatusSnapsho
     key: "stripe",
     label: "Stripe (payments)",
     configured: !!config.providers.stripe && config.providers.stripe.status === "configured",
-    detail: stripeDetail(config.providers.stripe),
+    detail: describeStripeMeta(config.providers.stripe),
     configureCommand: "hatchkit config add stripe",
   });
 
@@ -382,24 +388,6 @@ export async function verifyProviderCredentials(
     });
   }
   return s;
-}
-
-function stripeDetail(
-  meta:
-    | {
-        status?: string;
-        hasTestMaster?: boolean;
-        hasLiveMaster?: boolean;
-        accountId?: string;
-      }
-    | undefined,
-): string | undefined {
-  if (!meta || meta.status !== "configured") return undefined;
-  const modes = [meta.hasTestMaster && "test", meta.hasLiveMaster && "live"]
-    .filter(Boolean)
-    .join(" + ");
-  if (!modes) return undefined;
-  return meta.accountId ? `${modes} · ${meta.accountId}` : modes;
 }
 
 function computeNextStep(

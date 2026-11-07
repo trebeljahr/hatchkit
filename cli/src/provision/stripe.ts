@@ -41,7 +41,7 @@
 
 import { input, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import { confirmPastedSecret, ensureStripe } from "../config.js";
+import { confirmPastedSecret } from "../config.js";
 import { type StripeClient, StripeError, stripeRequest } from "../paid-unlock/core.js";
 import type { LedgerStep } from "../utils/run-ledger.js";
 import {
@@ -175,39 +175,15 @@ const MODE_INFO: Record<
 };
 
 /** Provision Stripe for a project: collect per-project keys for each
- *  configured mode, register a webhook endpoint, persist everything in
- *  the OS keychain. The caller is responsible for writing the returned
- *  values into `.env.{development,production}`. */
+ *  mode (the user may skip either), register a webhook endpoint in the
+ *  project's account, persist everything in the OS keychain. No global
+ *  Stripe key is needed. The caller is responsible for writing the
+ *  returned values into `.env.{development,production}`; a skipped mode
+ *  gets CHANGE_ME placeholders and the starter shows "unconfigured". */
 export async function provisionStripeProject(
   opts: ProvisionStripeProjectOptions,
 ): Promise<ProvisionStripeProjectResult> {
-  // Master keys — ensureStripe returns an `unconfigured` meta (no
-  // throw) when the user deferred both modes during onboarding. In
-  // that case we still emit per-mode skipped outcomes so the caller
-  // writes CHANGE_ME placeholders + skip-comment recipes into both
-  // env files; the starter then surfaces a clear "Stripe not
-  // configured" notice in the billing UI at runtime.
-  const master = await ensureStripe();
-
   console.log(chalk.bold(`\n  ── Stripe (${opts.projectName}) ─────────────────────────────\n`));
-
-  if (!master.hasTestMaster && !master.hasLiveMaster) {
-    console.log(
-      chalk.yellow(
-        `  Stripe master keys are not configured — emitting placeholder env values\n` +
-          `  for both modes. The scaffolded project still ships the Stripe surface;\n` +
-          `  the billing screen will render an "unconfigured" notice with the exact\n` +
-          `  dotenvx commands until you wire real keys.\n` +
-          `    Add masters later:  hatchkit config add stripe\n` +
-          `    Then re-run wiring: hatchkit add ${opts.projectName} stripe\n`,
-      ),
-    );
-    return {
-      test: { kind: "skipped", mode: "test" },
-      live: { kind: "skipped", mode: "live" },
-    };
-  }
-
   console.log(
     chalk.dim(
       `  Hatchkit provisions Stripe in two modes per project:\n` +
@@ -221,47 +197,17 @@ export async function provisionStripeProject(
   );
 
   const result: ProvisionStripeProjectResult = {};
-
-  if (master.hasTestMaster && master.testSecretKey) {
-    result.test = await provisionMode({
+  for (const mode of ["test", "live"] as const) {
+    result[mode] = await provisionMode({
       projectName: opts.projectName,
       domain: opts.domain,
       events: opts.events ?? DEFAULT_STRIPE_EVENTS,
-      mode: "test",
-      account: opts.accounts?.test,
+      mode,
+      account: opts.accounts?.[mode],
       onLedgerStep: opts.onLedgerStep,
       reprompt: opts.reprompt ?? false,
     });
-  } else {
-    console.log(
-      chalk.yellow(
-        "  · Skipping TEST/sandbox — no test master key configured. " +
-          "Run `hatchkit config add stripe` to add one.",
-      ),
-    );
-    result.test = { kind: "skipped", mode: "test" };
   }
-
-  if (master.hasLiveMaster && master.liveSecretKey) {
-    result.live = await provisionMode({
-      projectName: opts.projectName,
-      domain: opts.domain,
-      events: opts.events ?? DEFAULT_STRIPE_EVENTS,
-      mode: "live",
-      account: opts.accounts?.live,
-      onLedgerStep: opts.onLedgerStep,
-      reprompt: opts.reprompt ?? false,
-    });
-  } else {
-    console.log(
-      chalk.yellow(
-        "  · Skipping LIVE — no live master key configured. " +
-          "Run `hatchkit config add stripe` to add one.",
-      ),
-    );
-    result.live = { kind: "skipped", mode: "live" };
-  }
-
   return result;
 }
 
@@ -380,10 +326,16 @@ export type CollectedKeys =
   | { kind: "provided"; secretKey: string; publishableKey: string }
   | { kind: "skipped" };
 
+/** Modes the user skipped in this process (`<project>:<mode>`): create
+ *  asks in its preflight and again while wiring, and must not ask twice. */
+const skippedThisRun = new Set<string>();
+
 export async function collectPerProjectKeys(args: CollectKeysArgs): Promise<CollectedKeys> {
   const info = MODE_INFO[args.mode];
   const skKeychain = SECRET_KEYS.stripeProjectSecretKey(args.projectName, args.mode);
   const pkKeychain = SECRET_KEYS.stripeProjectPublishableKey(args.projectName, args.mode);
+  const runKey = `${args.projectName}:${args.mode}`;
+  if (!args.reprompt && skippedThisRun.has(runKey)) return { kind: "skipped" };
 
   if (!args.reprompt) {
     const cachedSk = await getSecret(skKeychain);
@@ -398,6 +350,11 @@ export async function collectPerProjectKeys(args: CollectKeysArgs): Promise<Coll
       );
       return { kind: "provided", secretKey: cachedSk, publishableKey: cachedPk };
     }
+  }
+  if (!process.stdin.isTTY) {
+    console.log(chalk.yellow(`  · ${info.label}: no TTY to paste keys — skipped.`));
+    skippedThisRun.add(runKey);
+    return { kind: "skipped" };
   }
 
   // Best-practice steering specific to mode.
@@ -495,6 +452,7 @@ export async function collectPerProjectKeys(args: CollectKeysArgs): Promise<Coll
     publishableKey: "",
   });
   if (collected.action === "skip") {
+    skippedThisRun.add(runKey);
     return { kind: "skipped" };
   }
 

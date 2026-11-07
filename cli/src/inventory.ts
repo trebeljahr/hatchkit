@@ -1695,11 +1695,6 @@ async function scanStripe(input: InventoryInput, expected: boolean): Promise<Sca
   const provider = "stripe";
   const findings: InventoryFinding[] = [];
   const skipped: Array<{ provider: string; reason: string }> = [];
-  const cfg = await getStripeConfig();
-  if (!cfg) {
-    skipped.push({ provider, reason: "not configured" });
-    return { provider, findings, skipped };
-  }
   if (!input.domain) {
     skipped.push({
       provider,
@@ -1707,18 +1702,23 @@ async function scanStripe(input: InventoryInput, expected: boolean): Promise<Sca
     });
     return { provider, findings, skipped };
   }
-  // Probe each mode that has a stored master key. Endpoints live in the
-  // project's own account (its key; created since 2026-11-07) or the
-  // master's (older), so both are searched.
+  // Endpoints live in the project's own account (its key; created since
+  // 2026-11-07) or a legacy master key's account (older), so both are
+  // searched. A mode with no key at all is skipped.
   const { resolveWebhookClients } = await import("./provision/stripe-sync-cli.js");
   const { stripeRequest } = await import("./paid-unlock/core.js");
+  const cfg = await getStripeConfig();
+  let probed = 0;
   for (const mode of ["test", "live"] as const) {
-    const key = mode === "test" ? cfg.testSecretKey : cfg.liveSecretKey;
-    if (!key) continue;
+    const master = mode === "test" ? cfg.testSecretKey : cfg.liveSecretKey;
     try {
       const clients = input.name
         ? await resolveWebhookClients(input.name, mode, undefined)
-        : [{ client: { secretKey: key }, label: `the ${mode} master key` }];
+        : master
+          ? [{ client: { secretKey: master }, label: `the ${mode} master key` }]
+          : [];
+      if (clients.length === 0) continue;
+      probed++;
       const seen = new Map<string, { id?: string; url?: string; status?: string }>();
       let total = 0;
       for (const { client } of clients) {
@@ -1758,6 +1758,7 @@ async function scanStripe(input: InventoryInput, expected: boolean): Promise<Sca
       });
     }
   }
+  if (probed === 0) skipped.push({ provider, reason: "no Stripe key for this project" });
   return { provider, findings, skipped };
 }
 

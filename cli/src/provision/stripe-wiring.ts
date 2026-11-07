@@ -14,7 +14,7 @@
  *   · `skipped`    → CHANGE_ME_* placeholders + a comment block naming
  *                    the exact `dotenvx set` commands to finish later.
  *
- * A fully-skipped run (both modes skipped, or master keys absent) is a
+ * A fully-skipped run (both modes skipped) is a
  * deferral, not a failure: nothing was created in Stripe, so there is
  * nothing to roll back — the caller records the returned `deferred`
  * step and carries on.

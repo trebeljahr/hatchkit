@@ -146,8 +146,8 @@ export async function resolveSyncClient(
 
 /** Every key that may hold a webhook endpoint hatchkit made for this
  *  project, in the order to try them when looking one up by id: the
- *  project's own account (`resolveSyncClient`), then the master key from
- *  `hatchkit config add stripe`. Before 2026-11-07 the starter webhook
+ *  project's own account (`resolveSyncClient`), then the legacy master key
+ *  `hatchkit config add stripe` asked for until 2026-11-08. Before 2026-11-07 the starter webhook
  *  was created with that master key, in the master's account, so
  *  rename-domain and destroy still find those older endpoints. Never
  *  prompts; an empty list means no key is stored. */
@@ -400,21 +400,10 @@ async function runSync(args: Args): Promise<void> {
 
 async function runOrgKey(args: Args): Promise<void> {
   const mode = modeOf(args);
-  const { confirmPastedSecret } = await import("../config.js");
-  console.log(
-    chalk.dim(
-      [
-        "",
-        "  Stripe dashboard → your organization → API keys → Create restricted key.",
-        "  Permissions: Products write, Prices write, Webhook Endpoints write.",
-        `  ${mode === "test" ? "Use the sandbox/test variant." : "Live key: it can write to every account in the organization."}`,
-        "",
-      ].join("\n"),
-    ),
-  );
+  const { confirmPastedSecret, storeStripeOrgKey, stripeOrgKeyHint } = await import("../config.js");
+  console.log(chalk.dim(stripeOrgKeyHint(mode)));
   const key = await confirmPastedSecret(`Stripe organization ${mode} key`);
-  checkKeyMode(key, mode, "pasted key");
-  await setSecret(SECRET_KEYS.stripeOrgSecretKey(mode), key);
+  await storeStripeOrgKey(mode, key);
   console.log(chalk.green(`  ✓ Stored in the keychain (stripe:org:${mode}:secret-key).`));
 }
 

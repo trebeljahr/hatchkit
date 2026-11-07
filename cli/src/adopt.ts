@@ -3226,10 +3226,9 @@ async function executePlan(
               caveats.push({
                 title: "Stripe placeholders written",
                 reason:
-                  'No master key configured for either mode — wrote CHANGE_ME_* placeholders to both env files. The billing UI will render an "unconfigured" notice until real keys are wired.',
+                  'Both modes were skipped — wrote CHANGE_ME_* placeholders to both env files. The billing UI will render an "unconfigured" notice until real keys are wired.',
                 recovery: [
-                  "Run `hatchkit config add stripe` to add at least one master key,",
-                  `then re-run \`hatchkit adopt --resume\` from ${state.projectDir}.`,
+                  `Add the project's keys later: hatchkit add ${plan.name} stripe (from ${state.projectDir}).`,
                 ],
               });
             }

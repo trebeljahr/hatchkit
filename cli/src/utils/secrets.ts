@@ -144,14 +144,10 @@ export const SECRET_KEYS = {
    *  exposed every project's Stripe account. Don't WRITE these. */
   stripeSecretKey: "stripe:secret-key",
   stripePublishableKey: "stripe:publishable-key",
-  /** Master Stripe credentials — used SOLELY by hatchkit to programmatically
-   *  create webhook endpoints (POST /v1/webhook_endpoints) per project per
-   *  mode. They are NEVER written into a project's `.env.*`. Stripe's public
-   *  API does not allow minting restricted keys, so per-project app keys
-   *  must still be pasted at create/adopt time — these masters cover only
-   *  the one auto-mintable resource: webhook endpoints + their signing
-   *  secrets. Recommended scope: a single Standard restricted key per mode
-   *  with `webhook_endpoints:write` only. */
+  /** LEGACY master Stripe key per mode. Until 2026-11-08 setup asked for
+   *  one and it created every project's webhook endpoint in its own
+   *  account. Nothing writes these any more; a stored one is read only to
+   *  find those older endpoints (rename-domain, destroy, inventory). */
   stripeMasterTestSecretKey: "stripe:master:test:secret-key",
   stripeMasterLiveSecretKey: "stripe:master:live:secret-key",
   /** Per-project Stripe credentials. Test/sandbox values land in

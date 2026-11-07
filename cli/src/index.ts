@@ -102,7 +102,7 @@ import {
   parseCreateFlags,
 } from "./utils/flags.js";
 import { RunLedger } from "./utils/run-ledger.js";
-import { SECRET_KEYS } from "./utils/secrets.js";
+import { SECRET_KEYS, getSecret } from "./utils/secrets.js";
 import { getCliVersion } from "./utils/version.js";
 
 // ---------------------------------------------------------------------------
@@ -2777,24 +2777,23 @@ async function ensureRequiredProviders(config: ProjectConfig): Promise<void> {
     !createPreflightDeferrals.some((s) => s.key === "stripe")
   ) {
     try {
-      const { confirmConfigureOrDefer } = await import("./provision/deferrals.js");
-      await confirmConfigureOrDefer({
-        label: "Stripe",
-        configured: !!getConfig().providers.stripe,
-      });
-      const { ensureStripe } = await import("./config.js");
-      await ensureStripe();
-
       // Pre-collect per-project Stripe keys so execution doesn't prompt.
-      // Keys are cached in keychain — subsequent calls return instantly.
+      // No global key is needed: each project's own key (or the optional
+      // organization key) writes to its own account. Keys are cached in
+      // keychain; a skipped mode is remembered for this run.
       if (config.surfaces !== "static") {
         const { collectPerProjectKeys } = await import("./provision/stripe.js");
-        const master = await ensureStripe();
-        if (master.hasTestMaster) {
-          await collectPerProjectKeys({ projectName: config.name, mode: "test", reprompt: false });
+        const keys = await Promise.all(
+          (["test", "live"] as const).map((mode) =>
+            getSecret(SECRET_KEYS.stripeProjectSecretKey(config.name, mode)),
+          ),
+        );
+        if (keys.some((k) => !k) && !process.stdin.isTTY) {
+          const { deferStep } = await import("./provision/deferrals.js");
+          deferStep("Stripe keys are not stored and there's no TTY to paste them");
         }
-        if (master.hasLiveMaster) {
-          await collectPerProjectKeys({ projectName: config.name, mode: "live", reprompt: false });
+        for (const mode of ["test", "live"] as const) {
+          await collectPerProjectKeys({ projectName: config.name, mode, reprompt: false });
         }
       }
     } catch (error) {

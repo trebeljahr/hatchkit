@@ -62,6 +62,7 @@
     "test:newsletter-worker": "node scripts/test.mjs test-newsletter-worker.ts",
     "test:lead-magnet": "node scripts/test.mjs test-lead-magnet.ts",
     "test:paid-unlock": "node scripts/test.mjs test-paid-unlock.ts",
+    "test:stripe-config": "node scripts/test.mjs test-stripe-config.ts",
     "test:stripe-sync": "node scripts/test.mjs test-stripe-sync.ts",
     "test:stripe-webhook-account": "node scripts/test.mjs test-stripe-webhook-account.ts",
     "test:image-runtime": "node scripts/test.mjs test-image-runtime.ts",

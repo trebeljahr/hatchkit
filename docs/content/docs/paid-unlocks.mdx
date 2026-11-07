@@ -103,7 +103,7 @@ A second run writes nothing. Sync never deletes. A product removed from `unlocks
 
 Each project should have its own Stripe account, so one project's key cannot read another project's buyers. Stripe Organizations hold several accounts under one login.
 
-- **Organization key** (recommended): `hatchkit stripe org-key --mode test|live` stores a restricted organization key (Products, Prices and Webhook Endpoints write). Sync sends `Stripe-Context: <acct_…>`, so every write lands in the project's account. Pass `--account acct_…` once; it is saved in `.hatchkit.json` under `stripe.accounts`.
+- **Organization key** (recommended): `hatchkit stripe org-key --mode test|live` (or `hatchkit config add stripe`) stores a restricted organization key (Products, Prices and Webhook Endpoints write). Sync sends `Stripe-Context: <acct_…>`, so every write lands in the project's account. Pass `--account acct_…` once; it is saved in `.hatchkit.json` under `stripe.accounts`.
 - **Project key**: without an organization key, sync uses the project's own key from `hatchkit add <project> stripe`.
 
 `hatchkit add <project> stripe`, `create` and `adopt` pick the key the same way for the starter's `/api/stripe/webhook`. With an organization key, they use the account in `stripe.accounts`. Without one, the project's own key creates the endpoint in its own account. A restricted project key then needs Webhook Endpoints write.
