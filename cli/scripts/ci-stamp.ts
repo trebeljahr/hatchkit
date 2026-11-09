@@ -11,7 +11,7 @@
  * This script exists so CI can stamp a project and then actually run
  * `pnpm install && pnpm run build && pnpm run test:unit` against it.
  *
- *   tsx scripts/ci-stamp.ts --preset <reported|commerce|web|bare|full|client-core> --out <dir>
+ *   tsx scripts/ci-stamp.ts --preset <reported|commerce|web|bare|full|client-core|postgres> --out <dir>
  *
  * Host safety: nothing here talks to a provider, DNS, Coolify, Terraform or
  * S3. The config sets createGithubRepo/runDeployment/installDeps to false, so
@@ -96,7 +96,10 @@ const LISTMONK_SES: EmailIntent = { transactional: "none", mailingList: "listmon
  *    and the standalone build path gets compiled. Carries the full server
  *    feature set (websocket + stripe + s3 + analytics) so the server build
  *    is exercised with everything kept rather than everything pruned. */
-const PRESETS: Record<string, { name: string; features: Feature[]; email?: EmailIntent }> = {
+const PRESETS: Record<
+  string,
+  { name: string; features: Feature[]; email?: EmailIntent; config?: Partial<ProjectConfig> }
+> = {
   reported: {
     name: "ci-stamp-reported",
     features: ["websocket", "s3", "analytics", "desktop", "mobile"],
@@ -139,6 +142,16 @@ const PRESETS: Record<string, { name: string; features: Feature[]; email?: Email
     name: "ci-stamp-client-core",
     features: ["client-core", "websocket"],
   },
+  // Standalone, with the Postgres overlay. Every other preset keeps the
+  // starter's MongoDB, so without this one nothing compiled the Drizzle
+  // server or the client that types itself against its router. CI also
+  // boots the built server against a real Postgres here: the overlay's
+  // committed migration must create the tables sign-up writes to.
+  postgres: {
+    name: "ci-stamp-postgres",
+    features: ["websocket"],
+    config: { dbEngine: "postgres", dbProvider: "external" },
+  },
 };
 
 function arg(flag: string): string | undefined {
@@ -175,7 +188,10 @@ if (!existsSync(join(starter, "package.json"))) {
 
 console.log(`Stamping preset "${presetName}" (${preset.features.join(", ")}) into ${target}`);
 await scaffoldApp(
-  cfg(preset.name, preset.features, preset.email ? { email: preset.email } : {}),
+  cfg(preset.name, preset.features, {
+    ...(preset.email ? { email: preset.email } : {}),
+    ...preset.config,
+  }),
   target,
 );
 console.log(`Stamped ${preset.name} -> ${target}`);

@@ -829,7 +829,70 @@ results.postgres = await run(
     const envExample = readFileSync(join(d, "packages/server/.env.example"), "utf-8");
     const envDev = readFileSync(join(d, "packages/server/.env.development"), "utf-8");
     const envTs = readFileSync(join(d, "packages/server/src/config/env.ts"), "utf-8");
+    const dockerfile = readFileSync(join(d, "packages/server/Dockerfile"), "utf-8");
+    const runtimeStage = dockerfile.slice(dockerfile.search(/^FROM .* AS runtime$/m));
+    const workflow = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
+    const e2e = e2eJob(workflow);
+    const startServer = readFileSync(join(d, "e2e/start-server.sh"), "utf-8");
+    const playwright = readFileSync(join(d, "playwright.config.ts"), "utf-8");
+    const drizzleDir = join(d, "packages/server/drizzle");
+    const journal = JSON.parse(readFileSync(join(drizzleDir, "meta/_journal.json"), "utf-8")) as {
+      entries: { tag: string }[];
+    };
+    const snapshot = JSON.parse(
+      readFileSync(join(drizzleDir, "meta/0000_snapshot.json"), "utf-8"),
+    ) as { tables: Record<string, { name: string; columns: Record<string, unknown> }> };
+    const initSql = readFileSync(join(drizzleDir, "0000_init.sql"), "utf-8");
+    // Table → column names as schema.ts declares them, so a column added
+    // to the overlay's schema without regenerating the migration fails here.
+    const schemaColumns = new Map<string, string[]>();
+    for (const m of schema.matchAll(/pgTable\("([a-z_]+)", \{([\s\S]*?)\n\}\)/g)) {
+      schemaColumns.set(m[1], [...m[2].matchAll(/^ {2}\w+: \w+\("([a-z_]+)"/gm)].map((c) => c[1]));
+    }
+    const snapshotColumns = new Map(
+      Object.values(snapshot.tables).map((t) => [t.name, Object.keys(t.columns)]),
+    );
+    const sameColumns =
+      schemaColumns.size === 6 &&
+      schemaColumns.size === snapshotColumns.size &&
+      [...schemaColumns].every(
+        ([table, cols]) =>
+          JSON.stringify([...cols].sort()) ===
+          JSON.stringify([...(snapshotColumns.get(table) ?? [])].sort()),
+      );
     return [
+      // ── tables exist after boot ──
+      ["drizzle/0000_init.sql shipped", existsSync(join(drizzleDir, "0000_init.sql"))],
+      [
+        "journal lists exactly the init migration",
+        journal.entries.map((e) => e.tag).join() === "0000_init",
+      ],
+      ["migration snapshot matches schema.ts (tables + columns)", sameColumns],
+      [
+        "0000_init.sql creates every schema table",
+        [...schemaColumns.keys()].every((t) => initSql.includes(`CREATE TABLE IF NOT EXISTS "${t}"`)),
+      ],
+      ["connection.ts imports the drizzle migrator", /drizzle-orm\/node-postgres\/migrator/.test(connection)],
+      ["connection.ts migrates before ready", /await migrate\(_db,[\s\S]*ready = true/.test(connection)],
+      ["connection.ts reads ../../drizzle", connection.includes('"../../drizzle"')],
+      ["connection.ts serialises migrations with a lock", /pg_advisory_lock/.test(connection)],
+      [
+        "Dockerfile runtime stage copies drizzle/ to ./drizzle",
+        runtimeStage.includes("COPY --from=build /app/packages/server/drizzle ./drizzle"),
+      ],
+      // ── CI e2e runs against Postgres ──
+      ["workflow: no mongo left", !/mongo/i.test(workflow)],
+      ["e2e job: postgres-e2e service", /^ {6}postgres-e2e:\n {8}image: postgres:16-alpine$/m.test(e2e)],
+      ["e2e job: postgres on 5433", /- 5433:5432/.test(e2e)],
+      ["e2e job: postgres db starter-e2e", /POSTGRES_DB: starter-e2e/.test(e2e)],
+      ["e2e job: pg_isready health check", /--health-cmd "pg_isready -U postgres -d starter-e2e"/.test(e2e)],
+      [
+        "e2e job: POSTGRES_URL matches the service",
+        /^ {10}POSTGRES_URL: postgres:\/\/postgres:postgres@127\.0\.0\.1:5433\/starter-e2e$/m.test(e2e),
+      ],
+      ["e2e job: redis service kept", /redis-e2e:/.test(e2e)],
+      ["start-server.sh: local postgres on 5433", /-p 5433:5432/.test(startServer) && !/mongo/i.test(startServer)],
+      ["playwright: POSTGRES_URL default on 5433", /127\.0\.0\.1:5433\/starter-e2e/.test(playwright)],
       ["docker-compose: postgres service", /^ {2}postgres:/m.test(compose)],
       ["docker-compose: no mongo service", !/^ {2}mongo:/m.test(compose)],
       ["docker-compose: postgres-data volume", /postgres-data:/.test(compose)],
@@ -5045,6 +5108,26 @@ results.ciStampPresets = (() => {
     [
       "stamped install uses --no-frozen-lockfile",
       workflow.includes("pnpm install --no-frozen-lockfile"),
+    ],
+    [
+      "ci-stamp keeps the postgres preset (the only stamp off MongoDB)",
+      /postgres: \{[\s\S]*?dbEngine: "postgres"/.test(stampScript),
+    ],
+    [
+      "ci.yml stamps the postgres preset",
+      /^ {8}preset: \[[^\]]*\bpostgres\b[^\]]*\]$/m.test(workflow),
+    ],
+    [
+      "stamp-build boots the postgres stamp, signs up and checks for drift",
+      (() => {
+        const step = workflow.slice(workflow.indexOf("if: matrix.preset == 'postgres'"));
+        return (
+          step.includes("node dist/index.js") &&
+          step.includes("/api/auth/sign-up/email") &&
+          step.includes("drizzle-kit generate") &&
+          step.includes("No schema changes")
+        );
+      })(),
     ],
     [
       "stamp-build sets NEXT_PUBLIC_API_URL (next.config hard-fails without it)",

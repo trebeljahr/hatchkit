@@ -151,7 +151,7 @@ hatchkit create --yes --name blog --domain blog.example.com \
 ### Flow
 
 1. Prompts for name, domain, deploy target, features, services, ML services, **database engine** (MongoDB or Postgres), and **database provider** (Coolify-provisioned container or external URI).
-2. Scaffolds the starter, strips unselected features, assigns unique ports. When `dbEngine: postgres` is selected, the starter's Mongoose stack is rewritten to Drizzle ORM + `pg` + better-auth's `drizzleAdapter`, and the `docker-compose` mongo service is swapped for a `postgres:16-alpine` container.
+2. Scaffolds the starter, strips unselected features, assigns unique ports. When `dbEngine: postgres` is selected, the starter's Mongoose stack is rewritten to Drizzle ORM + `pg` + better-auth's `drizzleAdapter`, and the `docker-compose` mongo service is swapped for a `postgres:16-alpine` container. The project ships its initial migration in `packages/server/drizzle/`; the server applies pending migrations at startup, and `pnpm --filter @starter/server db:generate` writes the next one after a schema change.
 3. Auto-wires local-dev unless disabled: `.hatchkit.json` gets `localDev.slug`, `docs/dev-setup.md` is generated, and the Next/Vite dev plugin plus Caddy fragment are added.
 4. Installs deps (if `pnpm` is available and you opt in).
 5. `git init` + first commit + GitHub repo.

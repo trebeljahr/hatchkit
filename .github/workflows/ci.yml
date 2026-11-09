@@ -170,7 +170,7 @@ jobs:
       # another broke.
       fail-fast: false
       matrix:
-        # Six combinations, and no more — every entry costs a full
+        # Seven combinations, and no more — every entry costs a full
         # install plus a Next build. The presets are defined in
         # cli/scripts/ci-stamp.ts; these names must match its PRESETS keys.
         #
@@ -214,7 +214,13 @@ jobs:
         #              cli/test-client-core-shared-exports.ts, which covers the
         #              resolution without an install; this preset is what runs
         #              the generated suite itself.
-        preset: [reported, commerce, web, bare, full, client-core]
+        #   postgres — standalone, with the Postgres overlay (Drizzle +
+        #              pg in place of Mongoose). Every other preset keeps
+        #              MongoDB. Its extra step boots the built server on an
+        #              empty Postgres and signs up, which fails when the
+        #              committed migration is missing, out of step with
+        #              schema.ts, or never applied.
+        preset: [reported, commerce, web, bare, full, client-core, postgres]
     env:
       # Every client next.config.ts throws by design when a production build
       # whose output ships to users has no NEXT_PUBLIC_API_URL — Next inlines
@@ -308,6 +314,39 @@ jobs:
       - name: Unit tests in stamped project
         working-directory: ${{ runner.temp }}/stamp
         run: pnpm run test:unit
+
+      # The Postgres server creates its tables at startup from the migration
+      # the overlay commits (packages/server/drizzle). Sign-up is the first
+      # write that needs them. drizzle-kit must then find nothing left to
+      # generate, or the migration no longer matches schema.ts.
+      - name: Boot the Postgres stamp and sign up
+        if: matrix.preset == 'postgres'
+        working-directory: ${{ runner.temp }}/stamp/packages/server
+        run: |
+          set -euo pipefail
+          docker run -d --name stamp-postgres -p 5433:5432 \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=stamp \
+            postgres:16-alpine
+          for i in $(seq 1 30); do
+            docker exec stamp-postgres pg_isready -U postgres -d stamp && break
+            sleep 1
+          done
+          NODE_ENV=test PORT=5006 \
+            POSTGRES_URL=postgres://postgres:postgres@127.0.0.1:5433/stamp \
+            BETTER_AUTH_SECRET=ci-stamp-secret \
+            BETTER_AUTH_URL=http://127.0.0.1:5006 \
+            FRONTEND_URL=http://127.0.0.1:3001 \
+            node dist/index.js > "$RUNNER_TEMP/stamp-server.log" 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null http://127.0.0.1:5006/api/health && break
+            sleep 1
+          done
+          curl -sf -X POST http://127.0.0.1:5006/api/auth/sign-up/email \
+            -H 'content-type: application/json' -H 'origin: http://127.0.0.1:3001' \
+            -d '{"name":"CI Stamp","email":"ci-stamp@example.com","password":"SecurePassword123!"}' \
+            || { cat "$RUNNER_TEMP/stamp-server.log" >&2; exit 1; }
+          pnpm exec drizzle-kit generate | tee "$RUNNER_TEMP/drizzle-generate.log"
+          grep -q "No schema changes" "$RUNNER_TEMP/drizzle-generate.log"
 
   packed-install:
     name: packed-install (${{ matrix.os }})

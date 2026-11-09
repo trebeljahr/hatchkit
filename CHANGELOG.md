@@ -16,6 +16,8 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 - `hatchkit sync` points DNS at the server the project's apps run on. It used the first server Coolify listed, so on a Coolify with several servers it could repoint a project's records at another box. With several servers and no app to read, it now refuses and names `hatchkit dns publish --server`.
 - Postgres scaffolds build again: the generated `items.create` no longer passes a `status` the create schema does not have (TS2339 in the server build).
+- Postgres scaffolds create their tables. A new project ships the initial Drizzle migration (`packages/server/drizzle/`), the server applies it at startup under an advisory lock, and the server image carries the folder. Before, sign-up failed on a fresh database because nothing created the better-auth tables.
+- The CI e2e job of a Postgres scaffold starts Postgres (`postgres:16-alpine` on port 5433, the database the tests use) instead of MongoDB.
 - API calls no longer fail with a bare "fetch failed" when opening a connection takes more than 10 s, as over a relayed tailnet link to Coolify or on a heavily loaded machine. The connect timeout is now 30 s; `HATCHKIT_CONNECT_TIMEOUT_MS` changes it.
 - `keys push --dry-run` plans delivery without provider or keychain access. Adopt defaults new repositories to private and honors explicit visibility. Signing accepts omitted project directories before flags.
 - Service removal requires exact identities recorded as created in the project ledger. Adopted, ambiguous, and legacy resources without that proof are retained. Search Console properties are retained.

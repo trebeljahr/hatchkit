@@ -21,8 +21,9 @@
  * we overwrite all exist.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { getTemplatesDir } from "../utils/template.js";
 
 export interface PostgresOverlayResult {
   modifications: string[];
@@ -99,6 +100,32 @@ export function applyPostgresOverlay(outputDir: string): PostgresOverlayResult {
     modifications,
     "drizzle.config.ts (drizzle-kit)",
   );
+
+  // ── packages/server/drizzle/ (initial migration) ─────────────────────
+  // Without a migration nothing creates the tables, and the first
+  // sign-up fails on a missing "user" relation. The files are what
+  // `drizzle-kit generate --name init` writes for POSTGRES_SCHEMA below;
+  // the snapshot lets the project's next `pnpm db:generate` emit only
+  // the difference. connection.ts applies the folder at startup.
+  cpSync(
+    join(getTemplatesDir(), "postgres", "drizzle"),
+    join(outputDir, "packages/server/drizzle"),
+    { recursive: true },
+  );
+  modifications.push("drizzle/0000_init.sql (initial migration, applied at startup)");
+
+  // ── packages/server/Dockerfile: ship the migrations ──────────────────
+  // `pnpm deploy` only carries dist/ and node_modules/, so the runtime
+  // image needs the SQL copied next to them. dist/db/connection.js
+  // resolves ../../drizzle, which is /app/drizzle here.
+  rewriteFile(outputDir, "packages/server/Dockerfile", (content) =>
+    content.replace(
+      /^(COPY --from=build \/prod\/node_modules \.\/node_modules\n)/m,
+      "$1# SQL migrations; the server applies them at startup (src/db/connection.ts).\n" +
+        "COPY --from=build /app/packages/server/drizzle ./drizzle\n",
+    ),
+  );
+  modifications.push("server Dockerfile: copy drizzle/ migrations into the image");
 
   // ── packages/server/src/models/Item.ts (kept as a repo, same export) ─
   writeOverlayFile(
@@ -198,6 +225,14 @@ export function applyPostgresOverlay(outputDir: string): PostgresOverlayResult {
   );
   modifications.push("playwright.config.ts: MONGODB_URI → POSTGRES_URL");
 
+  // ── CI e2e job: mongo service → postgres ─────────────────────────────
+  // Same database e2e/start-server.sh starts locally (port 5433, db
+  // starter-e2e), so the tests and db-utils.ts read one URL in both.
+  rewriteFile(outputDir, ".github/workflows/build-and-deploy.yml", (content) =>
+    rewriteWorkflowForPostgres(content),
+  );
+  modifications.push("build-and-deploy.yml: e2e job runs against Postgres");
+
   // ── starter CLAUDE.md mention (best-effort) ──────────────────────────
   rewriteFile(outputDir, "CLAUDE.md", (content) =>
     content
@@ -293,7 +328,7 @@ function rewriteStartServerForPostgres(content: string): string {
   // Replace the mongo container block with a postgres container block,
   // and the mongo readiness check with a pg one. Port: 5433 to avoid
   // clashing with a local-dev postgres on 5432.
-  let out = content;
+  let out = content.replace("workflow provides MongoDB/Redis", "workflow provides Postgres/Redis");
   out = out.replace(
     /(\s*# MongoDB on port 27018[\s\S]*?echo "\[e2e\] Started MongoDB on port 27018"\s*\n\s*fi)/,
     `
@@ -320,16 +355,58 @@ function rewriteStartServerForPostgres(content: string): string {
   return out;
 }
 
+/** The e2e job's `mongo-e2e` service and MONGODB_URI become a Postgres
+ *  service and POSTGRES_URL. The health check holds the job's steps
+ *  until the database accepts connections, because the server connects
+ *  and migrates once at startup. */
+export function rewriteWorkflowForPostgres(content: string): string {
+  return content
+    .replace(
+      /^( *)mongo-e2e:\n\1 {2}image: mongo:7\n\1 {2}ports:\n\1 {4}- "?27018:27017"?\n/m,
+      (_m, i: string) =>
+        [
+          `${i}postgres-e2e:`,
+          `${i}  image: postgres:16-alpine`,
+          `${i}  env:`,
+          `${i}    POSTGRES_USER: postgres`,
+          `${i}    POSTGRES_PASSWORD: postgres`,
+          `${i}    POSTGRES_DB: starter-e2e`,
+          `${i}  ports:`,
+          `${i}    - 5433:5432`,
+          `${i}  options: >-`,
+          `${i}    --health-cmd "pg_isready -U postgres -d starter-e2e"`,
+          `${i}    --health-interval 5s`,
+          `${i}    --health-timeout 5s`,
+          `${i}    --health-retries 10`,
+          "",
+        ].join("\n"),
+    )
+    .replace(
+      /^( *)MONGODB_URI: mongodb:\/\/127\.0\.0\.1:27018\/[^\n]*$/m,
+      "$1POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5433/starter-e2e",
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // File contents
 // ─────────────────────────────────────────────────────────────────────────
 
-const POSTGRES_CONNECTION = `import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
+const POSTGRES_CONNECTION = `import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
 import { env } from "../config/env.js";
 import * as schema from "./schema.js";
 
 const { Pool } = pg;
+
+// SQL migrations written by \`pnpm db:generate\`. The same relative path
+// works from src/db under tsx and from dist/db in the image, where the
+// Dockerfile copies the folder to /app/drizzle.
+const MIGRATIONS_FOLDER = resolve(dirname(fileURLToPath(import.meta.url)), "../../drizzle");
+// Any constant works; Postgres scopes advisory locks to one database.
+const MIGRATION_LOCK = 7_291_046_385;
 
 let pool: pg.Pool | null = null;
 let _db: NodePgDatabase<typeof schema> | null = null;
@@ -338,11 +415,21 @@ let ready = false;
 export async function connectToDB(): Promise<void> {
   if (ready) return;
   pool = new Pool({ connectionString: env.POSTGRES_URL });
-  // Smoke a connection so a misconfigured URL fails fast at startup
+  // Connect once up front so a misconfigured URL fails at startup
   // instead of on the first query mid-request.
   const client = await pool.connect();
-  client.release();
   _db = drizzle(pool, { schema });
+  try {
+    // Create and update the tables before the server takes traffic.
+    // The lock makes two containers that boot together (a rolling
+    // deploy, a second replica) apply migrations one after the other.
+    await client.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK]);
+    await migrate(_db, { migrationsFolder: MIGRATIONS_FOLDER });
+  } finally {
+    // Closing this connection ends its session, which drops the lock
+    // even when a migration threw.
+    client.release(true);
+  }
   ready = true;
   console.log("[db] Connected to Postgres");
 }
