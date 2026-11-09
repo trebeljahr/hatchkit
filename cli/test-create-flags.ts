@@ -272,6 +272,10 @@ await test("repo flags land in presets", () => {
   assert.equal(parseCreateFlags(["--scaffold"]).presets.scaffoldRepo, true);
   assert.equal(parseCreateFlags(["--no-github"]).presets.createGithubRepo, false);
   assert.equal(parseCreateFlags(["--github"]).presets.createGithubRepo, true);
+  const reuse = parseCreateFlags(["--reuse-github-repo"]).presets;
+  assert.equal(reuse.reuseGithubRepo, true);
+  assert.equal(reuse.createGithubRepo, true);
+  throwsWith(() => parseCreateFlags(["--reuse-github-repo", "--no-github"]), "mutually exclusive");
   assert.equal(parseCreateFlags(["--no-install"]).presets.installDeps, false);
   assert.equal(parseCreateFlags(["--install"]).presets.installDeps, true);
   assert.equal(parseCreateFlags(["--no-deploy"]).presets.runDeployment, false);

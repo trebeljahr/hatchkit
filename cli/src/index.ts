@@ -2591,6 +2591,42 @@ async function configureGhcrForCreate(
   }
 }
 
+/** Before anything is written: a repo that already exists makes `gh
+ *  repo create` fail halfway through create (Coolify then gets an empty
+ *  GITHUB_REPO_URL). Say so up front, and with `--reuse-github-repo`
+ *  check the existing repo fits. Read-only `gh` calls. */
+async function checkGithubRepoName(config: ProjectConfig): Promise<void> {
+  const { inspectReusableGithubRepo } = await import("./deploy/github.js");
+  if (config.reuseGithubRepo) {
+    const repo = await inspectReusableGithubRepo(config);
+    console.log(
+      chalk.dim(
+        `  GitHub: reusing ${repo.slug}` +
+          (repo.baseBranch
+            ? ` — the scaffold goes on main on top of ${repo.baseBranch}, old commits kept`
+            : " — empty repo"),
+      ),
+    );
+    return;
+  }
+  const slug = config.githubOwner ? `${config.githubOwner}/${config.name}` : config.name;
+  const view = await exec("gh", ["repo", "view", slug, "--json", "isEmpty,visibility"], {
+    silent: true,
+  });
+  if (view.exitCode !== 0) return;
+  const existing = JSON.parse(view.stdout) as { isEmpty: boolean; visibility: string };
+  // An empty repo of the asked visibility is the leftover of a failed
+  // earlier create; setupGitHub takes it over (reuseEmptyRepo).
+  const leftover =
+    existing.isEmpty &&
+    existing.visibility.toLowerCase() === (config.githubRepoVisibility ?? "public");
+  if (!leftover) {
+    throw new Error(
+      `GitHub repo ${slug} already exists. Pass --reuse-github-repo to build the scaffold on top of its history, or pick another --name.`,
+    );
+  }
+}
+
 function isCreatedGithubRepoPrivate(config: ProjectConfig): boolean {
   return config.createGithubRepo && (config.githubRepoVisibility ?? "public") === "private";
 }
@@ -2737,6 +2773,10 @@ async function ensureRequiredProviders(config: ProjectConfig): Promise<void> {
 
   if (config.createGithubRepo || config.deploymentMode === "gh-pages") {
     await ensureGitHub();
+  }
+
+  if (config.scaffoldRepo && config.createGithubRepo) {
+    await checkGithubRepoName(config);
   }
 
   if (
@@ -2917,7 +2957,7 @@ async function handleCreate(): Promise<void> {
   console.log(`  Local dev:  ${config.localDev ? config.localDev.slug : "off"}`);
   console.log(`  Scaffold:   ${config.scaffoldRepo ? "yes" : "no"}`);
   console.log(
-    `  GitHub:     ${config.createGithubRepo ? `yes (${config.githubRepoVisibility ?? "public"})` : "no"}`,
+    `  GitHub:     ${config.createGithubRepo ? `${config.reuseGithubRepo ? "reuse existing repo" : "yes"} (${config.githubRepoVisibility ?? "public"})` : "no"}`,
   );
   console.log(`  Install:    ${config.installDeps ? "yes (pnpm install)" : "no"}`);
   console.log(`  Deploy now: ${config.runDeployment ? "yes" : "no"}`);
@@ -3144,7 +3184,9 @@ async function handleCreate(): Promise<void> {
     let repoUrl: string | null = null;
     if (config.scaffoldRepo) {
       repoUrl = await setupGitHub(config, appDir);
-      if (repoUrl) {
+      // A reused repo existed before this run: never ledger it, or
+      // `hatchkit destroy` would `gh repo delete` someone's history.
+      if (repoUrl && !config.reuseGithubRepo) {
         // Strip the https://github.com/ prefix so the recorded value is
         // gh-CLI-friendly (`gh repo delete <owner>/<repo>`).
         const slug = repoUrl.replace(/^https?:\/\/github\.com\//, "");
@@ -3580,7 +3622,9 @@ async function handleCreate(): Promise<void> {
     // created the repo + `origin` but deliberately skipped the push.
     if (config.scaffoldRepo && config.createGithubRepo && repoUrl) {
       const { pushInitialBranch } = await import("./deploy/github.js");
-      const pushed = await pushInitialBranch(appDir);
+      const pushed = await pushInitialBranch(appDir, {
+        makeDefaultBranch: config.reuseGithubRepo === true,
+      });
       if (pushed && config.deploymentMode === "coolify") {
         await configureGhcrForCreate(repoUrl, isCreatedGithubRepoPrivate(config), ledger);
       }
@@ -4529,6 +4573,9 @@ function printHelp(topic?: HelpTopic): void {
     --github / --no-github         Create the GitHub remote, or skip it
     --github-visibility <${GITHUB_VISIBILITY_VALUES}>  Visibility for the created repo
     --public / --private           Shorthands for --github-visibility
+    --reuse-github-repo            The repo <owner>/<name> already exists: commit the
+                                   scaffold on its main, on top of its history (a
+                                   clean-slate commit first). destroy never deletes it.
     --install / --no-install       Run \`pnpm install\` after scaffolding
     --local-dev[=<slug>]           Enable the Tailscale dev URL (slug defaults to the
                                    project name). On by default for new projects.

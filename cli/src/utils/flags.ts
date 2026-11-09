@@ -366,6 +366,13 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
   if (argv.includes("--scaffold")) presets.scaffoldRepo = true;
   if (argv.includes("--no-scaffold")) presets.scaffoldRepo = false;
   if (argv.includes("--github")) presets.createGithubRepo = true;
+  if (argv.includes("--reuse-github-repo")) {
+    if (forceNoGithub) {
+      throw new Error("--reuse-github-repo and --no-github are mutually exclusive.");
+    }
+    presets.reuseGithubRepo = true;
+    presets.createGithubRepo = true;
+  }
   if (argv.includes("--install")) presets.installDeps = true;
   if (argv.includes("--deploy")) presets.runDeployment = true;
 

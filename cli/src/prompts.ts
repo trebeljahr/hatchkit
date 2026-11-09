@@ -376,6 +376,12 @@ export interface ProjectConfig {
   /** Visibility for repos created by `hatchkit create`. Defaults to
    *  private for backwards compatibility and safer first deploys. */
   githubRepoVisibility?: GitHubRepoVisibility;
+  /** `--reuse-github-repo`: the GitHub repo `<owner>/<name>` already
+   *  exists, so build on it instead of `gh repo create`. The scaffold is
+   *  committed on `main` on top of the repo's history (a clean-slate
+   *  commit first), the repo is never recorded in the run ledger, so
+   *  `hatchkit destroy` does not delete it. Implies createGithubRepo. */
+  reuseGithubRepo?: boolean;
   /** Pre-resolved Coolify GitHub App source picked upfront in the
    *  stepper when the user selects a private repo + coolify deploy. Lets
    *  the Coolify setup step run unattended instead of pausing mid-deploy
@@ -822,6 +828,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     scaffoldRepo: presets.scaffoldRepo ?? true,
     createGithubRepo: presets.scaffoldRepo === false ? false : (presets.createGithubRepo ?? true),
     githubRepoVisibility: presets.githubRepoVisibility ?? "public",
+    reuseGithubRepo: presets.scaffoldRepo === false ? undefined : presets.reuseGithubRepo,
     installDeps: presets.scaffoldRepo === false ? false : (presets.installDeps ?? true),
     deploymentMode: presets.deploymentMode ?? "coolify",
     runDeployment: presets.runDeployment ?? !dryRun,
@@ -1618,6 +1625,7 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     scaffoldRepo,
     createGithubRepo,
     githubRepoVisibility,
+    reuseGithubRepo: createGithubRepo ? presets.reuseGithubRepo : undefined,
     installDeps,
     deploymentMode,
     topology: presets.topology ?? "single-origin",
@@ -2420,13 +2428,17 @@ export async function resolveSoleExistingServer(pick?: string): Promise<Selected
   if (pick !== undefined) {
     const match = servers.find((s) => s.name === pick || s.uuid === pick);
     if (!match) {
-      throw new Error(`--server ${pick}: no Coolify server has that name or uuid (servers: ${names}).`);
+      throw new Error(
+        `--server ${pick}: no Coolify server has that name or uuid (servers: ${names}).`,
+      );
     }
     return resolveServerDetails(api, match);
   }
   if (servers.length !== 1) {
     const found =
-      servers.length === 0 ? "Coolify lists no servers" : `Coolify lists ${servers.length}: ${names}`;
+      servers.length === 0
+        ? "Coolify lists no servers"
+        : `Coolify lists ${servers.length}: ${names}`;
     throw new Error(`--deploy-target existing needs --server <name|uuid>: ${found}.`);
   }
   console.log(chalk.dim(`  Auto-selected server: ${servers[0].name} (${servers[0].ip})`));

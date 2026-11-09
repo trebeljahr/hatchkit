@@ -34,6 +34,7 @@
   "test-infra-stacks.ts",
   "test-carry-static.ts",
   "test-create-flags.ts",
+  "test-github-reuse.ts",
   "test-deferrals.ts",
   "test-legacy-openpanel-config.ts",
   "test-set-description.ts",
