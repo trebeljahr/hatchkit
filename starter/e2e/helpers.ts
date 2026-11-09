@@ -11,7 +11,7 @@ export async function signUpViaUI(
   await page.getByTestId("signup-confirm-password").fill(opts.password);
   await page.getByTestId("signup-submit").click();
   // Wait for navigation to dashboard
-  await page.waitForURL("/dashboard", { timeout: 10_000 });
+  await page.waitForURL(/\/dashboard\/?$/, { timeout: 20_000, waitUntil: "commit" });
 }
 
 export async function signInViaUI(
@@ -22,10 +22,13 @@ export async function signInViaUI(
   await page.getByTestId("login-email").fill(opts.email);
   await page.getByTestId("login-password").fill(opts.password);
   await page.getByTestId("login-submit").click();
-  await page.waitForURL("/dashboard", { timeout: 10_000 });
+  await page.waitForURL(/\/dashboard\/?$/, { timeout: 20_000, waitUntil: "commit" });
 }
 
 export async function signOutViaUI(page: Page) {
   await page.getByTestId("sign-out").click();
-  await page.waitForURL("/login", { timeout: 10_000 });
+  // "commit", not "load": under next dev the load event can trail the
+  // navigation past the timeout, and each retry signs in again until
+  // better-auth's sign-in rate limit fails the next test.
+  await page.waitForURL(/\/login\/?$/, { timeout: 20_000, waitUntil: "commit" });
 }
