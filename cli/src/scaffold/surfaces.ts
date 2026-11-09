@@ -351,18 +351,37 @@ function patchNextConfigForClientOnly(outputDir: string, modifications: string[]
   );
 }
 
-/** Drop the client image's NEXT_PUBLIC_API_URL assertion.
+/** Make the client image buildable without a server half.
  *
- *  Same reason `patchNextConfigForClientOnly` drops the build-time guard
- *  from next.config.ts: a static project has no server half, so there is
- *  no API URL to inline and a check demanding one fails every image
- *  build. The `version.json` stamp stays — the deploy pipeline polls the
- *  commit it records, and that works for a static project too. */
+ *  Two edits:
+ *
+ *    1. Drop the NEXT_PUBLIC_API_URL assertion. Same reason
+ *       `patchNextConfigForClientOnly` drops the build-time guard from
+ *       next.config.ts: a static project has no server half, so there is
+ *       no API URL to inline and a check demanding one fails every image
+ *       build. The `version.json` stamp stays — the deploy pipeline polls
+ *       the commit it records, and that works for a static project too.
+ *    2. Drop the `COPY packages/server…` lines. The fullstack client image
+ *       copies the server package because the client imports its router
+ *       type; this prune deletes that package, and `COPY` of a path that
+ *       is not in the build context fails the image build on the first
+ *       push. */
 function patchClientDockerfileForClientOnly(outputDir: string, modifications: string[]): void {
   const path = join(outputDir, "packages/client/Dockerfile");
   if (!existsSync(path)) return;
-  rewriteFile(path, stripClientDockerfileApiUrlAssertion);
-  modifications.push("static: patched client Dockerfile (dropped NEXT_PUBLIC_API_URL assertion)");
+  rewriteFile(path, (c) =>
+    stripServerPackageFromClientDockerfile(stripClientDockerfileApiUrlAssertion(c)),
+  );
+  modifications.push(
+    "static: patched client Dockerfile (dropped NEXT_PUBLIC_API_URL assertion and packages/server copies)",
+  );
+}
+
+/** Remove every `COPY packages/server…` line (manifest and sources) from
+ *  a client Dockerfile. Line-anchored, so a comment that merely mentions
+ *  the package is left alone. */
+export function stripServerPackageFromClientDockerfile(content: string): string {
+  return content.replace(/^COPY packages\/server(?:\/\S*)? \S+[ \t]*\r?\n/gm, "");
 }
 
 /** Drop the `@starter/server/trpc` path alias from the client's

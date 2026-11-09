@@ -53,7 +53,16 @@
  * Run: `pnpm exec tsx test-docs-in-client.ts`
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -75,6 +84,7 @@ const { renderDocsBuildScript, renderRobotsRoute, sitemapsInRobotsRoute } = awai
   "./src/features/docs-in-client/render.js"
 );
 const {
+  dockerfileHasDocsStep,
   docsSiteConfigAddress,
   upgradeClientDockerfileDocs,
   upgradeDocsSiteConfig,
@@ -808,11 +818,16 @@ check("an unreadable address is reported as absent rather than guessed", () => {
 
 console.log("\napplying the module");
 
-/** A project directory with the files the retrofits anchor on. */
-function makeProject(name: string, withWorkflow: boolean): string {
+/** A project directory with the files the retrofits anchor on, and a docs
+ *  package unless `withDocs` is false. */
+function makeProject(name: string, withWorkflow: boolean, withDocs = true): string {
   const dir = join(tmp, "projects", name);
   mkdirSync(join(dir, "packages", "client"), { recursive: true });
   writeFileSync(join(dir, "packages", "client", "Dockerfile"), CLIENT_DOCKERFILE, "utf-8");
+  if (withDocs) {
+    mkdirSync(join(dir, "docs-site"), { recursive: true });
+    writeFileSync(join(dir, "docs-site", "package.json"), '{ "name": "docs-site" }\n', "utf-8");
+  }
   if (withWorkflow) {
     mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
     writeFileSync(
@@ -1091,13 +1106,81 @@ check("a client that is not the starter's packages/client is left alone", () => 
   assert.ok(!existsSync(join(dir, "packages")));
 });
 
-check("a static project still gets the docs", () => {
+check("a static project with a docs package still gets the docs", () => {
   // No server half is no reason to have no documentation.
   const dir = makeProject("static", true);
   const ctx = makeContext(dir, { surfaces: "static" });
   const result = applyDocsInClient(ctx);
   assert.equal(result.skipped, undefined);
   assert.ok(written(ctx).includes("scripts/docs/build-into-client.mjs"));
+});
+
+check("a project with no docs package is skipped, and nothing is written", () => {
+  // The static prune drops the starter's docs site. Retrofitting the image
+  // anyway put `COPY docs-site …` into a Dockerfile whose build context has
+  // no docs-site, and a `--check` step into CI that crashed on the missing
+  // build output: the first deploy of every static project failed.
+  const dir = makeProject("static-no-docs", true, false);
+  const dockerfileBefore = readFileSync(join(dir, "packages/client/Dockerfile"), "utf-8");
+  const workflowBefore = readFileSync(join(dir, ".github/workflows/build-and-deploy.yml"), "utf-8");
+  const ctx = makeContext(dir, { surfaces: "static" });
+  const result = applyDocsInClient(ctx);
+
+  assert.match(result.skipped ?? "", /no docs-site\/package\.json/);
+  assert.deepEqual(result.notes, [], "a clean project has nothing to be told");
+  assert.deepEqual(ctx.ledger.entries, [], "a skipped module touches nothing at all");
+  assert.equal(readFileSync(join(dir, "packages/client/Dockerfile"), "utf-8"), dockerfileBefore);
+  assert.equal(
+    readFileSync(join(dir, ".github/workflows/build-and-deploy.yml"), "utf-8"),
+    workflowBefore,
+  );
+  for (const path of [
+    "scripts/docs/build-into-client.mjs",
+    "packages/client/src/app/robots.ts",
+    "packages/client/src/lib/docs-links.ts",
+    ".github/workflows/docs-verify.yml",
+  ]) {
+    assert.ok(!existsSync(join(dir, path)), `${path} was written without a docs package`);
+  }
+});
+
+check("docs steps left behind by a removed docs package are reported, not removed", () => {
+  // `update` never takes lines back out of a project's files. It names
+  // them, because they fail every build until somebody does.
+  const dir = makeProject("docs-removed", true);
+  applyDocsInClient(makeContext(dir));
+  rmSync(join(dir, "docs-site"), { recursive: true, force: true });
+  const dockerfileBefore = readFileSync(join(dir, "packages/client/Dockerfile"), "utf-8");
+  assert.ok(dockerfileHasDocsStep(dockerfileBefore), "precondition: the step was applied");
+
+  const ctx = makeContext(dir);
+  const result = applyDocsInClient(ctx);
+  assert.match(result.skipped ?? "", /no docs-site\/package\.json/);
+  assert.deepEqual(ctx.ledger.entries, []);
+  assert.equal(readFileSync(join(dir, "packages/client/Dockerfile"), "utf-8"), dockerfileBefore);
+  assert.equal(result.notes.length, 1, `expected one note, got: ${result.notes.join(" | ")}`);
+  assert.match(result.notes[0], /packages\/client\/Dockerfile/);
+  assert.match(result.notes[0], /\.github\/workflows\/build-and-deploy\.yml/);
+});
+
+check("the generated script's --check passes, and says so, with no docs package", () => {
+  // Real path: the script runs only when it is the entry point, judged by
+  // comparing its own URL with argv[1], and the temp dir may be a symlink.
+  mkdirSync(join(tmp, "projects", "script-no-docs"), { recursive: true });
+  const dir = realpathSync(join(tmp, "projects", "script-no-docs"));
+  const path = join(dir, "scripts/docs/build-into-client.mjs");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, renderDocsBuildScript(docsLayout({ domain: "example.test" })), "utf-8");
+
+  const checked = spawnSync(process.execPath, [path, "--check"], { cwd: dir, encoding: "utf-8" });
+  assert.equal(checked.status, 0, checked.stderr);
+  assert.match(checked.stdout, /No docs-site\/package\.json.*Nothing to check/);
+
+  // The image build is the other case: a docs step with no docs to build
+  // is a mistake in the Dockerfile, and it fails with the fix.
+  const build = spawnSync(process.execPath, [path], { cwd: dir, encoding: "utf-8" });
+  assert.equal(build.status, 1);
+  assert.match(build.stderr, /No docs-site\/package\.json.*Remove this step/);
 });
 
 check("a custom base path reaches every artefact", () => {

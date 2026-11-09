@@ -180,6 +180,19 @@ export function applyDocsInClientAt(
     basePath: overrides.basePath,
     docsPackage: overrides.docsPackage,
   });
+
+  // No docs package, no docs to publish. The retrofits below copy that
+  // package into the client image and build it on every pull request, so
+  // applying them without it fails the first image build at `COPY` and
+  // the first verify job at the missing build output. A static scaffold
+  // is the usual case: its prune drops the starter's docs site. Adding
+  // the package later and running `hatchkit update` applies the module
+  // then.
+  const manifest = `${layout.docsPackage}/package.json`;
+  if (!ctx.ledger.exists(manifest)) {
+    return skippedWithoutDocsPackage(ctx, layout);
+  }
+
   const notes: string[] = [];
 
   ctx.ledger.writeIfChanged(DOCS_SCRIPT_REL_PATH, renderDocsBuildScript(layout));
@@ -188,15 +201,41 @@ export function applyDocsInClientAt(
 
   retrofitClientImage(ctx, layout, notes);
   retrofitPullRequestCheck(ctx, layout);
-
-  if (!ctx.ledger.exists(layout.docsPackage)) {
-    notes.push(
-      `No ${layout.docsPackage}/ in this project yet — the copy step builds that workspace package.`,
-    );
-  }
   retrofitDocsSiteConfig(ctx, layout, notes);
 
   return applied(notes);
+}
+
+/** The outcome for a project with no docs package.
+ *
+ *  Skipped, and nothing is written. When an earlier run already put the
+ *  docs steps into the image or a workflow (the package was deleted since,
+ *  or the project was scaffolded by a version that applied them without
+ *  one), those steps fail every build — but they are lines in the
+ *  project's own files, and `update` does not take lines back. So the
+ *  note names each file, and the person removes them. */
+function skippedWithoutDocsPackage(
+  ctx: OperationalContext,
+  layout: DocsLayout,
+): OperationalOutcome {
+  const reason = `no ${layout.docsPackage}/package.json, so there are no docs to build into the client image`;
+  const stale: string[] = [];
+  if (dockerfileHasDocsStep(ctx.ledger.read(CLIENT_DOCKERFILE_REL_PATH) ?? "")) {
+    stale.push(CLIENT_DOCKERFILE_REL_PATH);
+  }
+  if (workflowHasDocsCheck(ctx.ledger.read(DEPLOY_WORKFLOW_REL_PATH) ?? "")) {
+    stale.push(DEPLOY_WORKFLOW_REL_PATH);
+  }
+  if (ctx.ledger.exists(DOCS_WORKFLOW_REL_PATH)) stale.push(DOCS_WORKFLOW_REL_PATH);
+  if (stale.length === 0) return skipped(reason);
+  return {
+    skipped: reason,
+    notes: [
+      `This project has no ${layout.docsPackage}/package.json, but ${stale.join(", ")} still ` +
+        `build the docs (${DOCS_SCRIPT_REL_PATH}, COPY ${layout.docsPackage}). Remove those ` +
+        "steps, or the image build and the verify job fail; or add the docs package back.",
+    ],
+  };
 }
 
 /** Point the docs site at the one address it is published from.

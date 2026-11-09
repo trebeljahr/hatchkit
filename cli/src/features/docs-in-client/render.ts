@@ -197,6 +197,20 @@ function run(argv) {
   // that the pages would be indexed, and none of that needs a client build.
   const checkOnly = argv.includes("--check");
 
+  // No docs package: a pull request has nothing to check, so --check passes
+  // and says so. The image build is different — a docs step there with no
+  // docs to build is a mistake in the Dockerfile, so it fails with the fix
+  // rather than with a missing-file error from the build output.
+  if (!existsSync(resolve(REPO_ROOT, DOCS_PACKAGE, "package.json"))) {
+    const missing = "[docs] No " + DOCS_PACKAGE + "/package.json, so there are no docs to build.";
+    if (checkOnly) {
+      console.log(missing + " Nothing to check.");
+      return;
+    }
+    console.error(missing + " Remove this step from the image build, or add the docs package back.");
+    process.exit(1);
+  }
+
   buildDocs();
 
   let tree = DOCS_BUILD_DIR;

@@ -3498,11 +3498,27 @@ async function handleCreate(): Promise<void> {
                 ),
               );
             }
-            const secretName = "DOTENV_PRIVATE_KEY_PRODUCTION";
-            const preExisted = await ghSecretExists(appDir, slug, secretName);
-            await pushProjectKeyToGh(config.name, slug);
-            if (!preExisted) {
-              ledger?.record({ kind: "ghActionsSecret", repo: slug, name: secretName });
+            // A static scaffold has no server env, so it has a dotenvx key
+            // only when a provisioner minted one for the client's env
+            // (Plausible's tracker config, say). No key there is the
+            // expected state, not a failure to report.
+            const { getSecret } = await import("./utils/secrets.js");
+            const hasKey =
+              config.surfaces !== "static" ||
+              Boolean(await getSecret(SECRET_KEYS.dotenvxPrivateKey(config.name)));
+            if (hasKey) {
+              const secretName = "DOTENV_PRIVATE_KEY_PRODUCTION";
+              const preExisted = await ghSecretExists(appDir, slug, secretName);
+              await pushProjectKeyToGh(config.name, slug);
+              if (!preExisted) {
+                ledger?.record({ kind: "ghActionsSecret", repo: slug, name: secretName });
+              }
+            } else {
+              console.log(
+                chalk.dim(
+                  "  · Static project with no dotenvx key — no DOTENV_PRIVATE_KEY_PRODUCTION to set.",
+                ),
+              );
             }
           }
         } catch (err) {

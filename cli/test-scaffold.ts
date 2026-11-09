@@ -186,6 +186,28 @@ function ciNeedsAreResolvable(workflow: string): boolean {
   return ciNeeds(workflow).every((n) => declared.has(n));
 }
 
+/** Every build-context source a Dockerfile `COPY`s that is not in the
+ *  scaffold. The image is built with the repository root as its context,
+ *  so a source that is missing there fails the image build on the first
+ *  push. `COPY --from=<stage>` reads another stage, not the context. */
+function dockerCopySourcesMissing(projectDir: string, dockerfileRel: string): string[] {
+  const dockerfile = readFileSync(join(projectDir, dockerfileRel), "utf-8");
+  return [...dockerfile.matchAll(/^COPY[ \t]+(.+)$/gm)].flatMap((m) => {
+    const args = m[1].trim().split(/\s+/);
+    if (args.some((a) => a.startsWith("--from="))) return [];
+    const paths = args.filter((a) => !a.startsWith("--"));
+    return paths.slice(0, -1).filter((src) => !existsSync(join(projectDir, src)));
+  });
+}
+
+/** Every `run: node <script>` step of a workflow whose script is not in
+ *  the scaffold — a step that crashes with ENOENT on the first run. */
+function workflowNodeScriptsMissing(projectDir: string, workflow: string): string[] {
+  return [...workflow.matchAll(/^\s*(?:-\s+)?run:\s+node\s+(\S+)/gm)]
+    .map((m) => m[1])
+    .filter((script) => !existsSync(join(projectDir, script)));
+}
+
 const results: Record<string, boolean> = {};
 
 results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
@@ -342,6 +364,20 @@ results.minimal = await run("minimal (no flags)", "plain-app", [], (d) => {
       ),
     ],
     ["CI workflow needs: entries all resolve", ciNeedsAreResolvable(ciWorkflow)],
+    // A fullstack scaffold keeps the starter's docs site, so the docs
+    // module builds it into the client image and checks it in CI — and
+    // every path either step reaches for has to be in the scaffold.
+    ["client Dockerfile builds the docs", clientDockerfile.includes("build-into-client")],
+    ["CI verify job checks the docs", ciWorkflow.includes("build-into-client.mjs --check")],
+    [
+      "client Dockerfile: every COPY source is in the scaffold",
+      dockerCopySourcesMissing(d, "packages/client/Dockerfile").length === 0,
+    ],
+    [
+      "server Dockerfile: every COPY source is in the scaffold",
+      dockerCopySourcesMissing(d, "packages/server/Dockerfile").length === 0,
+    ],
+    ["CI: every `run: node <script>` exists", workflowNodeScriptsMissing(d, ciWorkflow).length === 0],
     // CLAUDE.md is the first file an agent reads in a generated project.
     // A fullstack scaffold keeps the server-side sections; the marker
     // syntax that drives the pruning must never survive.
@@ -727,7 +763,27 @@ results.staticCoolify = await run(
     const rawTsconfig = readFileSync(join(d, "packages/client/tsconfig.json"), "utf-8");
     const globals = readFileSync(join(d, "packages/client/src/styles/globals.css"), "utf-8");
     const claudeMd = readFileSync(join(d, "CLAUDE.md"), "utf-8");
+    const clientDockerfile = readFileSync(join(d, "packages/client/Dockerfile"), "utf-8");
+    const ci = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
     return [
+      // ── client image + deploy workflow: the first CI deploy must pass ──
+      // The prune deletes packages/server and docs-site; nothing that
+      // builds the image or runs in CI may still reach for either.
+      ["scaffold has no docs-site/ (pruned)", !existsSync(join(d, "docs-site"))],
+      ["client Dockerfile copies nothing from packages/server", !clientDockerfile.includes("packages/server")],
+      ["client Dockerfile has no docs-site step", !clientDockerfile.includes("docs-site")],
+      ["client Dockerfile does not run the docs build", !clientDockerfile.includes("build-into-client")],
+      [
+        "client Dockerfile: every COPY source is in the scaffold",
+        dockerCopySourcesMissing(d, "packages/client/Dockerfile").length === 0,
+      ],
+      ["ci: no packages/server reference", !ci.includes("packages/server")],
+      ["ci: no docs-site reference", !ci.includes("docs-site")],
+      ["ci: no docs build check", !ci.includes("build-into-client")],
+      ["ci: every `run: node <script>` exists", workflowNodeScriptsMissing(d, ci).length === 0],
+      ["no standalone docs-verify workflow", !existsSync(join(d, ".github/workflows/docs-verify.yml"))],
+      ["no docs build script", !existsSync(join(d, "scripts/docs/build-into-client.mjs"))],
+
       // ── next.config: nothing may reference the deleted server ──
       [
         "next.config drops the NEXT_PUBLIC_API_URL build guard",
