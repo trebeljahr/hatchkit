@@ -1,5 +1,6 @@
 // Only fixed health metadata crosses this boundary. No app logs, records or secrets.
 import {renderMail,summaryLine} from './mail-core.mjs';
+import {storageWatch} from './storage-watch.mjs';
 // The monitored hosts come from the Worker's PING_KEYS variable: a JSON object
 // from host name to the name of that host's ping-secret binding, for example
 // {"web-1":"WEB_1_PING_KEY","ops-1":"OPS_1_PING_KEY"}. Without it every ping
@@ -169,9 +170,11 @@ export default {
       return Response.json({sent:true});
     }
     if(url.pathname==='/status' && request.method==='GET' && await authorized(bearer,env.READER_KEY)) {
-      const state=await jsonObject(env.STATE,'sweep.json');return Response.json(state || {ok:false,issue:'No sweep yet'});
+      const state=await jsonObject(env.STATE,'sweep.json');const storage=await jsonObject(env.STATE,'storage.json');
+      return Response.json({...(state || {ok:false,issue:'No sweep yet'}),storage:storage || {configured:!!(env.CF_ACCOUNT_ID||env.CF_USAGE_TOKEN),ok:false}});
     }
     return new Response('Not found',{status:404});
   },
-  async scheduled(_controller,env,ctx){ctx.waitUntil(sweep(env));},
+  // Two independent jobs: a failing storage read must not stop the VPS sweep.
+  async scheduled(_controller,env,ctx){ctx.waitUntil(sweep(env));ctx.waitUntil(storageWatch(env));},
 };

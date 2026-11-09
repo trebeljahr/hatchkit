@@ -70,6 +70,8 @@ AIDE file checks, kernel-audit configuration, and the independent security monit
 
 The monitor Worker reads its hosts from the `PING_KEYS` variable, a JSON object from each host name to the name of that host's ping-secret binding. Without it, every ping answers 503 and every sweep fails. Each host's publisher accepts only `https://<monitor>/ping/<its own hostname>` from `/etc/hatchkit-security/publisher.json`. Hatchkit does not install either part for you; review both before deploying them. Its five-minute publication sends no logs, records, environment values, or backup keys.
 
+The same Worker can also watch Cloudflare storage. Once a day it reads the size of every R2 bucket, Workers KV namespace and D1 database in one account with a read-only token. It mails when one passes 80 % of its limit or grows more than 1 GB in a day. Setup and limits are in the template's [README](https://github.com/trebeljahr/hatchkit/blob/main/cli/src/templates/security-controller/README.md).
+
 AIDE checks run daily at 04:30 UTC with up to 15 minutes of delay. Establish a trusted baseline first. Never accept the current filesystem automatically after updates. A local root attacker can alter local checks; the independent monitor detects missed or stale reports but cannot prove the host is uncompromised.
 
 ## Cloudflare audit token
