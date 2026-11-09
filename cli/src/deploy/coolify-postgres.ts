@@ -55,7 +55,11 @@ export async function provisionCoolifyPostgres(
     let server: { uuid: string; name: string; ip: string } | null = null;
     if (config.serverUuid) {
       const servers = await api.listServers();
-      const cached = servers.find((s) => s.id === config.serverId) ?? servers[0];
+      // Coolify's /servers carries a uuid but no numeric id, so match on the
+      // uuid we are about to use; an id match on undefined took the first server.
+      const cached =
+        servers.find((s) => s.uuid === config.serverUuid) ??
+        servers.find((s) => s.id !== undefined && s.id === config.serverId);
       server = cached
         ? { uuid: config.serverUuid, name: cached.name, ip: cached.ip }
         : { uuid: config.serverUuid, name: "(server)", ip: config.serverIp ?? "" };
