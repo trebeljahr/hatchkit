@@ -59,6 +59,16 @@ export const AUTH_SECURITY_SPECS: Record<AuthSecurityOption, AuthSecurityOptionS
     tokenShellNote:
       "The OAuth redirect must come back to the origin that started it. A shell's origin (`capacitor://localhost`, Electron's `app://-`, `file://`) can be neither a registered redirect URI nor a place Google will send a browser. The button therefore renders disabled with a note in those builds rather than being hidden, so the reason is visible.",
   },
+  "apple-oauth": {
+    id: "apple-oauth",
+    label: "Sign in with Apple button",
+    summary:
+      "better-auth's Apple provider, with the client secret minted from your .p8 key and re-minted before Apple's six-month limit. Hidden until every APPLE_* variable is set.",
+    needsEmail: false,
+    tokenShell: "partial",
+    tokenShellNote:
+      "The web flow cannot come back to a shell: Apple returns with a `form_post` to `/api/auth/callback/apple` on the web origin, and a shell origin (`capacitor://localhost`, Electron's `app://-`) can be neither a registered return URL nor a place Apple will send a browser, so the button renders disabled with a note there. The server side of the native path is already done: `/sign-in/social` with `{ provider: \"apple\", idToken: { token, nonce } }` takes the identity token in the request BODY, verifies it against Apple's keys with `APPLE_APP_BUNDLE_ID` as the audience, and creates the session inside the handler, so `bearer` emits `set-auth-token`. What is missing is the shell half: a native Sign in with Apple plugin (e.g. `@capacitor-community/apple-sign-in`) and the Sign in with Apple entitlement in the iOS project. Without `APPLE_APP_BUNDLE_ID` the ID-token path is switched off entirely.",
+  },
   "account-deletion": {
     id: "account-deletion",
     label: "Delete account",

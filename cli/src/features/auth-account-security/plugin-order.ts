@@ -35,6 +35,12 @@ export const ORDERED_SERVER_PLUGINS: readonly string[] = [
   "emailOtpPlugin",
   "magicLinkPlugin",
   "passkeyPlugin",
+  // Has no hooks and never touches a session: it only adds Apple's origin
+  // to the trusted list for the cross-site `form_post` callback. Placed
+  // ahead of bearer() because EVERY plugin is — a name outside this list
+  // has no defined position, and "harmless anywhere" is the claim the
+  // contract exists not to take on trust.
+  "appleSignInPlugin",
   // Always last. See the file header.
   "bearer",
 ] as const;
@@ -57,6 +63,7 @@ const SERVER_PLUGIN_BY_OPTION: Partial<Record<AuthSecurityOption, string>> = {
   "email-otp": "emailOtpPlugin",
   "magic-link": "magicLinkPlugin",
   passkeys: "passkeyPlugin",
+  "apple-oauth": "appleSignInPlugin",
 };
 
 const CLIENT_PLUGIN_BY_OPTION: Partial<Record<AuthSecurityOption, string>> = {

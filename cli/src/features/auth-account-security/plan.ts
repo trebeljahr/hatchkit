@@ -79,6 +79,19 @@ const FILES_BY_OPTION: Record<AuthSecurityOption, readonly AuthSecurityFile[]> =
       target: "packages/client/src/components/auth/google-sign-in-button.tsx",
     },
   ],
+  "apple-oauth": [
+    { template: "server/apple-sign-in.ts", target: "packages/server/src/auth/apple-sign-in.ts" },
+    // Runs a real better-auth instance: the getter that keeps the client
+    // secret fresh and Apple's trusted origin both fail quietly otherwise.
+    {
+      template: "server/apple-sign-in.test.ts",
+      target: "packages/server/src/tests/apple-sign-in.test.ts",
+    },
+    {
+      template: "client/apple-sign-in-button.tsx",
+      target: "packages/client/src/components/auth/apple-sign-in-button.tsx",
+    },
+  ],
   "account-deletion": [
     { template: "shared/account-deletion.ts", target: "packages/shared/src/account-deletion.ts" },
     {
@@ -146,6 +159,31 @@ const FILES_BY_OPTION: Record<AuthSecurityOption, readonly AuthSecurityFile[]> =
   ],
 };
 
+/** Sign in with Apple's variables. Written into `.env.example` and the
+ *  compose file's environment by `index.ts`, and read straight from
+ *  `process.env` by `auth/apple-sign-in.ts` — `config/env.ts` is not
+ *  touched, because it would need one more anchor in a file several
+ *  features edit. */
+export const APPLE_ENV_VARS: ReadonlyArray<{ key: string; comment: string }> = [
+  {
+    key: "APPLE_CLIENT_ID",
+    comment:
+      "Services ID from the Apple Developer portal (e.g. com.example.app.signin). Its return URL is https://<domain>/api/auth/callback/apple.",
+  },
+  { key: "APPLE_TEAM_ID", comment: "10-character Team ID (Membership details)." },
+  { key: "APPLE_KEY_ID", comment: "10-character Key ID of the Sign in with Apple key." },
+  {
+    key: "APPLE_PRIVATE_KEY",
+    comment:
+      "Contents of the .p8 file, on one line with literal \\n. A secret: encrypted in .env.production only.",
+  },
+  {
+    key: "APPLE_APP_BUNDLE_ID",
+    comment:
+      "Optional. The native app's bundle ID, accepted as an identity-token audience. Leave empty unless a native app signs in with an Apple identity token.",
+  },
+];
+
 /** Env vars the feature introduces, with the comment written above each
  *  in `.env.example` / `config/env.ts`. Only vars that are genuinely new
  *  — `GOOGLE_CLIENT_ID` and friends are already in the starter. */
@@ -166,6 +204,7 @@ const ENV_BY_OPTION: Partial<Record<AuthSecurityOption, Array<{ key: string; com
           "From address. Deliberately not part of transport selection: an SMTP host with no From must still select SMTP and fail loudly, rather than look like 'mail is not configured'.",
       },
     ],
+    "apple-oauth": [...APPLE_ENV_VARS],
   };
 
 /** Order the options are applied and reported in — catalogue order, not

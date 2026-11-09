@@ -15,10 +15,10 @@
  */
 
 import { FeatureLedger } from "../contract.js";
-import { rewriteAuthClient, rewriteLoginPage } from "./client-rewriter.js";
+import { rewriteAuthClient, rewriteLoginPage, rewriteLoginPageApple } from "./client-rewriter.js";
 import { renderAuthSecurityDocs } from "./docs.js";
 import { PASSKEY_PACKAGE } from "./options.js";
-import { filesFor, planAuthAccountSecurity } from "./plan.js";
+import { APPLE_ENV_VARS, filesFor, planAuthAccountSecurity } from "./plan.js";
 import {
   type AuthSecurityTokens,
   renderAuthSecurityString,
@@ -27,16 +27,18 @@ import {
 import {
   type RewriteResult,
   rewriteHealthRouter,
+  rewriteHealthRouterApple,
   rewriteProfileRouter,
   rewriteServerApp,
   rewriteServerAuth,
+  rewriteServerAuthApple,
   rewriteSharedIndex,
 } from "./server-rewriter.js";
 import type { ApplyAuthSecurityOptions, AuthSecurityAudit, AuthSecurityOption } from "./types.js";
 
 export * from "./types.js";
 export { AUTH_SECURITY_SPECS, specFor, signInMethods, PASSKEY_PACKAGE } from "./options.js";
-export { planAuthAccountSecurity, filesFor } from "./plan.js";
+export { planAuthAccountSecurity, filesFor, APPLE_ENV_VARS } from "./plan.js";
 export { renderAuthSecurityDocs, tokenShellVerdicts } from "./docs.js";
 export {
   ORDERED_SERVER_PLUGINS,
@@ -45,8 +47,12 @@ export {
   findPluginOrderViolation,
   serverPluginsFor,
 } from "./plugin-order.js";
-export { rewriteServerAuth } from "./server-rewriter.js";
-export { rewriteAuthClient, rewriteLoginPage } from "./client-rewriter.js";
+export {
+  rewriteServerAuth,
+  rewriteServerAuthApple,
+  rewriteHealthRouterApple,
+} from "./server-rewriter.js";
+export { rewriteAuthClient, rewriteLoginPage, rewriteLoginPageApple } from "./client-rewriter.js";
 
 /** Screens a signed-out visitor may be sent back to after signing in.
  *  The starter's protected routes; a project adds its own. */
@@ -54,6 +60,52 @@ const DEFAULT_SAFE_NEXT_PREFIXES = ["/dashboard", "/profile", "/settings"] as co
 
 /** Where a freshly authenticated user lands when there is no `next`. */
 const DEFAULT_POST_AUTH_REDIRECT = "/dashboard";
+
+/**
+ * Run transforms in sequence over one file, as ONE edit. Each is idempotent
+ * on its own, so the sequence is too — which `ledger.edit` requires.
+ *
+ * The first transform is the file's base patch: when it declines, nothing
+ * is written, as before. A later one that declines is skipped and reported
+ * in `partial`, and the patches before it still land — a moved anchor for
+ * Sign in with Apple must not cost the project its two-factor wiring.
+ */
+function chain(
+  base: (source: string) => RewriteResult,
+  ...extras: Array<((source: string) => RewriteResult) | false>
+): (source: string) => RewriteResult {
+  return (source) => {
+    const first = base(source);
+    if (!first.applied) return first;
+    let out = first.source;
+    const partial: string[] = [];
+    for (const extra of extras) {
+      if (!extra) continue;
+      const result = extra(out);
+      if (result.applied) out = result.source;
+      else partial.push(result.reason ?? "could not be patched automatically");
+    }
+    return { source: out, applied: true, partial };
+  };
+}
+
+/** Sign in with Apple's lines in `.env.example`: a managed block under the
+ *  Google pair, every value empty and commented out. */
+function appleEnvExampleBlock(): string {
+  const lines = [
+    "# Sign in with Apple (optional — leave empty to disable). See docs/account-security.md.",
+  ];
+  for (const { key, comment } of APPLE_ENV_VARS) {
+    lines.push(`# ${comment}`, `# ${key}=`);
+  }
+  return lines.join("\n");
+}
+
+/** The same variables, passed through to the server container by the
+ *  compose runtime — the way Coolify learns there is a field to fill. */
+function appleComposeBlock(): string {
+  return APPLE_ENV_VARS.map(({ key }) => `      ${key}: \${${key}:-}`).join("\n");
+}
 
 /**
  * Write a template file, but never over one that is already there.
@@ -101,8 +153,10 @@ function rewriteExisting(
     return;
   }
   let declined: string | undefined;
+  let partial: string[] = [];
   const action = ledger.edit(rel, (source) => {
     const result = transform(source);
+    partial = result.partial ?? [];
     if (!result.applied) {
       declined = result.reason ?? "could not be patched automatically";
       return source;
@@ -114,6 +168,11 @@ function rewriteExisting(
       `${label}: ${declined}. Wire it by hand — see docs/account-security.md.`,
     );
     return;
+  }
+  for (const reason of partial) {
+    audit.manualResidue.push(
+      `${label}: ${reason}. Wire it by hand — see docs/account-security.md.`,
+    );
   }
   if (action === "written" || action === "would-write") audit.rewritten.push(rel);
 }
@@ -190,16 +249,19 @@ export async function applyAuthAccountSecurity(
     ledger,
     "packages/server/src/auth/auth.ts",
     "server auth",
-    (source) =>
-      rewriteServerAuth(source, {
-        serverPlugins: plan.serverPlugins,
-        wantsTwoFactor: has("two-factor"),
-        wantsEmailVerification: has("email-verification"),
-        wantsAccountDeletion: has("account-deletion"),
-        wantsEmailOtp: has("email-otp"),
-        wantsMagicLink: has("magic-link"),
-        wantsPasskeys: has("passkeys"),
-      }),
+    chain(
+      (source) =>
+        rewriteServerAuth(source, {
+          serverPlugins: plan.serverPlugins,
+          wantsTwoFactor: has("two-factor"),
+          wantsEmailVerification: has("email-verification"),
+          wantsAccountDeletion: has("account-deletion"),
+          wantsEmailOtp: has("email-otp"),
+          wantsMagicLink: has("magic-link"),
+          wantsPasskeys: has("passkeys"),
+        }),
+      has("apple-oauth") && rewriteServerAuthApple,
+    ),
     tokens,
     audit,
   );
@@ -208,7 +270,7 @@ export async function applyAuthAccountSecurity(
     ledger,
     "packages/server/src/trpc/routers/health.ts",
     "health router",
-    rewriteHealthRouter,
+    chain(rewriteHealthRouter, has("apple-oauth") && rewriteHealthRouterApple),
     tokens,
     audit,
   );
@@ -265,16 +327,49 @@ export async function applyAuthAccountSecurity(
     ledger,
     "packages/client/src/app/login/page.tsx",
     "login page",
-    (source) =>
-      rewriteLoginPage(source, {
-        wantsTwoFactor: has("two-factor"),
-        wantsGoogle: has("google-oauth"),
-        wantsEmailOtp: has("email-otp"),
-        wantsMagicLink: has("magic-link"),
-      }),
+    chain(
+      (source) =>
+        rewriteLoginPage(source, {
+          wantsTwoFactor: has("two-factor"),
+          wantsGoogle: has("google-oauth"),
+          wantsEmailOtp: has("email-otp"),
+          wantsMagicLink: has("magic-link"),
+        }),
+      has("apple-oauth") && rewriteLoginPageApple,
+    ),
     tokens,
     audit,
   );
+
+  // Sign in with Apple's variables, where a person setting them up will look.
+  // Managed blocks: hatchkit owns the lines between its markers and nothing
+  // else, and a project without the file (or without the Google anchor in
+  // the compose file) is left alone rather than given a block in the wrong
+  // place.
+  if (has("apple-oauth")) {
+    if (ledger.read("packages/server/.env.example")?.includes("GOOGLE_CLIENT_SECRET")) {
+      ledger.ensureManagedBlock(
+        "packages/server/.env.example",
+        "apple-sign-in",
+        appleEnvExampleBlock(),
+        {
+          anchor: "GOOGLE_CLIENT_SECRET",
+          commentPrefix: "#",
+        },
+      );
+    }
+    const compose = ledger.read("docker-compose.yml");
+    if (compose?.includes("GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET")) {
+      ledger.ensureManagedBlock("docker-compose.yml", "apple-sign-in", appleComposeBlock(), {
+        anchor: "GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET",
+        commentPrefix: "      #",
+      });
+    } else if (compose !== undefined) {
+      audit.manualResidue.push(
+        "Sign in with Apple: docker-compose.yml has no GOOGLE_CLIENT_SECRET line to place the APPLE_* variables by. Add them to the server's environment by hand if this project deploys with compose.",
+      );
+    }
+  }
 
   // 3. package.json, through the ledger's add-only merge: a script or a
   // version the user has changed is reported as a conflict and left
@@ -308,6 +403,11 @@ export async function applyAuthAccountSecurity(
   if (has("google-oauth")) {
     audit.manualResidue.push(
       "Google sign-in: create an OAuth client, then set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET. Until both are set the button renders disabled with a note — it never silently disappears.",
+    );
+  }
+  if (has("apple-oauth")) {
+    audit.manualResidue.push(
+      `Sign in with Apple: in the Apple Developer portal, enable the capability on your App ID, create a Services ID with the return URL https://${opts.domain ?? "<domain>"}/api/auth/callback/apple (Apple accepts no localhost or IP address), and create a Sign in with Apple key. Then set APPLE_CLIENT_ID, APPLE_TEAM_ID, APPLE_KEY_ID and APPLE_PRIVATE_KEY in packages/server/.env.production and run hatchkit sync. hatchkit cannot do the portal steps: Apple has no API for them. Until all four are set the button does not render. Steps: docs/account-security.md.`,
     );
   }
   if (has("email-verification")) {

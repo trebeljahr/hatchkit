@@ -25,6 +25,11 @@ export type AuthSecurityOption =
   /** Google OAuth button that ships in every build and decides after
    *  mount whether it can work. */
   | "google-oauth"
+  /** Sign in with Apple through better-auth's own Apple provider, with
+   *  the ES256 client secret minted from the `.p8` key at boot and
+   *  re-minted before Apple's six-month limit. Off until every APPLE_*
+   *  variable is set. Net-new — not in the reference implementation. */
+  | "apple-oauth"
   /** Password-confirmed account deletion with an idempotent cascade. */
   | "account-deletion"
   /** Avatar upload: squared client-side, validated server-side, served
@@ -47,6 +52,7 @@ export const AUTH_SECURITY_OPTIONS: readonly AuthSecurityOption[] = [
   "email-verification",
   "credentials",
   "google-oauth",
+  "apple-oauth",
   "account-deletion",
   "profile-pictures",
   "email-otp",
@@ -57,9 +63,11 @@ export const AUTH_SECURITY_OPTIONS: readonly AuthSecurityOption[] = [
 /** Pre-ticked in the interactive multiselect, and the set a
  *  non-interactive `--auth-security` with no explicit list gets.
  *
- *  The three net-new sign-in methods are deliberately OFF: each one adds
- *  a way into the account, and a template should not widen the attack
- *  surface of every project scaffolded from it by default. */
+ *  The net-new sign-in methods are deliberately OFF: each one adds a way
+ *  into the account, and a template should not widen the attack surface
+ *  of every project scaffolded from it by default. Apple sign-in is off
+ *  for a second reason too: it needs a paid Apple Developer account and
+ *  portal setup that only a person can do. */
 export const AUTH_SECURITY_DEFAULT_OPTIONS: readonly AuthSecurityOption[] = [
   "two-factor",
   "email-verification",

@@ -25,14 +25,16 @@ detects its own previous output.
 | `email-verification` | Verified email required by default in production; explicit policy override for mail-free deployments |
 | `credentials` | Change password and change email, without signing the caller out |
 | `google-oauth` | A Google button that renders in every build and decides after mount |
+| `apple-oauth` | Sign in with Apple, hidden until the server has every `APPLE_*` value. See [Sign in with Apple](/docs/sign-in-with-apple) |
 | `account-deletion` | Password-confirmed, with an idempotent cascade and a second pass |
 | `profile-pictures` | Squared in the browser, magic-number checked on the server |
 | `email-otp` | Sign in with a code mailed to the address |
 | `magic-link` | Sign in by following a mailed link |
 | `passkeys` | WebAuthn as an additional method |
 
-The last three are **off by default**. Each one is another way into the account, and a
-template should not widen that for every project scaffolded from it.
+The last three, and `apple-oauth`, are **off by default**. Each one is another way into
+the account, and a template should not widen that for every project scaffolded from it.
+Sign in with Apple also needs portal steps that only a person can do.
 
 Redirect validation for `?next=` is not an option — it is written whenever the feature
 is enabled at all. See below.
@@ -54,6 +56,7 @@ against the shipped source of better-auth 1.6.11 rather than its docs:
 | --- | --- | --- |
 | Two-factor | **No** | The challenge is the signed cookie `better-auth.two_factor`, and `/two-factor/verify-totp` reads nothing else. The sign-in body is `{ twoFactorRedirect, twoFactorMethods }` — no token a client could hold. |
 | Google OAuth | **No** | The redirect must return to the origin that started it, and `capacitor://localhost` or `app://-` can never be that origin. |
+| Sign in with Apple | **Only with extra work** | The web flow cannot return to a shell, for the same reason as Google. The server already accepts a native identity token at `/sign-in/social` (body in, session out, so `bearer` emits a token) once `APPLE_APP_BUNDLE_ID` is set. The shell needs a native plugin and the Sign in with Apple entitlement. |
 | Email one-time code | **Yes** | Sending sets no cookie, and `/sign-in/email-otp` takes `{ email, otp }` in the body and creates the session inside the handler — so `bearer` emits `set-auth-token`. **This is the method to offer on native.** |
 | Magic link | **Only with extra work** | `/magic-link/verify` answers JSON when no `callbackURL` is given, so the endpoint cooperates. The link is opened by a mail client in the system browser, which is not the shell — so the shell needs a deep-link handler to capture the token and call verify itself. |
 | Passkeys | **No** | WebAuthn binds a credential to an RP ID, which must be a registered domain. A shell origin is not a domain and cannot be one. |
@@ -80,7 +83,7 @@ signed in, and nothing anywhere logs a reason.
 So `bearer()` goes last, after every plugin that can swap the session out:
 
 ```
-twoFactorPlugin → emailOtpPlugin → magicLinkPlugin → passkeyPlugin → bearer
+twoFactorPlugin → emailOtpPlugin → magicLinkPlugin → passkeyPlugin → appleSignInPlugin → bearer
 ```
 
 No runtime test catches a wrong order, so the CLI's test suite **reads the generated

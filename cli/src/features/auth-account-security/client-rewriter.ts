@@ -317,3 +317,48 @@ ${extras.map((node) => `          ${node}`).join("\n")}
 
   return { source: out, applied: true };
 }
+
+/** The block of alternative sign-in methods `rewriteLoginPage` writes. */
+const ALT_METHODS_OPEN = '<div className="space-y-3 border-t pt-6">\n';
+
+/**
+ * Add the Apple button to the login page.
+ *
+ * Separate from `rewriteLoginPage`, which returns early on a page it has
+ * already patched, so Apple can be added on a later run too. The button goes
+ * FIRST among the alternative methods: Apple's guidelines ask that it be at
+ * least as prominent as any other sign-in button.
+ */
+export function rewriteLoginPageApple(source: string): RewriteResult {
+  if (source.includes("AppleSignInButton")) return alreadyDone(source);
+
+  const importLine = `import { AppleSignInButton } from "@/components/auth/apple-sign-in-button";`;
+  const authImport = /^import \{[^}]*\} from "@\/lib\/auth-client";\n/m.exec(source);
+  if (!authImport) {
+    return unchanged(source, "login page does not import from @/lib/auth-client where expected");
+  }
+  const importAt = authImport.index + authImport[0].length;
+  let out = `${source.slice(0, importAt)}${importLine}\n${source.slice(importAt)}`;
+
+  const block = out.indexOf(ALT_METHODS_OPEN);
+  if (block !== -1) {
+    const at = block + ALT_METHODS_OPEN.length;
+    return {
+      source: `${out.slice(0, at)}          <AppleSignInButton />\n${out.slice(at)}`,
+      applied: true,
+    };
+  }
+
+  const forgot = /(\n\s*<div className="text-center text-sm">\n\s*<Link href="\/forgot-password")/;
+  if (!forgot.test(out)) {
+    return unchanged(
+      source,
+      "login page has neither the alternative sign-in block nor the forgot-password link to place the Apple button by",
+    );
+  }
+  out = out.replace(
+    forgot,
+    `\n        ${ALT_METHODS_OPEN}          <AppleSignInButton />\n        </div>\n$1`,
+  );
+  return { source: out, applied: true };
+}

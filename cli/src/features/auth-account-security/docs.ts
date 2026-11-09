@@ -13,6 +13,7 @@
  */
 
 import { AUTH_SECURITY_SPECS, specFor } from "./options.js";
+import { APPLE_ENV_VARS } from "./plan.js";
 import type { AuthSecurityOption, AuthSecurityPlan, TokenShellSupport } from "./types.js";
 
 const VERDICT_LABEL: Record<TokenShellSupport, string> = {
@@ -21,6 +22,13 @@ const VERDICT_LABEL: Record<TokenShellSupport, string> = {
   no: "No — web browsers only",
   "n/a": "Not a sign-in method",
 };
+
+/** Wrap each https URL in a code span. A bare `<domain>` placeholder is an
+ *  HTML tag to a Markdown renderer, which drops it. A sentence's closing
+ *  full stop stays outside the span. */
+function codeSpanUrls(text: string): string {
+  return text.replace(/https:\/\/\S+?(?=\.?(?:\s|$))/g, (url) => `\`${url}\``);
+}
 
 export interface AuthSecurityDocsInput {
   projectName: string;
@@ -203,6 +211,45 @@ export function renderAuthSecurityDocs(input: AuthSecurityDocsInput): string {
       `After an upload the client re-reads the session with the cookie cache disabled —`,
       `\`user.image\` is written through the adapter, so the cached cookie would otherwise serve`,
       `the old user for up to five minutes.`,
+      "",
+    );
+  }
+
+  if (plan.options.includes("apple-oauth")) {
+    lines.push(
+      `### Sign in with Apple`,
+      "",
+      `The button renders only when all four required variables are set and the key parses.`,
+      `A partial set is logged by name at boot and leaves Apple off. Set the values in`,
+      `\`packages/server/.env.production\` (encrypted with dotenvx), then run \`hatchkit sync\` to`,
+      `push them to Coolify:`,
+      "",
+      `| Variable | Value |`,
+      `| --- | --- |`,
+      ...APPLE_ENV_VARS.map(({ key, comment }) => `| \`${key}\` | ${codeSpanUrls(comment)} |`),
+      "",
+      `The portal steps — App ID capability, Services ID and its return URL, the \`.p8\` key, the`,
+      `Team ID, and registering your sending domain with Apple's private email relay — have no`,
+      `API, so only a person can do them. Hatchkit's docs page "Sign in with Apple" lists them.`,
+      "",
+      `Two rules in \`auth/apple-sign-in.ts\` fail quietly:`,
+      "",
+      `- **\`clientSecret\` is a getter.** Apple refuses a client secret older than six months.`,
+      `  better-auth reads the getter on every token call, so the secret is re-minted in time.`,
+      `  A plain value works until the first one expires. \`tests/apple-sign-in.test.ts\` runs a`,
+      `  real better-auth instance to prove the secret still changes.`,
+      `- **Apple's origin is trusted by \`appleSignInPlugin()\`, not in \`trustedOrigins\`.** Apple`,
+      `  returns with a cross-site POST, which better-auth refuses from an untrusted origin`,
+      `  whenever the request carries a cookie. \`trustedOrigins\` also feeds the CORS list, and`,
+      `  Apple's page must not make credentialed requests to this API.`,
+      "",
+      `**Native apps.** In a shell the button is disabled with a note, because Apple's`,
+      `\`form_post\` cannot return to a shell origin. The server already accepts a native identity`,
+      `token at \`/sign-in/social\` with \`idToken: { token, nonce }\`, but only when`,
+      `\`APPLE_APP_BUNDLE_ID\` is set; the shell needs a native Sign in with Apple plugin and the`,
+      `Sign in with Apple entitlement first. App Store guideline 4.8: an iOS app that offers a`,
+      `third-party login, such as Google, must also offer an equivalent such as Sign in with`,
+      `Apple. Make both work natively in the same release, or neither.`,
       "",
     );
   }

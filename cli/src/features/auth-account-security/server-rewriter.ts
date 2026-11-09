@@ -27,6 +27,9 @@ export interface RewriteResult {
   applied: boolean;
   /** Set when the transform declined. Surfaced as manual residue. */
   reason?: string;
+  /** Steps that declined while the rest of the file was patched. Surfaced
+   *  as manual residue too — see `chain` in index.ts. */
+  partial?: string[];
 }
 
 const unchanged = (source: string, reason: string): RewriteResult => ({
@@ -199,8 +202,13 @@ async function deliverAuthMail(
     },`);
   }
 
-  if (options.serverPlugins.length > 0) {
-    const calls = options.serverPlugins.map((name) => {
+  // Apple's plugin is left to `rewriteServerAuthApple`, which writes it
+  // together with the `appleConfig` it reads and the import it needs. Written
+  // here, a later decline of that step would leave a reference to a name
+  // nothing declares.
+  const rendered = options.serverPlugins.filter((name) => name !== "appleSignInPlugin");
+  if (rendered.length > 0) {
+    const calls = rendered.map((name) => {
       if (name === "twoFactorPlugin") return "twoFactorPlugin()";
       if (name === "emailOtpPlugin") {
         return `emailOtpPlugin((otp, mail) => deliverAuthMail("Sign-in code", otp, mail))`;
@@ -242,6 +250,157 @@ ${renderPluginList(calls, 6)}
   }
   return {
     source: `${out.slice(0, at)}\n\n${blocks.join("\n\n")}${out.slice(at)}`,
+    applied: true,
+  };
+}
+
+// ── Sign in with Apple ─────────────────────────────────────────────────
+//
+// Its own transforms, each detecting its own output, rather than branches
+// inside `rewriteServerAuth`: that one returns early on any file it has
+// already patched, so Apple could otherwise never be added on a later run.
+// Nothing here touches `trustedOrigins:` — other features replace that line
+// wholesale — so Apple's origin arrives through `appleSignInPlugin()`.
+
+/** The plugin registration, as it is written into the `plugins` array. */
+export const APPLE_PLUGIN_CALL = "appleSignInPlugin(appleConfig)";
+
+const APPLE_IMPORT = `import { appleProviderOptions, appleSignInConfig, appleSignInPlugin } from "./apple-sign-in.js";`;
+
+const APPLE_CONFIG_LINE = `  // Sign in with Apple: off unless every APPLE_* variable is set. Read once,
+  // here, so the provider and the plugin below agree. See auth/apple-sign-in.ts.
+  const appleConfig = appleSignInConfig();
+`;
+
+const APPLE_PROVIDER_LINE =
+  "      ...(appleConfig ? { apple: appleProviderOptions(appleConfig) } : {}),\n";
+
+/** Bounds of the first `plugins: [ ... ]` array, or null. Bracket-matched,
+ *  so a nested call with its own array cannot end it early. */
+function pluginArrayBounds(source: string): { open: number; close: number } | null {
+  const start = source.search(/\bplugins\s*:\s*\[/);
+  if (start === -1) return null;
+  const open = source.indexOf("[", start);
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "[") depth++;
+    else if (source[i] === "]") {
+      depth--;
+      if (depth === 0) return { open, close: i };
+    }
+  }
+  return null;
+}
+
+/**
+ * Put `appleSignInPlugin(appleConfig)` into an existing plugin array: on its
+ * own line directly above the first line that mentions `bearer(` — which
+ * also catches a conditional `...(x ? [bearer()] : [])` — or as the last
+ * element when there is no bearer. A one-line array gets the same rule
+ * inline.
+ */
+function insertIntoPluginArray(source: string, bounds: { open: number; close: number }): string {
+  const body = source.slice(bounds.open + 1, bounds.close);
+  const before = source.slice(0, bounds.open + 1);
+  const after = source.slice(bounds.close);
+
+  if (!body.includes("\n")) {
+    const bearerAt = body.search(/(?:\.\.\.\()?[^,]*\bbearer\(/);
+    if (bearerAt !== -1) {
+      const lead = body.slice(0, bearerAt).replace(/\s*$/, "");
+      const sep = lead === "" ? "" : `${lead} `;
+      return `${before}${sep}${APPLE_PLUGIN_CALL}, ${body.slice(bearerAt).trimStart()}${after}`;
+    }
+    const trimmed = body.trim().replace(/,$/, "");
+    return `${before}${trimmed ? `${trimmed}, ` : ""}${APPLE_PLUGIN_CALL}${after}`;
+  }
+
+  const bearerLine = /\n([ \t]*)[^\n]*\bbearer\(/.exec(body);
+  if (bearerLine) {
+    const at = bearerLine.index + 1;
+    return `${before}${body.slice(0, at)}${bearerLine[1]}${APPLE_PLUGIN_CALL},\n${body.slice(at)}${after}`;
+  }
+
+  // Last element. The one before it may lack a trailing comma.
+  const lastNewline = body.lastIndexOf("\n");
+  const head = body.slice(0, lastNewline).replace(/\s*$/, "");
+  const closingIndent = body.slice(lastNewline + 1);
+  const element = /\n([ \t]*)\S/.exec(body)?.[1] ?? `${closingIndent}  `;
+  const comma = head.endsWith(",") || head.endsWith("[") || head === "" ? "" : ",";
+  return `${before}${head}${comma}\n${element}${APPLE_PLUGIN_CALL},\n${closingIndent}${after}`;
+}
+
+/**
+ * Add Sign in with Apple to an `auth.ts` that `rewriteServerAuth` has
+ * already patched (or that never needed patching). Four independent steps,
+ * each skipped when its output is already there:
+ *
+ *  1. the import;
+ *  2. `const appleConfig = appleSignInConfig();` above `betterAuth({`;
+ *  3. the provider, first in `socialProviders`;
+ *  4. `appleSignInPlugin(appleConfig)` in the plugin array — BEFORE
+ *     `bearer()`, which must stay last (see plugin-order.ts).
+ */
+export function rewriteServerAuthApple(source: string): RewriteResult {
+  let out = addImports(source, [APPLE_IMPORT]);
+
+  if (!out.includes("const appleConfig = appleSignInConfig()")) {
+    const at = out.search(/\n {2}_auth = betterAuth\(\{/);
+    if (at === -1)
+      return unchanged(
+        source,
+        "auth.ts has no `_auth = betterAuth({` to anchor Apple's config above",
+      );
+    out = `${out.slice(0, at + 1)}${APPLE_CONFIG_LINE}\n${out.slice(at + 1)}`;
+  }
+
+  if (!out.includes("apple: appleProviderOptions(")) {
+    const match = /\n {4}socialProviders: \{\n/.exec(out);
+    if (!match)
+      return unchanged(source, "auth.ts has no `socialProviders: {` block for the Apple provider");
+    const at = match.index + match[0].length;
+    out = `${out.slice(0, at)}${APPLE_PROVIDER_LINE}${out.slice(at)}`;
+  }
+
+  if (!out.includes("appleSignInPlugin(")) {
+    const bounds = pluginArrayBounds(out);
+    if (bounds) {
+      out = insertIntoPluginArray(out, bounds);
+    } else {
+      const marker = "\n  });";
+      const at = out.lastIndexOf(marker);
+      if (at === -1)
+        return unchanged(source, "could not find the end of the betterAuth({ ... }) call");
+      out = `${out.slice(0, at)}\n\n    // Adds Apple's origin for its form_post callback. Must stay ahead of\n    // bearer() if one is ever added (see auth/apple-sign-in.ts).\n    plugins: [${APPLE_PLUGIN_CALL}],${out.slice(at)}`;
+    }
+  }
+
+  return { source: out, applied: true };
+}
+
+/**
+ * Publish whether Apple is configured, beside the existing booleans the
+ * login page reads before anyone is signed in. Wraps rather than edits
+ * `resolveAuthConfig(...)`: `account-security.ts` is a file the project
+ * owns, and an earlier copy of it has no Apple field to pass.
+ */
+export function rewriteHealthRouterApple(source: string): RewriteResult {
+  if (source.includes("appleEnabled")) return alreadyDone(source);
+  const match = /\n( +)authConfig: resolveAuthConfig\((\{[\s\S]*?\n\1\})\),/.exec(source);
+  if (!match) {
+    return unchanged(
+      source,
+      "health router has no `authConfig: resolveAuthConfig({ ... })` to extend",
+    );
+  }
+  const indent = match[1] ?? "      ";
+  const args = (match[2] ?? "").replace(/\n/g, "\n  ");
+  const replacement = `\n${indent}authConfig: {\n${indent}  ...resolveAuthConfig(${args}),\n${indent}  // Whether the Apple button can work. A boolean, like the rest.\n${indent}  appleEnabled: isAppleSignInConfigured(),\n${indent}},`;
+  const withImport = addImports(source, [
+    `import { isAppleSignInConfigured } from "../../auth/apple-sign-in.js";`,
+  ]);
+  return {
+    source: withImport.replace(match[0], replacement),
     applied: true,
   };
 }
