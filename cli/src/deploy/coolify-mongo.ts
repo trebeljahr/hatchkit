@@ -141,11 +141,11 @@ export async function provisionCoolifyMongo(
     throw err;
   }
 
-  // Encrypt the URL into the project's prod env so it's commit-safe.
-  // We don't push it onto the Coolify app's env directly — dotenvx +
-  // DOTENV_PRIVATE_KEY_PRODUCTION (which `hatchkit keys push` already
-  // sets) gives the runtime everything it needs and keeps prod secrets
-  // out of Coolify's UI for everyone-but-the-keyholder.
+  // Encrypt the URL into the project's prod env, the commit-safe
+  // at-rest store. The image does not contain that file, so the value
+  // reaches the container only through Coolify env: `create` pushes it
+  // there before its first `git push`, `hatchkit sync` afterwards
+  // (deploy/env-push.ts).
   const prodEnvPath = join(serverEnvDir, ".env.production");
   dotenvxSet("MONGODB_URI", internalUrl, { path: prodEnvPath, encrypt: true });
   console.log(

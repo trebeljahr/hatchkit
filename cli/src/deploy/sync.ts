@@ -135,7 +135,7 @@ import {
   renderDeployedRef,
   summarizeDeployedRef,
 } from "./deployed-ref.js";
-import { resolveProductionEnv } from "./env-resolve.js";
+import { type EnvChange, type EnvPushApp, pushProductionEnv } from "./env-push.js";
 import {
   type CoolifyDeployApp,
   repoSlugFromRemote,
@@ -177,7 +177,6 @@ import {
 import {
   type NativeOriginsOutcome,
   TRUSTED_ORIGINS_KEY,
-  mergePushedTrustedOrigins,
   pushNativeOriginsToServerApps,
   redeployNotice,
 } from "./trusted-origins.js";
@@ -375,6 +374,9 @@ export interface SyncResult {
   created: string[];
   /** Per-app count of env vars pushed, keyed by app name. */
   envPushed: Record<string, number>;
+  /** Names of the apps whose env this run changed (or whose live values
+   *  it could not read). `--deploy` redeploys them. */
+  envChanged: string[];
   /** Env names still holding a scaffold placeholder value. */
   envPlaceholders: string[];
   /** Hostnames whose DNS records were upserted. */
@@ -953,107 +955,34 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
 
   // ── Pass 3: env. Coolify's environment is the RUNTIME source of
   //    truth; the dotenvx-encrypted .env.production is the at-rest
-  //    store we read it from. See deploy/env-resolve.ts.
-  const resolvedEnv = opts.env === false ? null : await resolveProductionEnv(opts.projectDir);
-  if (resolvedEnv) {
-    if (resolvedEnv.undecrypted.length > 0) {
-      // Pushing `encrypted:...` as though it were a value would put
-      // ciphertext into the container and fail at a much more confusing
-      // point, so refuse the whole push rather than half of it.
-      const err =
-        `${resolvedEnv.relPath}: ${resolvedEnv.undecrypted.length} value(s) still encrypted ` +
-        `(${resolvedEnv.undecrypted.join(", ")}) — DOTENV_PRIVATE_KEY_PRODUCTION is missing or wrong. ` +
-        `Run \`hatchkit keys show ${manifest.name}\` to check, then re-run.`;
-      errors.push(err);
-      if (!opts.json) console.log(chalk.yellow(`\n  ${err}`));
-    } else {
-      // Placeholders are pushed, not blocked — several are optional and
-      // a project can legitimately ship without them — but they are
-      // called out, because a `CHANGE_ME…` in Coolify is a value-shaped
-      // string that silently misconfigures the app.
-      if (resolvedEnv.placeholders.length > 0 && !opts.json) {
-        console.log(
-          chalk.yellow(
-            `\n  ${resolvedEnv.placeholders.length} value(s) in ${resolvedEnv.relPath} are still scaffold placeholders:`,
-          ),
-        );
-        console.log(chalk.dim(`    ${resolvedEnv.placeholders.join(", ")}`));
-        console.log(
-          chalk.dim(
-            "    The provision step that fills these never ran. Set them (`hatchkit add <project> …`,\n" +
-              "    or `dotenvx set <KEY> <value> -f .env.production --encrypt`) before relying on them.",
-          ),
-        );
-      }
-      envPlaceholders = resolvedEnv.placeholders;
-      // Baseline first so file values win: the at-rest store is the
-      // source of truth, and these only fill gaps it doesn't cover.
-      const baseline: Record<string, string> = { NODE_ENV: "production" };
-      if (manifest.surfaces !== "static") {
-        baseline.FRONTEND_URL = `https://${manifest.domain}`;
-      }
-      for (const routed of routedApps) {
-        const found = locations.get(routed.appName);
-        if (!found) continue;
-        const values: Record<string, string> = { ...baseline, ...resolvedEnv.values };
-        // Each half binds its own port. Without this the client app
-        // inherits the server's PORT and Traefik reaches nothing.
-        if (routed.role !== "compose") values.PORT = routed.portsExposes;
-        // TRUSTED_ORIGINS is a list the dashboard adds to by hand (a
-        // pinned browser-extension id, say). Pushing the file's value
-        // verbatim would silently drop those, so merge it into the live
-        // one instead: live entries keep their order, the file's missing
-        // ones are appended, nothing is removed.
-        if (TRUSTED_ORIGINS_KEY in values && !opts.dryRun) {
-          try {
-            const merged = await mergePushedTrustedOrigins(
-              api,
-              found.uuid,
-              values[TRUSTED_ORIGINS_KEY],
-            );
-            if (merged === null) {
-              delete values[TRUSTED_ORIGINS_KEY];
-              if (!opts.json) {
-                console.log(
-                  chalk.yellow(
-                    `    · env → ${found.name}: ${TRUSTED_ORIGINS_KEY} not pushed — this token can't read the live value to merge into.`,
-                  ),
-                );
-              }
-            } else {
-              values[TRUSTED_ORIGINS_KEY] = merged;
-            }
-          } catch (err) {
-            delete values[TRUSTED_ORIGINS_KEY];
-            errors.push(
-              `env ${found.name}: couldn't read live ${TRUSTED_ORIGINS_KEY} to merge — not pushed: ${(err as Error).message}`,
-            );
-          }
-        }
-        if (opts.dryRun) {
-          if (!opts.json) {
-            console.log(
-              chalk.dim(
-                `    · env → ${found.name}: would push ${Object.keys(values).length} var(s) from ${resolvedEnv.relPath}`,
-              ),
-            );
-          }
-          envPushed[found.name] = Object.keys(values).length;
-          continue;
-        }
-        const spinner = opts.json ? null : ora(`Coolify: env → "${found.name}"`).start();
-        try {
-          await api.setAppEnv(found.uuid, values);
-          envPushed[found.name] = Object.keys(values).length;
-          // Names only. These are production secrets.
-          spinner?.succeed(
-            `Coolify: pushed ${Object.keys(values).length} env var(s) to "${found.name}"`,
-          );
-        } catch (err) {
-          spinner?.fail(`Coolify: env push failed: ${(err as Error).message}`);
-          errors.push(`env ${found.name}: ${(err as Error).message}`);
-        }
-      }
+  //    store we read it from. See deploy/env-resolve.ts. The push itself
+  //    is deploy/env-push.ts, which `create` runs too.
+  let envChanged: EnvChange[] = [];
+  if (opts.env !== false) {
+    const envApps: EnvPushApp[] = [];
+    for (const routed of routedApps) {
+      const found = locations.get(routed.appName);
+      if (!found) continue;
+      envApps.push({
+        uuid: found.uuid,
+        name: found.name,
+        role: routed.role,
+        portsExposes: routed.portsExposes,
+      });
+    }
+    const envOutcome = await pushProductionEnv({
+      api,
+      projectDir: opts.projectDir,
+      project: { name: manifest.name, domain: manifest.domain, surfaces: manifest.surfaces },
+      apps: envApps,
+      dryRun: opts.dryRun,
+      json: opts.json,
+    });
+    if (envOutcome) {
+      Object.assign(envPushed, envOutcome.pushed);
+      envPlaceholders = envOutcome.placeholders;
+      envChanged = envOutcome.changed;
+      errors.push(...envOutcome.errors);
     }
   }
 
@@ -1174,7 +1103,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   if (opts.deploy && !opts.dryRun) {
     // Freshly created apps have never deployed at all, so they need a
     // trigger even though they were never "patched".
-    const toDeploy = [
+    const toDeploy: Array<{ uuid: string; name: string }> = [
       ...patched,
       ...apps.filter((a) => created.includes(a.name) && !patched.includes(a)),
     ];
@@ -1185,6 +1114,13 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       if (toDeploy.some((p) => p.uuid === o.uuid)) continue;
       const plan = apps.find((a) => a.uuid === o.uuid);
       if (plan) toDeploy.push(plan);
+    }
+    // Same for any env this run changed: Coolify hands env to a
+    // container when it starts it, so routing being in sync is no
+    // reason to skip the redeploy.
+    for (const change of envChanged) {
+      if (toDeploy.some((p) => p.uuid === change.uuid)) continue;
+      toDeploy.push({ uuid: change.uuid, name: change.name });
     }
     // What the deploy will actually build. Printed with the trigger
     // rather than left to be inferred, because the single most
@@ -1216,13 +1152,23 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     );
     const stillStale = nativeOrigins.filter((o) => !deployedUuids.has(o.uuid));
     if (!opts.json) for (const line of redeployNotice(stillStale)) console.log(chalk.yellow(line));
-  } else if (patched.length > 0 && !opts.json) {
-    console.log(
-      chalk.yellow(
-        "\n  Routing pushed, but the running containers still carry their old Traefik labels.\n" +
-          "  Coolify only regenerates them on deploy — re-run with `--deploy`, or hit Redeploy in the dashboard.",
-      ),
-    );
+  } else if (!opts.json) {
+    if (patched.length > 0) {
+      console.log(
+        chalk.yellow(
+          "\n  Routing pushed, but the running containers still carry their old Traefik labels.\n" +
+            "  Coolify only regenerates them on deploy — re-run with `--deploy`, or hit Redeploy in the dashboard.",
+        ),
+      );
+    }
+    if (envChanged.length > 0 && !opts.dryRun) {
+      console.log(
+        chalk.yellow(
+          `\n  Env changed on ${envChanged.map((c) => `"${c.name}"`).join(", ")}, but the running container(s) keep the old values.\n` +
+            "  Coolify hands env to a container when it starts it — re-run with `--deploy`, or hit Redeploy in the dashboard.",
+        ),
+      );
+    }
   }
 
   // ── Pass 7: the Cloudflare edge of a client on Workers. Missing
@@ -1240,6 +1186,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     deployed,
     created,
     envPushed,
+    envChanged: envChanged.map((c) => c.name),
     envPlaceholders,
     dnsUpserted,
     secretsPushed,
@@ -1368,6 +1315,7 @@ function emptyResult(opts: SyncOptions): SyncResult {
     deployed: [],
     created: [],
     envPushed: {},
+    envChanged: [],
     envPlaceholders: [],
     dnsUpserted: [],
     secretsPushed: [],

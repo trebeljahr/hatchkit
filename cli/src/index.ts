@@ -2994,6 +2994,9 @@ async function handleCreate(): Promise<void> {
   // The DSNs the provisioning step below produced. They reach Coolify
   // and the repo variable only at Step 6.4, once both exist.
   let provisionedGlitchtip: Awaited<ReturnType<typeof runProvision>>["glitchtip"];
+  // The Coolify apps Step 6 set up. Step 6.45 pushes the production env
+  // onto them, once every value this run writes is in .env.production.
+  let coolifyApps: Awaited<ReturnType<typeof runCoolifySetup>>["apps"] = [];
   // Optional-step bookkeeping. Every deferrable step appends here
   // instead of throwing, so the run always reaches the Done banner and
   // the user gets one list of what's still outstanding plus the exact
@@ -3276,6 +3279,7 @@ async function handleCreate(): Promise<void> {
       for (const app of coolifyResult.apps) {
         if (app.created) ledger?.record({ kind: "coolifyApp", uuid: app.uuid });
       }
+      coolifyApps = coolifyResult.apps;
 
       // Terraform owns the bare domain's DNS record. Anything the
       // topology adds on top (api.<domain> under `split`) isn't in the
@@ -3638,6 +3642,81 @@ async function handleCreate(): Promise<void> {
         firstDeployPending: true,
       });
       if (followUp) deferredSteps.push(deferralForStep(followUp));
+    }
+
+    // Step 6.45: commit what the steps after the initial commit wrote
+    // (the database URL in .env.production, manifest updates), then push
+    // the production env onto every Coolify app. Both before the push:
+    // the image does not contain .env.production, so the first deploy's
+    // server boots with Coolify's env or with nothing. Without this a
+    // fresh fullstack project died at boot on its missing MONGODB_URI
+    // and failed its first CI deploy. See deploy/env-push.ts.
+    if (config.scaffoldRepo) {
+      const { commitDeployWiring } = await import("./deploy/github.js");
+      try {
+        const files = await commitDeployWiring(appDir, config.name);
+        if (files.length > 0) {
+          console.log(
+            chalk.green(`  ✓ Committed ${files.length} file(s) the deploy wiring wrote`) +
+              chalk.dim(` (${files.join(", ")})`),
+          );
+        }
+      } catch (err) {
+        console.log(
+          chalk.yellow(`  Couldn't commit the deploy wiring's files: ${(err as Error).message}`),
+        );
+        deferredSteps.push(
+          deferralForStep({
+            key: "commit-deploy-wiring",
+            label: "Commit files written after the initial commit",
+            kind: "failed",
+            reason: (err as Error).message,
+            command: `cd ${appDir} && git status`,
+            hint: [
+              "Commit the changed files (never .env.keys or a *.local env file), then `git push`.",
+            ],
+          }),
+        );
+      }
+    }
+    if (coolifyApps.length > 0) {
+      const envFollowUp = `cd ${appDir} && hatchkit sync --deploy`;
+      try {
+        const { pushProductionEnv } = await import("./deploy/env-push.js");
+        const { CoolifyApi } = await import("./utils/coolify-api.js");
+        const coolifyCfg = await getCoolifyConfig();
+        if (!coolifyCfg) throw new Error("Coolify is not configured.");
+        const outcome = await pushProductionEnv({
+          api: new CoolifyApi({ url: coolifyCfg.url, token: coolifyCfg.token }),
+          projectDir: appDir,
+          project: { name: config.name, domain: config.domain, surfaces: config.surfaces },
+          apps: coolifyApps,
+        });
+        if (outcome && outcome.errors.length > 0) {
+          deferredSteps.push(
+            deferralForStep({
+              key: "coolify-env",
+              label: "Production env → Coolify",
+              kind: "failed",
+              reason: outcome.errors.join("; "),
+              command: envFollowUp,
+            }),
+          );
+        } else if (outcome) {
+          configuredSteps.push(`Production env → Coolify (${outcome.relPath})`);
+        }
+      } catch (err) {
+        console.log(chalk.yellow(`  Couldn't push the production env: ${(err as Error).message}`));
+        deferredSteps.push(
+          deferralForStep({
+            key: "coolify-env",
+            label: "Production env → Coolify",
+            kind: "failed",
+            reason: (err as Error).message,
+            command: envFollowUp,
+          }),
+        );
+      }
     }
 
     // Step 6.5: push the working branch to origin. Done AFTER Coolify
@@ -6181,9 +6260,10 @@ function printHelp(topic?: HelpTopic): void {
     --no-dns       Skip DNS synchronization.
     --no-secrets   Skip deployment-secret synchronization.
     --deploy       After PATCHing, trigger a Coolify redeploy of each
-                   changed app. Coolify only regenerates traefik labels
-                   on deploy, so a routing fix isn't live until this
-                   runs (or you hit Redeploy in the dashboard).
+                   changed app: changed routing, or changed env. Coolify
+                   only regenerates traefik labels and hands a container
+                   its env on deploy, so neither is live until this runs
+                   (or you hit Redeploy in the dashboard).
     --force        Push even when Coolify reports the domain as claimed
                    by another resource (409). Only correct when that
                    resource is a stale app for this same project.

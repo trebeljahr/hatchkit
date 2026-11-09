@@ -594,12 +594,14 @@ Traefik's path-prefix stripping should be on. Idempotent.
 ```bash
 hatchkit sync --dry-run    # read-only: print the diff
 hatchkit sync              # push it
-hatchkit sync --deploy     # push it, then redeploy so Traefik regenerates labels
+hatchkit sync --deploy     # push it, then redeploy the apps it changed
 ```
 
-`--deploy` is what makes a routing fix take effect: Coolify regenerates a
-container's Traefik labels on deploy, not when the application record is
-PATCHed.
+`--deploy` is what makes a routing or env fix take effect: Coolify regenerates
+a container's Traefik labels, and hands it its env, on deploy, not when the
+application record is PATCHed. An app counts as changed when its routing was
+patched or its env differs from `.env.production`. An app whose live env sync
+cannot read (a token without `read:sensitive`) counts as changed too.
 
 Before it creates, patches or deploys anything, sync checks that the commit
 Coolify will **clone** actually contains the compose file each application

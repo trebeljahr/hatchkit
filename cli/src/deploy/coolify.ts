@@ -123,6 +123,9 @@ export interface RunCoolifySetupResult {
     name: string;
     role: RoutedApp["role"];
     created: boolean;
+    /** The port Traefik forwards to, from the routing plan. The env push
+     *  (deploy/env-push.ts) sets it as PORT on every non-compose app. */
+    portsExposes: string;
   }>;
   /** Hostnames beyond the bare domain that this topology needs DNS for
    *  (`api.<domain>` under `split`). Terraform owns the bare domain's
@@ -326,30 +329,30 @@ export async function runCoolifySetup(
   console.log(chalk.dim(`  Docker network: ${note}`));
   const provisioned: RunCoolifySetupResult["apps"] = [];
   for (const routed of plan.apps) {
-    provisioned.push(
-      await provisionRoutedApp({
-        api,
-        routed,
-        projectUuid,
-        serverUuid,
-        description,
-        repoRef,
-        isPrivateRepo,
-        githubAppUuid,
-        githubAppHtmlUrl,
-        destinationUuid: placement?.uuid,
-      }),
-    );
+    const app = await provisionRoutedApp({
+      api,
+      routed,
+      projectUuid,
+      serverUuid,
+      description,
+      repoRef,
+      isPrivateRepo,
+      githubAppUuid,
+      githubAppHtmlUrl,
+      destinationUuid: placement?.uuid,
+    });
+    provisioned.push({ ...app, portsExposes: routed.portsExposes });
   }
 
   const appUuid = provisioned[0].uuid;
   const appCreated = provisioned.some((a) => a.created);
 
-  // Env vars on the Coolify application. Keep this list minimal —
-  // anything secret (DB URLs, S3 creds, JWT secrets, …) goes into
-  // .env.production and is decrypted at runtime via the dotenvx
-  // private key that `hatchkit keys push` puts on Coolify. That keeps
-  // prod secrets out of Coolify's UI.
+  // Baseline env vars on the Coolify application. Keep this list
+  // minimal — anything secret (DB URLs, S3 creds, JWT secrets, …) goes
+  // into .env.production, and `create` pushes that file's values onto
+  // every app once the run has written them all, before its first
+  // `git push` (deploy/env-push.ts). The image does not contain the
+  // file, so Coolify env is the only way a value reaches the container.
   //
   // Static scaffolds get only NODE_ENV — there's no server to honour
   // PORT (the Next.js standalone server already binds 3000) and

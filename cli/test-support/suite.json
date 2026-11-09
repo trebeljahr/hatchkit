@@ -75,6 +75,7 @@
   "test-project-network.ts",
   "test-sync-aliases.ts",
   "test-sync-project-app.ts",
+  "test-env-push.ts",
   "test-force-domain-override.ts",
   "test-adopt-manifest.ts",
   "test-listmonk.ts",

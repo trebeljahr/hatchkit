@@ -267,6 +267,48 @@ async function reuseExistingGithubRepo(
   return repo.url;
 }
 
+/** Commit what create wrote after the initial commit, so the first push
+ *  carries it. The deploy wiring writes into the project after
+ *  setupGitHub committed: the Coolify database step encrypts its
+ *  connection URL into `.env.production`, and later steps update
+ *  `.hatchkit.json`. Left uncommitted, the pushed repo lacks the at-rest
+ *  copy of values the running app needs, and the next `hatchkit sync`
+ *  from a fresh clone pushes an env without them.
+ *
+ *  Staged with stageAllSafely, which refuses a secret whatever
+ *  `.gitignore` says. Returns the committed paths; empty when nothing
+ *  changed. Throws when staging or the commit fails. */
+export async function commitDeployWiring(appDir: string, project: string): Promise<string[]> {
+  await stageAllSafely(appDir, { project });
+  const staged = await exec("git", ["diff", "--cached", "--name-only"], {
+    cwd: appDir,
+    silent: true,
+  });
+  if (staged.exitCode !== 0) {
+    throw new Error(`git diff --cached failed: ${(staged.stderr || staged.stdout).trim()}`);
+  }
+  const files = staged.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (files.length === 0) return [];
+  const commit = await exec(
+    "git",
+    [
+      "commit",
+      "-m",
+      "Record values written while wiring the deploy",
+      "-m",
+      `Written by hatchkit create after the initial commit:\n${files.map((f) => `- ${f}`).join("\n")}`,
+    ],
+    { cwd: appDir, silent: true },
+  );
+  if (commit.exitCode !== 0) {
+    throw new Error(`git commit failed: ${(commit.stderr || commit.stdout).trim()}`);
+  }
+  return files;
+}
+
 /** Push the working branch to `origin`. Run AFTER Coolify wiring +
  *  GH Actions secrets are in place so the workflow's first run can
  *  hit the redeploy webhook successfully. Returns true on a clean
