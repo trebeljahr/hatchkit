@@ -743,6 +743,10 @@ await test("the Worker maps R2, assets, the limiter and secrets onto the core", 
   const worker = await import(join(dir, "workers", "unlock", "src", "index.ts"));
   worker._setConfigForTests(CONFIG);
   const h = harness();
+  // The Worker reads the real clock (it takes no `now`), so the fake Stripe
+  // must stamp sessions with it too: a session from the harness's fixed date
+  // is past the return window once that date is a day old.
+  h.clock.now = Date.now();
   const originalFetch = globalThis.fetch;
   const listmonkBodies: unknown[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -870,6 +874,9 @@ await test("the Express adapter passes other paths on and keeps Set-Cookie and t
     config: CONFIG,
     privateDir,
     fetch: h.stripe.fetch,
+    // The fake Stripe's clock: the real one would put the harness's
+    // sessions past the return window.
+    now: () => h.clock.now,
     mailer: {
       async send(m: { to: string }) {
         mail.push(m.to);
@@ -921,7 +928,7 @@ await test("the Express adapter passes other paths on and keeps Set-Cookie and t
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Stripe-Signature": await stripeSignatureHeader(payload, WEBHOOK_SECRET, Date.now()),
+        "Stripe-Signature": await stripeSignatureHeader(payload, WEBHOOK_SECRET, h.clock.now),
       },
       body: payload,
     });
