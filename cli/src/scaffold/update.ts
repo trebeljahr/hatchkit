@@ -1672,6 +1672,7 @@ async function applyAndReportOperationalLayer(
   const operational = applyOperationalLayer({
     projectDir,
     project: { ...operationalProjectFromManifest(manifest, operationalRepoSlug), features },
+    identifiers: identifiersFor(manifest),
     mode: "update",
     dryRun,
   });

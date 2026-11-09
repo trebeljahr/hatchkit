@@ -2774,6 +2774,7 @@ async function executePlan(
     }
 
     let provisionedGlitchtip: Awaited<ReturnType<typeof runProvision>>["glitchtip"];
+    let provisionedPlausible: Awaited<ReturnType<typeof runProvision>>["plausible"];
     if (resumeServices.length > 0) {
       console.log();
       const provisionResult = await runProvision({
@@ -2942,6 +2943,7 @@ async function executePlan(
           recovery: [step.command, ...(step.hint ?? [])],
         });
       }
+      provisionedPlausible = provisionResult.plausible;
       provisionedGlitchtip = provisionResult.glitchtip;
     }
 
@@ -3000,6 +3002,23 @@ async function executePlan(
           title: "GlitchTip DSN not delivered to production",
           reason: followUp.reason,
           recovery: [followUp.command],
+        });
+      }
+    }
+    // The client build reads the Plausible site from repo variables, never
+    // from .env.production. See provision/plausible-delivery.ts.
+    if (provisionedPlausible) {
+      const { deliverProvisionedPlausible } = await import("./provision/plausible-delivery.js");
+      const outcomes = await deliverProvisionedPlausible(provisionedPlausible, {
+        projectDir: state.projectDir,
+        write: true,
+      });
+      const open = outcomes.filter((o) => o.status === "failed" || o.status === "skipped");
+      if (open.length > 0) {
+        caveats.push({
+          title: "Plausible site not passed to the client build",
+          reason: "the repo variables the client build reads were not set",
+          recovery: open.map((o) => o.command),
         });
       }
     }

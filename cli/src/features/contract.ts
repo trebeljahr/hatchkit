@@ -194,6 +194,21 @@ export class FeatureLedger {
     return this.record(rel, "written");
   }
 
+  /**
+   * Write bytes the CLI generated (an image) when the destination is not
+   * already there. The binary counterpart of {@link copyIfAbsent}, for a
+   * file with no template copy on disk to copy from; absent-only for the
+   * same reason — the person replaces it with their own.
+   */
+  writeBytesIfAbsent(rel: string, bytes: Uint8Array): FileAction {
+    const abs = this.abs(rel);
+    if (existsSync(abs)) return this.record(rel, "unchanged");
+    if (this.dryRun) return this.record(rel, "would-write");
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, bytes);
+    return this.record(rel, "written");
+  }
+
   /** Delete a path. Features do not call this during `update` — see the
    *  additive invariant — but `create` uses it to strip the scaffolding
    *  of unselected features out of the copied starter. */

@@ -1058,8 +1058,9 @@ async function runScaffoldSteps(
 
   // The operational layer: verified deploy + rollback, the topology
   // write-up, the API-origin agreement, the self-host path, the docs in
-  // the client image, deploy recovery in an open tab, and client error
-  // reporting. Last, deliberately — every one of them reads or retrofits
+  // the client image, deploy recovery in an open tab, client error
+  // reporting, and the search + analytics basics. Last, deliberately —
+  // every one of them reads or retrofits
   // something the steps above have already written (the deploy workflow,
   // the client Dockerfile, the client source tree), so running them
   // earlier would anchor on files that are not in their final shape yet.
@@ -1075,11 +1076,13 @@ async function runScaffoldSteps(
     project: {
       name: config.name,
       domain: config.domain,
+      description: config.description,
       topology: config.topology ?? "single-origin",
       surfaces: config.surfaces ?? "fullstack",
       features: config.features,
       repoSlug: ghOwner ? `${ghOwner}/${config.name}` : undefined,
     },
+    identifiers,
     mode: "create",
     dryRun: false,
   });

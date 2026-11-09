@@ -1,0 +1,146 @@
+---
+title: Search and analytics
+description: The sitemap, robots file, canonical URLs, social cards, structured data and Plausible tracker every hatchkit web client gets, and how to change them per page.
+---
+
+Every project with a Next.js web client gets the basics that search engines and link previews read: a sitemap, a robots file that names it, a canonical URL on every page, an Open Graph and Twitter card with a default image, and JSON-LD structured data. When the project has a Plausible site, the client build also renders the tracker.
+
+`hatchkit create` writes all of it. `hatchkit update` adds it to an existing project, and running it again changes nothing.
+
+```bash
+hatchkit update --dry-run
+hatchkit update
+```
+
+## What is written
+
+Paths are relative to the client package (`packages/client` in the starter).
+
+| File | Owner | What it does |
+|---|---|---|
+| `src/lib/site/config.ts` | hatchkit | Site URL, name and description, from `.hatchkit.json` |
+| `src/lib/site/metadata.ts` | hatchkit | `withSiteMetadata()` for the root layout, `pageMetadata()` for a page |
+| `src/lib/site/structured-data.ts`, `json-ld.tsx` | hatchkit | The JSON-LD graph and `<SiteJsonLd />` / `<JsonLd />` |
+| `src/lib/site/sitemap.ts` | hatchkit | Reads the public pages off `src/app` at build time |
+| `src/lib/site/plausible.tsx` | hatchkit | `<PlausibleScript />` |
+| `src/app/sitemap.ts` | you | `/sitemap.xml` |
+| `src/app/robots.ts` | you | `/robots.txt`, naming the sitemap |
+| `public/og.png` | you | The default social card, 1200×630 |
+| `src/app/layout.tsx` | you | Edited once: the metadata goes through `withSiteMetadata()`, `<SiteJsonLd />` is mounted |
+
+`hatchkit update` rewrites the files hatchkit owns. Do not edit them; each one says where its change belongs instead. Files you own are written only when they are absent, so your sitemap entries, crawler rules and social card stay as you left them.
+
+Both route files are static, so the same files work for the web image, a static export and the Cloudflare-hosted client.
+
+## Site-wide values
+
+The site name is the manifest's `identifiers.productName`, the URL is `https://<domain>`, and the description is the manifest's `description`. A project without a description gets no meta description from hatchkit, and `update` reminds you to add one.
+
+To change a value for the whole site, change `.hatchkit.json` and run `hatchkit update`. To change it in the app only, set it in the root layout's own metadata. Every field the layout sets wins:
+
+```tsx
+export const metadata: Metadata = withSiteMetadata({
+  title: { default: "Field Notes", template: "%s · Field Notes" },
+  description: "Notes from the field, sorted by place.",
+});
+```
+
+The social card takes its title and description from the layout's, so the card and the browser tab never disagree.
+
+`update` removes two starter placeholders from the layout: the "My App" title, and the "A full-stack web application" description when the manifest has a real one. It keeps every other field.
+
+## One page
+
+Use `pageMetadata()`. It returns the page's title, description, canonical URL and the whole social card:
+
+```tsx
+import { pageMetadata } from "@/lib/site/metadata";
+
+export const metadata = pageMetadata({
+  title: "Pricing",
+  description: "What it costs, and what you get.",
+});
+```
+
+Do not set `openGraph` or `twitter` directly in a page. Next.js merges those objects shallowly, so a page that sets `openGraph: { title }` loses the layout's image, site name and URL. Pass extra fields through `pageMetadata({ extra })` instead; it merges them one level deep.
+
+| Option | Effect |
+|---|---|
+| `title`, `description` | The page's own. The layout's title template adds the site name in the tab. |
+| `image` | A path or URL for this page's card. Default: `/og.png`. |
+| `noIndex: true` | Keeps the page out of search results and out of the sitemap. |
+| `canonical` | Only for a page reachable at more than one address: the one to index. |
+
+Every page is its own canonical by default. The root layout sets `canonical: "./"`, which Next.js resolves against each page's path. A literal `"/"` there would tell search engines that every page is a copy of the home page.
+
+## Sitemap
+
+`/sitemap.xml` lists every public page in `src/app`, read at build time. A new page is in it after the next build. It leaves out:
+
+- the `(protected)` route group;
+- `_private` folders, `@slot`s, intercepting routes and `api`;
+- `[param]` segments, because there is no list of their values to read;
+- `/login`, `/signup`, `/forgot-password` and `/reset-password`;
+- any page, or any folder below a layout, whose source says `index: false` or `noIndex: true`.
+
+Add pages the folder cannot list in `src/app/sitemap.ts`:
+
+```ts
+import { absoluteUrl, siteSitemap } from "../lib/site/sitemap";
+
+export default function sitemap(): MetadataRoute.Sitemap {
+  return siteSitemap(posts.map((post) => ({ url: absoluteUrl(`/blog/${post.slug}/`) })));
+}
+```
+
+## Robots
+
+`src/app/robots.ts` allows every crawler and names `/sitemap.xml`. A crawler reads only the robots file at the root of the domain, so every sitemap the domain has goes there. When the docs are published at `/docs/`, the docs feature replaces hatchkit's robots file with one that names both sitemaps.
+
+A project that already has a robots file keeps it. If it names no `/sitemap.xml`, `update` says which line to add. A `public/robots.txt` is kept too, and no route is written beside it: Next.js refuses to build with both.
+
+## Social card
+
+`public/og.png` starts as the app icon (`resources/icon.png`) centred on the web manifest's background colour. Replace it with a 1200×630 PNG that says what the product is. A page passes its own card with `pageMetadata({ image })`. An `app/opengraph-image.png` also works: Next.js puts it over the metadata image.
+
+## Structured data
+
+`<SiteJsonLd />` in the root layout renders one JSON-LD graph: a `WebSite`, the `Organization` behind it, and for an app a `SoftwareApplication`. A static site without a desktop or mobile shell is a website and gets no application node.
+
+Pass changes as props. Each option merges into its node:
+
+```tsx
+<SiteJsonLd
+  organization={{ logo: "https://example.com/logo.png", sameAs: ["https://github.com/example"] }}
+  application={{ applicationCategory: "UtilitiesApplication" }}
+/>
+```
+
+`application={false}` drops the application node. Google shows a rich result for an application only with `offers` and a rating. Add those only when they are real.
+
+For structured data of one page, render `<JsonLd data={…} />` in that page.
+
+## Analytics
+
+The tracker is Plausible. `hatchkit add <project> plausible` creates the site and sets two GitHub repo variables, `NEXT_PUBLIC_PLAUSIBLE_DOMAIN` and `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL`. The client build passes them in as build args, and Next.js inlines them at build time, so the next client build starts counting.
+
+```bash
+hatchkit add my-app plausible --no-write
+hatchkit add my-app plausible
+```
+
+`--no-write` prints the `gh variable set` commands without running them. A variable that already holds another value is kept, and the command to replace it is printed: it may be counting the site under another Plausible domain.
+
+The values also go into `.env.production`, but that file does not reach the client build: the image build excludes every `.env.*`. A value set on the running container changes nothing either. Only the repo variables work.
+
+The starter's layout renders the tracker inline. A layout without one gets `<PlausibleScript />`. Without the variables, neither renders anything.
+
+## Check a deployed site
+
+```bash
+curl -s https://example.com/robots.txt
+curl -s https://example.com/sitemap.xml
+curl -s https://example.com/ | grep -E 'rel="canonical"|og:|twitter:|ld\+json|data-domain'
+```
+
+The page should carry a canonical link, `og:title`, `og:image`, `twitter:card`, one `application/ld+json` script and, with a Plausible site, a `script` with `data-domain`.

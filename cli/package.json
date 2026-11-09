@@ -145,6 +145,8 @@
     "test:docs-in-client": "node scripts/test.mjs test-docs-in-client.ts",
     "test:deploy-recovery": "node scripts/test.mjs test-deploy-recovery.ts",
     "test:error-reporting": "node scripts/test.mjs test-error-reporting.ts",
+    "test:site-basics": "node scripts/test.mjs test-site-basics.ts",
+    "test:plausible-delivery": "node scripts/test.mjs test-plausible-delivery.ts",
     "test:lint-gate": "node scripts/test.mjs test-lint-gate.ts",
     "test:ses-feedback": "node scripts/test.mjs test-ses-feedback.ts",
     "test:keychain-isolation": "node scripts/test.mjs test-keychain-isolation.ts",

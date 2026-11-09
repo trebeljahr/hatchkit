@@ -1,7 +1,7 @@
 /*
  * cli/src/features/operational.ts — the operational layer, as one call.
  *
- * Seven modules, each answering one question a deployed project
+ * Eight modules, each answering one question a deployed project
  * eventually asks:
  *
  *   · verified-deploy    — did the thing I just built actually land, and
@@ -17,6 +17,8 @@
  *                          deploy?
  *   · error-reporting    — where do client errors go, and what may they
  *                          carry?
+ *   · site-basics        — can search engines and link previews read the
+ *                          site, and does analytics count it?
  *
  * Why they are applied here rather than registered in `contract.ts`:
  * see the header of operational-context.ts. In short, they are not
@@ -24,7 +26,7 @@
  * ledger and obey the same two invariants.
  *
  * `create` writes them into a fresh project, `update` re-applies them to
- * an old one, and both want ONE report at the end rather than seven.
+ * an old one, and both want ONE report at the end rather than eight.
  * Adding a module means adding a row to {@link OPERATIONAL_MODULES},
  * not editing two call sites and hoping they stay in step.
  */
@@ -45,6 +47,7 @@ import type {
   OperationalProject,
 } from "./operational-context.js";
 import { applySelfHost } from "./selfhost/index.js";
+import { applySiteBasics } from "./site-basics/index.js";
 import { applyTopologyGuidance } from "./topology-guidance/index.js";
 import { applyVerifiedDeploy } from "./verified-deploy/index.js";
 
@@ -67,8 +70,10 @@ export interface OperationalModule {
  * `verified-deploy` is first because it rewrites the deploy workflow,
  * and a later module's managed block anchors on the shape it leaves.
  * `topology-guidance` and `env-agreement` follow because they explain
- * the constraints the rest assume. The three client-side modules come
- * last: none is load-bearing for a deploy that works.
+ * the constraints the rest assume. The client-side modules come last:
+ * none is load-bearing for a deploy that works. `site-basics` follows
+ * `docs-in-client` because both can write the robots file and the docs
+ * version (which names both sitemaps) has to win.
  */
 export const OPERATIONAL_MODULES: readonly OperationalModule[] = [
   { id: "verified-deploy", label: "verified deploy + rollback", apply: applyVerifiedDeploy },
@@ -78,6 +83,7 @@ export const OPERATIONAL_MODULES: readonly OperationalModule[] = [
   { id: "docs-in-client", label: "docs in the client image", apply: applyDocsInClient },
   { id: "deploy-recovery", label: "deploy recovery in an open tab", apply: applyDeployRecovery },
   { id: "error-reporting", label: "client error reporting", apply: applyErrorReporting },
+  { id: "site-basics", label: "search + analytics basics", apply: applySiteBasics },
 ] as const;
 
 export interface OperationalModuleOutcome {
@@ -172,6 +178,7 @@ export function operationalProjectFromManifest(
   return {
     name: manifest.name,
     domain: manifest.domain,
+    description: manifest.description,
     aliases: manifest.aliases,
     topology: isTopology(manifest.topology) ? manifest.topology : "single-origin",
     surfaces: (manifest.surfaces ?? "fullstack") as Surface,

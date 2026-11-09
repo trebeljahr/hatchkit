@@ -11,7 +11,7 @@
  * pickers and the `--features` flag, and a project either has it or does
  * not.
  *
- * The seven modules the operational layer applies are not that. Nobody
+ * The modules the operational layer applies are not that. Nobody
  * opts into a deploy that can undo itself, or into the docs being
  * indexable, any more than they opt into the project having a
  * `.gitignore`. They are what every deployed project needs in order to
@@ -65,7 +65,8 @@ export type OperationalModuleId =
   | "self-host"
   | "docs-in-client"
   | "deploy-recovery"
-  | "error-reporting";
+  | "error-reporting"
+  | "site-basics";
 
 /**
  * What a module needs to know about the project it is writing into.
@@ -85,6 +86,9 @@ export interface OperationalProject {
   name: string;
   /** Production domain: a bare hostname, no scheme and no path. */
   domain: string;
+  /** The manifest's one-line description, when it has one. Public by
+   *  construction: it becomes the site's meta description. */
+  description?: string;
   /** Additional public hostnames served by the same deployment. */
   aliases?: string[];
   /** How the runtime is spread across platform applications. */

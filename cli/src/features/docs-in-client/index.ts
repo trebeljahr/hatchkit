@@ -65,6 +65,7 @@ import {
   notDeployedToCoolify,
   skipped,
 } from "../operational-context.js";
+import { renderSiteBasicsRobotsRoute } from "../site-basics/index.js";
 import {
   CLIENT_DOCKERFILE_REL_PATH,
   CLIENT_PACKAGE_DIR,
@@ -283,8 +284,10 @@ function retrofitDocsSiteConfig(
  *  sitemaps.
  *
  *  Written when it is absent, which is every scaffolded project — the
- *  starter ships no robots route. When one is already there it is left
- *  alone, and the note says exactly which line is missing from it.
+ *  starter ships no robots route — and over the one-sitemap route the
+ *  site-basics module writes, byte for byte, when the docs arrive later.
+ *  Any other robots file is left alone, and the note says exactly which
+ *  line is missing from it.
  *
  *  Neither of the two primitives that would automate that is right here.
  *  `writeIfChanged` would replace somebody's crawler rules with hatchkit's
@@ -299,7 +302,9 @@ function retrofitDocsSiteConfig(
  *  a trade worth making. */
 function writeRobotsRoute(ctx: OperationalContext, layout: DocsLayout, notes: string[]): void {
   const existing = ctx.ledger.read(ROBOTS_ROUTE_REL_PATH);
-  if (existing === undefined || ctx.force) {
+  // The single-sitemap robots file site-basics writes is hatchkit's until
+  // somebody edits it, so it is replaced by this one, byte-exact match only.
+  if (existing === undefined || ctx.force || existing === renderSiteBasicsRobotsRoute()) {
     ctx.ledger.writeIfChanged(ROBOTS_ROUTE_REL_PATH, renderRobotsRoute(layout));
     return;
   }

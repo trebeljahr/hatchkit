@@ -1811,6 +1811,16 @@ async function handleAdd(): Promise<void> {
     });
     if (followUp?.kind === "failed") process.exitCode = 1;
   }
+  // Same gap for Plausible: the client build reads the repo variables,
+  // never .env.production. See provision/plausible-delivery.ts.
+  if (provisioned.plausible) {
+    const { deliverProvisionedPlausible } = await import("./provision/plausible-delivery.js");
+    const outcomes = await deliverProvisionedPlausible(provisioned.plausible, {
+      projectDir: inferredProjectDir,
+      write: !noWrite,
+    });
+    if (outcomes.some((o) => o.status === "failed")) process.exitCode = 1;
+  }
 }
 
 async function handleProvisionS3(): Promise<void> {
@@ -2994,6 +3004,7 @@ async function handleCreate(): Promise<void> {
   // The DSNs the provisioning step below produced. They reach Coolify
   // and the repo variable only at Step 6.4, once both exist.
   let provisionedGlitchtip: Awaited<ReturnType<typeof runProvision>>["glitchtip"];
+  let provisionedPlausible: Awaited<ReturnType<typeof runProvision>>["plausible"];
   // The Coolify apps Step 6 set up. Step 6.45 pushes the production env
   // onto them, once every value this run writes is in .env.production.
   let coolifyApps: Awaited<ReturnType<typeof runCoolifySetup>>["apps"] = [];
@@ -3075,6 +3086,7 @@ async function handleCreate(): Promise<void> {
           configuredSteps.push(...provisionResult.configured.map((s) => labelForService(s)));
           deferredSteps.push(...provisionResult.deferred);
           provisionedGlitchtip = provisionResult.glitchtip;
+          provisionedPlausible = provisionResult.plausible;
         } catch (err) {
           console.log(
             chalk.yellow(`  Couldn't auto-provision services: ${(err as Error).message}`),
@@ -3658,6 +3670,13 @@ async function handleCreate(): Promise<void> {
         firstDeployPending: true,
       });
       if (followUp) deferredSteps.push(deferralForStep(followUp));
+    }
+    // The Plausible site, likewise: the client build reads the repo
+    // variables, so they are set before the first push builds it. See
+    // provision/plausible-delivery.ts.
+    if (provisionedPlausible) {
+      const { deliverProvisionedPlausible } = await import("./provision/plausible-delivery.js");
+      await deliverProvisionedPlausible(provisionedPlausible, { projectDir: appDir, write: true });
     }
 
     // Step 6.45: commit what the steps after the initial commit wrote
@@ -5580,7 +5599,8 @@ function printHelp(topic?: HelpTopic): void {
     glitchtip   SENTRY_DSN + GLITCHTIP_DSN (server) /
                 NEXT_PUBLIC_SENTRY_DSN + PUBLIC_GLITCHTIP_DSN (client),
                 plus Coolify SENTRY_DSN and the NEXT_PUBLIC_SENTRY_DSN repo variable
-    plausible   NEXT_PUBLIC_PLAUSIBLE_DOMAIN / *_SCRIPT_URL (client only)
+    plausible   NEXT_PUBLIC_PLAUSIBLE_DOMAIN / *_SCRIPT_URL (client only),
+                plus the two repo variables of the same name the client build reads
     listmonk-ses
                 LISTMONK_URL / _API_USER / _API_TOKEN / _FROM /
                 _LIVE_LIST_ID / _TEST_LIST_ID / _TX_TEMPLATE_ID /

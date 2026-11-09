@@ -144,6 +144,8 @@
   "test-selfhost.ts",
   "test-docs-in-client.ts",
   "test-deploy-recovery.ts",
+  "test-site-basics.ts",
+  "test-plausible-delivery.ts",
   "test-error-reporting.ts",
   "test-raycast.ts",
   "test-mcp.ts",

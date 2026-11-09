@@ -270,6 +270,13 @@ Key paths:
   sync client, client/server version handshake). Additive via `hatchkit update`.
   `markers.ts` holds the convention that keeps the create-time strip from
   drifting, and `cli/test-client-core.ts` pins it by round-tripping the starter.
+- `cli/src/features/site-basics/`: operational module (create + every
+  `update`) writing the web client's sitemap, robots, canonical, social
+  cards, JSON-LD and Plausible mount. Owned `lib/site/*` regenerate from the
+  manifest; route files, `og.png` and the layout are the project's (write if
+  absent / fixed-point edit). Plausible reaches the build only through repo
+  variables: `provision/plausible-delivery.ts`. Tests:
+  `test-site-basics.ts`, `test-plausible-delivery.ts`.
 - `cli/src/deploy/`: Coolify, Terraform, GitHub, keys, pages, rollback.
 - `cli/src/features/`: opt-in features. `signing/` provisions release
   signing; `server-platform/` + `server-migrations/`, `scheduler/`,

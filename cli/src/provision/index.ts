@@ -330,6 +330,12 @@ export interface ProvisionRunResult {
    *  where the app reads them in production (Coolify `SENTRY_DSN`, the
    *  `NEXT_PUBLIC_SENTRY_DSN` repo variable). */
   glitchtip?: { server?: string; client?: string; projectDir?: string };
+  /** The site the Plausible step wired, and whether the client is a Next
+   *  app (the only kind whose build reads NEXT_PUBLIC_PLAUSIBLE_*). `add`,
+   *  `create` and `adopt` hand it to `deliverPlausibleBuildVars`, which sets
+   *  the repo variables the client build reads — the env file alone never
+   *  reaches the build. See provision/plausible-delivery.ts. */
+  plausible?: { domain: string; scriptUrl: string; projectDir?: string; clientIsNext: boolean };
 }
 
 export interface SearchConsoleDomainGuess {
@@ -634,6 +640,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
 
   const buckets = initBuckets(surfaces);
   const glitchtipDsn: { server?: string; client?: string } = {};
+  let plausibleSite: ProvisionRunResult["plausible"];
 
   /** Persist deferrals + resolutions into `.hatchkit.json` and print the
    *  end-of-run block. Called on every exit path (cache-only mode, the
@@ -659,6 +666,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
       ...(glitchtipDsn.server || glitchtipDsn.client
         ? { glitchtip: { ...glitchtipDsn, projectDir: surfaces?.projectDir } }
         : {}),
+      ...(plausibleSite ? { plausible: plausibleSite } : {}),
     };
   };
 
@@ -783,6 +791,12 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
         created: res.created,
       });
       pushObsLines(buckets, "client", renderPlausibleEnv(res), enableDevObs);
+      plausibleSite = {
+        domain: res.domain,
+        scriptUrl: res.scriptUrl,
+        projectDir: surfaces?.projectDir,
+        clientIsNext: packageUsesNext([surfaces?.clientEnvDir, surfaces?.projectDir]),
+      };
     }
   });
 
