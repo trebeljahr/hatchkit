@@ -158,7 +158,8 @@ export const DESKTOP_DEV_DEPS: readonly string[] = [
   // icons-desktop.mjs renders the PNG variants through it.
   "sharp",
   "wait-on",
-  "concurrently",
+  // Not "concurrently": scripts/dev.mjs runs client + server through it in
+  // every project, desktop or not. Stripping it broke `pnpm dev`.
 ];
 
 /** Scripts a project that drops the desktop feature must not keep. A superset
