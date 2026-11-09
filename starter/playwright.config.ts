@@ -52,6 +52,9 @@ export default defineConfig({
       timeout: 30_000,
       env: {
         PORT: E2E_CLIENT_PORT,
+        // The tests browse 127.0.0.1; next dev (16) blocks its own dev
+        // resources for any origin not listed, so nothing would hydrate.
+        NEXT_DEV_ORIGINS: "127.0.0.1",
         NEXT_PUBLIC_API_URL: `http://127.0.0.1:${E2E_SERVER_PORT}`,
         NEXT_PUBLIC_WS_URL: `ws://127.0.0.1:${E2E_SERVER_PORT}`,
       },
