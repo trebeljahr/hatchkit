@@ -4486,6 +4486,7 @@ function printHelp(topic?: HelpTopic): void {
     --server-location <${SERVER_LOCATION_VALUES}> Hetzner region for --deploy-target new
     --server-id <id>               Coolify server id (--deploy-target existing)
     --server-ip <ip>               Coolify server IP (--deploy-target existing)
+                                   Leave both out to take the only Coolify server
     --deploy / --no-deploy         Run the deploy after scaffolding, or skip it
 
   ${chalk.bold("Stack:")}

@@ -1475,13 +1475,18 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
   }
 
   const deployTarget = presets.deployTarget ?? "new";
+  let existingServer: SelectedServer | undefined;
   if (
     deployTarget === "existing" &&
     (presets.serverId === undefined || presets.serverIp === undefined)
   ) {
-    throw new Error(
-      "--deploy-target existing requires --server-id <id> and --server-ip <ip> (or serverId/serverIp in --config).",
-    );
+    if (presets.serverId !== undefined || presets.serverIp !== undefined) {
+      throw new Error(
+        "--deploy-target existing takes --server-id <id> and --server-ip <ip> together (or serverId/serverIp in --config); pass both or neither.",
+      );
+    }
+    // Neither given: take the only Coolify server, like the interactive picker.
+    existingServer = await resolveSoleExistingServer();
   }
 
   const features = presets.features ?? [];
@@ -1581,11 +1586,11 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     subdomain,
     surfaces,
     deployTarget,
-    serverId: presets.serverId,
-    serverUuid: presets.serverUuid,
-    serverIp: presets.serverIp,
-    serverIpv4: presets.serverIpv4 ?? presets.serverIp,
-    serverIpv6: presets.serverIpv6,
+    serverId: existingServer ? existingServer.id : presets.serverId,
+    serverUuid: existingServer ? existingServer.uuid : presets.serverUuid,
+    serverIp: existingServer ? existingServer.ip : presets.serverIp,
+    serverIpv4: existingServer ? existingServer.ipv4 : (presets.serverIpv4 ?? presets.serverIp),
+    serverIpv6: existingServer ? existingServer.ipv6 : presets.serverIpv6,
     serverSize: deployTarget === "new" ? (presets.serverSize ?? "cpx21") : undefined,
     serverLocation: deployTarget === "new" ? (presets.serverLocation ?? "nbg1") : undefined,
     features,
@@ -2387,6 +2392,42 @@ async function selectExistingServer(): Promise<SelectedServer> {
     chosen = servers.find((s) => s.id === serverId)!;
   }
 
+  return resolveServerDetails(api, chosen);
+}
+
+/** Non-interactive twin of selectExistingServer for `--yes` runs that
+ *  pass `--deploy-target existing` without `--server-id`/`--server-ip`.
+ *  Reads the live server list (the cache can lack ids) and takes the
+ *  only server, exactly as the interactive picker would. With several
+ *  servers there is no safe default, so it fails and lists them. */
+export async function resolveSoleExistingServer(): Promise<SelectedServer> {
+  const coolifyConfig = await getCoolifyConfig();
+  if (!coolifyConfig?.url || !coolifyConfig?.token) {
+    throw new Error(
+      "--deploy-target existing needs Coolify configured (hatchkit config add coolify), or --server-id <id> and --server-ip <ip>.",
+    );
+  }
+  const api = new CoolifyApi({ url: coolifyConfig.url, token: coolifyConfig.token });
+  const servers = await api.listServers();
+  if (servers.length !== 1) {
+    const found =
+      servers.length === 0
+        ? "Coolify lists no servers"
+        : `Coolify lists ${servers.length} servers: ${servers
+            .map((s) => `${s.name} (--server-id ${s.id})`)
+            .join(", ")}`;
+    throw new Error(
+      `--deploy-target existing requires --server-id <id> and --server-ip <ip>: ${found}.`,
+    );
+  }
+  console.log(chalk.dim(`  Auto-selected server: ${servers[0].name} (${servers[0].ip})`));
+  return resolveServerDetails(api, servers[0]);
+}
+
+async function resolveServerDetails(
+  api: CoolifyApi,
+  chosen: CoolifyServer,
+): Promise<SelectedServer> {
   // Resolve uuid + discover public IPs. listServers/serversCache only
   // give us the numeric id; the uuid (and the real public_ipv4 /
   // public_ipv6) only come from /servers via findServer + the
