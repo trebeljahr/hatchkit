@@ -78,7 +78,8 @@ prompting. That makes `create` CI-safe.
 | `--deploy-target <value>` | `new` (provision a Hetzner box) · `existing` (reuse one). |
 | `--server-size <value>` | `cpx21` · `cpx31` · `cpx41`. Only for `--deploy-target new`. |
 | `--server-location <value>` | `nbg1` · `fsn1` · `hel1`. Only for `--deploy-target new`. |
-| `--server-id <id>`, `--server-ip <ip>` | Coolify server to reuse. Pass both or neither with `--deploy-target existing`; with neither, `--yes` takes the only Coolify server and fails, listing them, when there are several. |
+| `--server-id <id>`, `--server-ip <ip>` | Coolify server to reuse. Pass both or neither with `--deploy-target existing`. |
+| `--server <name\|uuid>` | Existing Coolify server by name or uuid; hatchkit resolves its uuid and public IPs. With no server flag, `--yes` takes the only server and fails, listing the names, when there are several. |
 | `--deploy` / `--no-deploy` | Run the deploy after scaffolding, or skip Terraform / Coolify / ML. |
 
 #### Stack

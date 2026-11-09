@@ -265,6 +265,11 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
     }
     presets.serverId = parsedId;
   }
+  const server = get("server");
+  if (server !== undefined) {
+    if (!server.trim()) throw new Error("--server needs a Coolify server name or uuid");
+    presets.serverPick = server.trim();
+  }
   const serverIp = get("server-ip");
   if (serverIp) {
     presets.serverIp = serverIp;

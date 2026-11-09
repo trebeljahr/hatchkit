@@ -274,6 +274,10 @@ export interface ProjectConfig {
   coolifyRuntime?: CoolifyRuntime;
 
   deployTarget: DeployTarget;
+  /** `--server <name|uuid>`: which existing Coolify server to deploy
+   *  to. Resolved to serverUuid + public IPs before the plan prints;
+   *  never written to the manifest. */
+  serverPick?: string;
   serverId?: number;
   /** Coolify server uuid. Populated for `existing` deploys after we've
    *  resolved the server via /servers; downstream code (Coolify
@@ -1485,8 +1489,9 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
         "--deploy-target existing takes --server-id <id> and --server-ip <ip> together (or serverId/serverIp in --config); pass both or neither.",
       );
     }
-    // Neither given: take the only Coolify server, like the interactive picker.
-    existingServer = await resolveSoleExistingServer();
+    // Neither given: --server picks one by name or uuid; without it,
+    // take the only Coolify server, like the interactive picker.
+    existingServer = await resolveSoleExistingServer(presets.serverPick);
   }
 
   const features = presets.features ?? [];
@@ -2382,14 +2387,16 @@ async function selectExistingServer(): Promise<SelectedServer> {
     console.log(chalk.dim(`  Auto-selected server: ${servers[0].name} (${servers[0].ip})`));
     chosen = servers[0];
   } else {
-    const serverId = await select({
+    // Key on position: Coolify's /servers carries no numeric id, so
+    // `s.id` is undefined for every entry and would always pick the first.
+    const index = await select({
       message: "Select server:",
-      choices: servers.map((s) => ({
+      choices: servers.map((s, i) => ({
         name: `${s.name} (${s.ip})`,
-        value: s.id,
+        value: i,
       })),
     });
-    chosen = servers.find((s) => s.id === serverId)!;
+    chosen = servers[index]!;
   }
 
   return resolveServerDetails(api, chosen);
@@ -2400,7 +2407,7 @@ async function selectExistingServer(): Promise<SelectedServer> {
  *  Reads the live server list (the cache can lack ids) and takes the
  *  only server, exactly as the interactive picker would. With several
  *  servers there is no safe default, so it fails and lists them. */
-export async function resolveSoleExistingServer(): Promise<SelectedServer> {
+export async function resolveSoleExistingServer(pick?: string): Promise<SelectedServer> {
   const coolifyConfig = await getCoolifyConfig();
   if (!coolifyConfig?.url || !coolifyConfig?.token) {
     throw new Error(
@@ -2409,16 +2416,18 @@ export async function resolveSoleExistingServer(): Promise<SelectedServer> {
   }
   const api = new CoolifyApi({ url: coolifyConfig.url, token: coolifyConfig.token });
   const servers = await api.listServers();
+  const names = servers.map((s) => s.name).join(", ") || "none";
+  if (pick !== undefined) {
+    const match = servers.find((s) => s.name === pick || s.uuid === pick);
+    if (!match) {
+      throw new Error(`--server ${pick}: no Coolify server has that name or uuid (servers: ${names}).`);
+    }
+    return resolveServerDetails(api, match);
+  }
   if (servers.length !== 1) {
     const found =
-      servers.length === 0
-        ? "Coolify lists no servers"
-        : `Coolify lists ${servers.length} servers: ${servers
-            .map((s) => `${s.name} (--server-id ${s.id})`)
-            .join(", ")}`;
-    throw new Error(
-      `--deploy-target existing requires --server-id <id> and --server-ip <ip>: ${found}.`,
-    );
+      servers.length === 0 ? "Coolify lists no servers" : `Coolify lists ${servers.length}: ${names}`;
+    throw new Error(`--deploy-target existing needs --server <name|uuid>: ${found}.`);
   }
   console.log(chalk.dim(`  Auto-selected server: ${servers[0].name} (${servers[0].ip})`));
   return resolveServerDetails(api, servers[0]);

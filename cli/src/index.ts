@@ -4484,9 +4484,11 @@ function printHelp(topic?: HelpTopic): void {
     --deploy-target <${DEPLOY_TARGET_VALUES}>     ${chalk.dim("new")} provisions a Hetzner box, ${chalk.dim("existing")} reuses one
     --server-size <${SERVER_SIZE_VALUES}>  Hetzner size for --deploy-target new
     --server-location <${SERVER_LOCATION_VALUES}> Hetzner region for --deploy-target new
+    --server <name|uuid>           Existing Coolify server to deploy to; resolves its
+                                   uuid and public IPs. Without it (and without
+                                   --server-id/--server-ip), the only server is used
     --server-id <id>               Coolify server id (--deploy-target existing)
     --server-ip <ip>               Coolify server IP (--deploy-target existing)
-                                   Leave both out to take the only Coolify server
     --deploy / --no-deploy         Run the deploy after scaffolding, or skip it
 
   ${chalk.bold("Stack:")}
