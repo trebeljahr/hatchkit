@@ -107,7 +107,15 @@ export interface WireUpResult {
   appUuid: string;
   /** Every Coolify application created or reconciled by this call. One
    *  entry under `single-origin`, two under `split`. */
-  apps: Array<{ uuid: string; name: string; role: RoutedApp["role"]; created: boolean }>;
+  apps: Array<{
+    uuid: string;
+    name: string;
+    role: RoutedApp["role"];
+    created: boolean;
+    /** The port Traefik forwards to, from the routing plan. The env push
+     *  (deploy/env-push.ts) sets it as PORT on every non-compose app. */
+    portsExposes: string;
+  }>;
   /** Hostnames beyond the bare domain this topology needs DNS for
    *  (`api.<domain>` under `split`). Records for these ARE upserted
    *  when a DNS provider is configured; the list is returned so the
@@ -295,12 +303,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       composeServices,
     });
 
-  const provisioned: Array<{
-    uuid: string;
-    name: string;
-    role: RoutedApp["role"];
-    created: boolean;
-  }> = [];
+  const provisioned: WireUpResult["apps"] = [];
 
   // One Docker network for the whole project (deploy/project-network.ts).
   const { placement, note } = await placeProjectResource(api, {
@@ -423,6 +426,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
         name: existingApp.name || routed.appName,
         role: routed.role,
         created: false,
+        portsExposes: routed.portsExposes,
       });
       continue;
     }
@@ -515,6 +519,7 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       name: routed.appName,
       role: routed.role,
       created: true,
+      portsExposes: routed.portsExposes,
     });
   }
 

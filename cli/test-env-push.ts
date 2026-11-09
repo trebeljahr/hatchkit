@@ -27,6 +27,10 @@
  *      commit, and is a no-op on a clean tree.
  *   6. create pushes the env and commits the late writes after the
  *      database step and before the first `git push`.
+ *   7. adopt pushes the env before its first push and again after
+ *      provisioning, commits what it wrote after its first commit before
+ *      pushing a brand-new repo, and commits + pushes the env files
+ *      provisioning changed (pathspec-scoped: user WIP is refused).
  *
  * No test touches a real Coolify: `fetch` is replaced by a fake.
  *
@@ -34,10 +38,17 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Conf from "conf";
+import {
+  type AdoptPlan,
+  type DetectedState,
+  commitAndPushScaffold,
+  lateEnvCommitFiles,
+  pushAdoptProductionEnv,
+} from "./src/adopt.js";
 import { type EnvPushApp, pushProductionEnv } from "./src/deploy/env-push.js";
 import { commitDeployWiring } from "./src/deploy/github.js";
 import { type SyncOptions, runSync } from "./src/deploy/sync.js";
@@ -186,7 +197,9 @@ const MONGO_URL = "mongodb://db-test:27017/demo";
 /** A project dir with `.hatchkit.json` and a plaintext server
  *  `.env.production` (resolveProductionEnv reads plaintext as-is). */
 function projectDir(manifest: Record<string, unknown>, envProduction?: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "hk-env-push-"));
+  // realpath: macOS tmpdir is a symlink, and git reports the resolved
+  // path, so relative paths computed from the two would disagree.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "hk-env-push-")));
   dirs.push(dir);
   writeFileSync(join(dir, ".hatchkit.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   if (envProduction !== undefined) {
@@ -479,6 +492,10 @@ await expect("--no-env → env untouched, nothing to redeploy", async () => {
 
 console.log("\ncommitDeployWiring:");
 
+/** The starter's env lines: ignore the keys, and re-include the
+ *  committed env files a global ignore rule may list. */
+const STARTER_GITIGNORE = ".env.keys\n.env.*.local\n!.env.development\n!.env.production\n";
+
 const GIT_ENV = {
   GIT_AUTHOR_NAME: "Test",
   GIT_AUTHOR_EMAIL: "test@example.com",
@@ -491,7 +508,7 @@ const git = (cwd: string, ...args: string[]) =>
 
 await expect("commits what was written after the initial commit; clean tree → no-op", async () => {
   const dir = projectDir({ name: "demo-app" }, 'BETTER_AUTH_SECRET="encrypted:BAAAinitial"\n');
-  writeFileSync(join(dir, ".gitignore"), ".env.keys\n");
+  writeFileSync(join(dir, ".gitignore"), STARTER_GITIGNORE);
   writeFileSync(join(dir, "packages/server/.env.keys"), "DOTENV_PRIVATE_KEY_PRODUCTION=abc\n");
   git(dir, "init", "-q", "-b", "main");
   git(dir, "add", "-A");
@@ -547,6 +564,199 @@ await expect("create pushes env and commits late writes before pushInitialBranch
   }
   assert.ok(commit < push, "late writes committed before the push");
   assert.ok(envPush < push, "env pushed before the push");
+});
+
+// ---------------------------------------------------------------------------
+// 7. adopt
+// ---------------------------------------------------------------------------
+
+console.log("\nadopt:");
+
+await expect("adopt: env push and late commits sit around its pushes", () => {
+  const src = readFileSync(new URL("./src/adopt.ts", import.meta.url), "utf-8");
+  const start = src.indexOf("async function executePlan(");
+  const body = src.slice(start, src.indexOf("\nasync function ", start + 1));
+  const at = (needle: string, from = 0) => {
+    const i = body.indexOf(needle, from);
+    assert.notEqual(i, -1, `executePlan no longer contains ${needle}`);
+    return i;
+  };
+  const scaffold = at("await scaffoldBuildPipelineNow(");
+  const wire = at("coolifyResult = await wireProjectIntoCoolify(");
+  const firstEnv = at("await pushAdoptProductionEnv(");
+  const lateCommit = at("await commitDeployWiring(state.repoRoot");
+  const initialPush = at("await pushInitialBranch(state.repoRoot)");
+  const scaffoldPush = at("await commitAndPushScaffold(state, plan.name, {");
+  const provision = at("await runProvision(");
+  const stripe = at("// Step 4c: Stripe");
+  const secondEnv = at("await pushAdoptProductionEnv(", provision);
+  const envCommit = at("record the provisioned production env");
+  const keyPush = at("// Step 5: push key to Coolify");
+  assert.ok(wire < firstEnv, "env pushed once the apps exist");
+  assert.ok(firstEnv < initialPush && firstEnv < scaffoldPush, "env pushed before the first push");
+  assert.ok(
+    scaffold < lateCommit && lateCommit < initialPush,
+    "scaffold committed before the push",
+  );
+  assert.ok(provision < secondEnv && stripe < secondEnv, "second env push after provisioning");
+  assert.ok(secondEnv < envCommit && envCommit < keyPush, "env files committed after the push");
+});
+
+/** A repo with one commit, pushed to a bare `origin`. */
+function repoWithOrigin(): { dir: string; origin: string } {
+  const dir = projectDir({ name: "demo-app" }, 'BETTER_AUTH_SECRET="encrypted:BAAAinitial"\n');
+  const origin = realpathSync(mkdtempSync(join(tmpdir(), "hk-env-push-origin-")));
+  dirs.push(origin);
+  git(origin, "init", "-q", "--bare", "-b", "main");
+  writeFileSync(join(dir, ".gitignore"), STARTER_GITIGNORE);
+  writeFileSync(join(dir, "README.md"), "demo\n");
+  git(dir, "init", "-q", "-b", "main");
+  git(dir, "remote", "add", "origin", origin);
+  git(dir, "add", "-A");
+  git(dir, "commit", "-q", "-m", "Adopt under hatchkit management");
+  git(dir, "push", "-q", "origin", "main");
+  return { dir, origin };
+}
+
+function adoptState(dir: string): DetectedState {
+  return { projectDir: dir, repoRoot: dir } as DetectedState;
+}
+
+function lateEnvPaths(dir: string) {
+  const envDir = join(dir, "packages/server");
+  return {
+    scaffoldedAbsPaths: [],
+    overwrittenAbsPaths: [".env.production", ".env.development", ".env.example"].map((n) =>
+      join(envDir, n),
+    ),
+    manifestPath: join(dir, ".hatchkit.json"),
+  };
+}
+
+const RECORD_MESSAGE = "chore(hatchkit): record the provisioned production env";
+
+await expect("adopt: provisioned env files committed and pushed", async () => {
+  const { dir, origin } = repoWithOrigin();
+  // What Step 4 writes after the Step 3d push.
+  writeFileSync(
+    join(dir, "packages/server/.env.production"),
+    'BETTER_AUTH_SECRET="encrypted:BAAAinitial"\nS3_SECRET_KEY="encrypted:BAAAlate"\n',
+  );
+  writeFileSync(join(dir, ".hatchkit.json"), `${JSON.stringify({ name: "demo-app", v: 2 })}\n`);
+  const { value: result } = await withCoolify(fakeCoolify([]), () =>
+    commitAndPushScaffold(adoptState(dir), "demo-app", lateEnvPaths(dir), {
+      message: RECORD_MESSAGE,
+    }),
+  );
+  assert.deepEqual(result, { pushed: true });
+  assert.equal(git(origin, "log", "-1", "--format=%s", "main"), RECORD_MESSAGE);
+  assert.match(git(origin, "show", "main:packages/server/.env.production"), /S3_SECRET_KEY=/);
+  assert.equal(git(dir, "status", "--porcelain"), "");
+});
+
+await expect("adopt: nothing changed → no commit, no push", async () => {
+  const { dir, origin } = repoWithOrigin();
+  const before = git(origin, "rev-parse", "main");
+  const { value: result } = await withCoolify(fakeCoolify([]), () =>
+    commitAndPushScaffold(adoptState(dir), "demo-app", lateEnvPaths(dir), {
+      message: RECORD_MESSAGE,
+    }),
+  );
+  assert.deepEqual(result, { pushed: false });
+  assert.equal(git(origin, "rev-parse", "main"), before);
+});
+
+await expect("adopt: user WIP elsewhere → refused with a caveat, nothing pushed", async () => {
+  const { dir, origin } = repoWithOrigin();
+  const before = git(origin, "rev-parse", "main");
+  writeFileSync(
+    join(dir, "packages/server/.env.production"),
+    'BETTER_AUTH_SECRET="encrypted:BAAAinitial"\nS3_SECRET_KEY="encrypted:BAAAlate"\n',
+  );
+  writeFileSync(join(dir, "README.md"), "demo, edited by hand\n");
+  const { value: result } = await withCoolify(fakeCoolify([]), () =>
+    commitAndPushScaffold(adoptState(dir), "demo-app", lateEnvPaths(dir), {
+      message: RECORD_MESSAGE,
+    }),
+  );
+  assert.equal(result.pushed, false);
+  assert.match(result.caveat?.title ?? "", /unrelated changes/);
+  assert.ok(result.caveat?.recovery.some((line) => line.includes("README.md")));
+  assert.equal(git(origin, "rev-parse", "main"), before);
+});
+
+await expect(
+  "adopt: ignored encrypted .env.production force-added, local dev env left out",
+  async () => {
+    const { dir, origin } = repoWithOrigin();
+    const serverDir = join(dir, "packages/server");
+    // A repo whose own ignore rules list the env files, as a global one
+    // often does.
+    writeFileSync(join(dir, ".gitignore"), ".env.keys\n.env.production\n.env.development\n");
+    writeFileSync(join(serverDir, ".env.example"), "S3_SECRET_KEY=\n");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "ignore env files");
+    git(dir, "push", "-q", "origin", "main");
+    writeFileSync(
+      join(serverDir, ".env.production"),
+      'DOTENV_PUBLIC_KEY_PRODUCTION="02abc"\nS3_SECRET_KEY="encrypted:BAAAlate"\n',
+    );
+    writeFileSync(join(serverDir, ".env.development"), "S3_SECRET_KEY=local-dev-value\n");
+    writeFileSync(join(serverDir, ".env.example"), "S3_SECRET_KEY=\nS3_BUCKET=\n");
+
+    const files = await lateEnvCommitFiles(
+      { projectDir: dir },
+      { serverDir, clientDir: undefined },
+    );
+    assert.deepEqual(files.forceAdd, [join(serverDir, ".env.production")]);
+    assert.deepEqual(files.paths, [
+      join(serverDir, ".env.production"),
+      join(serverDir, ".env.example"),
+    ]);
+
+    const { value: result } = await withCoolify(fakeCoolify([]), () =>
+      commitAndPushScaffold(
+        adoptState(dir),
+        "demo-app",
+        {
+          scaffoldedAbsPaths: [],
+          overwrittenAbsPaths: files.paths,
+          manifestPath: join(dir, ".hatchkit.json"),
+        },
+        { message: RECORD_MESSAGE, forceAdd: files.forceAdd },
+      ),
+    );
+    assert.deepEqual(result, { pushed: true });
+    assert.match(git(origin, "show", "main:packages/server/.env.production"), /S3_SECRET_KEY=/);
+    assert.match(git(origin, "show", "main:packages/server/.env.example"), /S3_BUCKET=/);
+    assert.throws(() => git(origin, "show", "main:packages/server/.env.development"));
+  },
+);
+
+await expect("adopt: env push failure is one caveat; a later success clears it", async () => {
+  const plan = {
+    name: "demo-app",
+    domain: "demo.example.com",
+    surfaces: "fullstack",
+    deploymentMode: "coolify",
+  } as AdoptPlan;
+  const apps: EnvPushApp[] = [
+    { uuid: "adopt-uuid", name: "demo-app", role: "compose", portsExposes: "3000" },
+  ];
+  const caveats: Parameters<typeof pushAdoptProductionEnv>[3] = [];
+  const broken = projectDir({ name: "demo-app" }, 'MONGODB_URI="encrypted:BCtSlYNoXhJm"\n');
+  const fake = fakeCoolify([]);
+  await withCoolify(fake, () => pushAdoptProductionEnv(adoptState(broken), plan, apps, caveats));
+  await withCoolify(fake, () => pushAdoptProductionEnv(adoptState(broken), plan, apps, caveats));
+  assert.equal(caveats.length, 1, "the second failure replaced the first");
+  assert.match(caveats[0]!.reason, /MONGODB_URI/);
+  assert.match(caveats[0]!.recovery[0]!, /hatchkit sync --deploy/);
+  assert.deepEqual(writes(fake.calls), []);
+
+  const fixed = projectDir({ name: "demo-app" }, ENV_FILE);
+  await withCoolify(fake, () => pushAdoptProductionEnv(adoptState(fixed), plan, apps, caveats));
+  assert.deepEqual(caveats, []);
+  assert.equal(bulkBody(fake.calls, "adopt-uuid").MONGODB_URI, MONGO_URL);
 });
 
 for (const dir of dirs) rmSync(dir, { recursive: true, force: true });

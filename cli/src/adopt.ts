@@ -36,10 +36,11 @@ import { adoptRepositoryIsPrivate } from "./utils/command-input.js";
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import { ensureGhcrViaGh, ensureGitHub, getCoolifyConfig, getDefaultRootDomain } from "./config.js";
+import { type EnvPushApp, pushProductionEnv } from "./deploy/env-push.js";
 import {
   type CoolifyDeployApp,
   coolifyDeploySecretNames,
@@ -48,8 +49,12 @@ import {
   repoSlugFromRemote,
   setCoolifyDeploySecrets,
 } from "./deploy/gh-actions-secrets.js";
-import { pushInitialBranch } from "./deploy/github.js";
-import { pushProjectKeyToCoolify, pushProjectKeyToGh } from "./deploy/keys.js";
+import { commitDeployWiring, pushInitialBranch } from "./deploy/github.js";
+import {
+  locateEnvProductionFile,
+  pushProjectKeyToCoolify,
+  pushProjectKeyToGh,
+} from "./deploy/keys.js";
 import { handleAdoptFailure } from "./deploy/rollback.js";
 import { computeRoutingPlan, inferTopology } from "./deploy/routing.js";
 import {
@@ -2581,9 +2586,42 @@ async function executePlan(
     //
     // `pushedThisRun` gates the GHCR step below — we only wait for a
     // new image when a push actually went out.
+    //
+    // Before either push, the production env goes onto the Coolify
+    // app(s): an adopted repo that kept a Dockerfile which doesn't
+    // decrypt .env.production itself gets its values from Coolify env
+    // or not at all. See deploy/env-push.ts.
+    if (coolifyResult) {
+      await pushAdoptProductionEnv(state, plan, coolifyResult.apps, caveats);
+    }
     let pushedThisRun = false;
+    /** Step 3d's pathspec commit refused (user WIP, a git operation in
+     *  progress, a staged secret). The late-env commit below then stays
+     *  out of the way: its caveat already tells the user what to do. */
+    let scaffoldCommitRefused = false;
     if (remoteUrl) {
       if (plan.setupGitHub && !state.gitRemoteUrl) {
+        // setupGitHubRemote committed the tree at Step 3; the pipeline
+        // scaffold (Step 3a) and everything after it was written since.
+        // Commit it, or the first push carries no workflow and no
+        // Dockerfile. The repo was just created by this run, so the
+        // whole tree is the adopt's, as setupGitHubRemote already
+        // assumed.
+        try {
+          const files = await commitDeployWiring(state.repoRoot, plan.name);
+          if (files.length > 0) {
+            console.log(chalk.green(`  ✓ Committed ${files.length} file(s) written since Step 3`));
+          }
+        } catch (err) {
+          caveats.push({
+            title: "Files written after the first commit are not committed",
+            reason: (err as Error).message,
+            recovery: [
+              `cd ${state.repoRoot} && git status`,
+              "Commit the changed files (never .env.keys or a *.local env file), then `git push`.",
+            ],
+          });
+        }
         // Push from the REPO root so the whole tree (manifest at
         // root + the deployable subdir) goes up in one shot. Single-
         // package layouts have repoRoot === projectDir so unchanged.
@@ -2595,7 +2633,10 @@ async function executePlan(
           manifestPath,
         });
         pushedThisRun = result.pushed;
-        if (result.caveat) caveats.push(result.caveat);
+        if (result.caveat) {
+          caveats.push(result.caveat);
+          scaffoldCommitRefused = true;
+        }
       }
     }
 
@@ -3251,6 +3292,30 @@ async function executePlan(
       }
     }
 
+    // Step 4z: Step 4 wrote its values into .env.production AFTER the
+    // Step 3d push. Push the env onto the Coolify app(s) again, then
+    // commit + push the files it changed: an image built by adopt's own
+    // pipeline reads .env.production from the commit it was built
+    // from, so an uncommitted value never reaches production. Same
+    // pathspec-scoped commit as Step 3d — user WIP is refused, not
+    // swept in.
+    if (coolifyResult) {
+      await pushAdoptProductionEnv(state, plan, coolifyResult.apps, caveats);
+    }
+    if (remoteUrl && !scaffoldCommitRefused) {
+      const lateFiles = await lateEnvCommitFiles(state, plan);
+      const result = await commitAndPushScaffold(
+        state,
+        plan.name,
+        { scaffoldedAbsPaths: [], overwrittenAbsPaths: lateFiles.paths, manifestPath },
+        {
+          message: "chore(hatchkit): record the provisioned production env",
+          forceAdd: lateFiles.forceAdd,
+        },
+      );
+      if (result.caveat) caveats.push(result.caveat);
+    }
+
     // Step 5: push key to Coolify — but only when wireCoolify didn't
     // already do it. wireCoolify's success path includes a setAppEnv
     // pass that pushes DOTENV_PRIVATE_KEY_PRODUCTION; if it failed,
@@ -3649,6 +3714,102 @@ async function detectUserWip(
   return { kind: "ok" };
 }
 
+/** True for an existing dotenvx-encrypted env file (it carries the
+ *  `DOTENV_PUBLIC_KEY…` header dotenvx writes). */
+function isDotenvxEncrypted(path: string): boolean {
+  if (!existsSync(path)) return false;
+  try {
+    return /^#?\s*DOTENV_PUBLIC_KEY/m.test(readFileSync(path, "utf-8"));
+  } catch {
+    return false;
+  }
+}
+
+/** The existing paths of `paths` git stages without `-f`: tracked ones,
+ *  and untracked ones no ignore rule covers. */
+async function committablePaths(cwd: string, paths: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    if (await execOk("git", ["ls-files", "--error-unmatch", "--", path], { cwd })) {
+      out.push(path);
+    } else if (!(await execOk("git", ["check-ignore", "--quiet", "--", path], { cwd }))) {
+      out.push(path);
+    }
+  }
+  return out;
+}
+
+/** The env files Step 4z commits after provisioning: the committed
+ *  ones a provisioner writes (secrets to `.env.production`, encrypted;
+ *  names to `.env.example`; dev defaults to `.env.development`), in
+ *  every directory env lives in.
+ *
+ *  A dotenvx-encrypted `.env.production` is force-added, as Step 1b
+ *  does: a global ignore rule often lists it, and the encrypted file is
+ *  meant to be committed. Every other file is taken only when git would
+ *  stage it anyway (tracked, or no ignore rule covers it) — a local,
+ *  ignored `.env.development` is not adopt's to commit, and `git add`
+ *  of an ignored path fails the whole add. Exported for tests. */
+export async function lateEnvCommitFiles(
+  state: Pick<DetectedState, "projectDir">,
+  plan: Pick<AdoptPlan, "serverDir" | "clientDir">,
+): Promise<{ paths: string[]; forceAdd: string[] }> {
+  const located = locateEnvProductionFile(state.projectDir);
+  const envDirs = [located ? dirname(located) : undefined, plan.serverDir, plan.clientDir]
+    .filter((d): d is string => !!d)
+    .filter((d, i, all) => all.indexOf(d) === i);
+  const forceAdd = envDirs.map((dir) => join(dir, ".env.production")).filter(isDotenvxEncrypted);
+  const others = await committablePaths(
+    state.projectDir,
+    envDirs
+      .flatMap((dir) =>
+        [".env.production", ".env.development", ".env.example"].map((n) => join(dir, n)),
+      )
+      .filter((p) => !forceAdd.includes(p)),
+  );
+  return { paths: [...forceAdd, ...others], forceAdd };
+}
+
+const ENV_PUSH_CAVEAT = "Production env not pushed to Coolify";
+
+/** Push the resolved `.env.production` onto the adopted Coolify app(s)
+ *  — the push `sync` and `create` run (deploy/env-push.ts). Adopt runs it
+ *  twice (before its first push, and after provisioning), so one caveat
+ *  carries the latest failure and a later success clears it. Exported
+ *  for tests. */
+export async function pushAdoptProductionEnv(
+  state: DetectedState,
+  plan: AdoptPlan,
+  apps: EnvPushApp[],
+  caveats: AdoptCaveat[],
+): Promise<void> {
+  if (plan.deploymentMode !== "coolify" || apps.length === 0) return;
+  let failure: string | undefined;
+  try {
+    const cfg = await getCoolifyConfig();
+    if (!cfg) throw new Error("Coolify is not configured.");
+    const outcome = await pushProductionEnv({
+      api: new CoolifyApi({ url: cfg.url, token: cfg.token }),
+      projectDir: state.repoRoot,
+      project: { name: plan.name, domain: plan.domain, surfaces: plan.surfaces },
+      apps,
+    });
+    if (outcome && outcome.errors.length > 0) failure = outcome.errors.join("; ");
+  } catch (err) {
+    failure = (err as Error).message;
+  }
+  const at = caveats.findIndex((c) => c.title === ENV_PUSH_CAVEAT);
+  if (at >= 0) caveats.splice(at, 1);
+  if (failure) {
+    caveats.push({
+      title: ENV_PUSH_CAVEAT,
+      reason: failure,
+      recovery: [`cd ${state.repoRoot} && hatchkit sync --deploy`],
+    });
+  }
+}
+
 /**
  * Commit + push the files hatchkit wrote this run (manifest +
  * scaffolded build pipeline) to a pre-existing remote so the
@@ -3668,9 +3829,9 @@ async function detectUserWip(
  * Returns `{ pushed: false }` (no caveat) for the idempotent case —
  * everything hatchkit wrote was already byte-identical to HEAD, so
  * there was nothing to push. Failures during commit/push surface as
- * a caveat with a copy-pasteable manual recipe.
+ * a caveat with a copy-pasteable manual recipe. Exported for tests.
  */
-async function commitAndPushScaffold(
+export async function commitAndPushScaffold(
   state: DetectedState,
   projectName: string,
   paths: {
@@ -3678,7 +3839,15 @@ async function commitAndPushScaffold(
     overwrittenAbsPaths: string[];
     manifestPath: string;
   },
+  options: {
+    message?: string;
+    /** Paths staged with `git add -f`: an encrypted `.env.production`
+     *  that an ignore rule covers. The secret guard still runs. */
+    forceAdd?: string[];
+  } = {},
 ): Promise<{ pushed: boolean; caveat?: AdoptCaveat }> {
+  const message = options.message ?? "chore(hatchkit): adopt scaffold + manifest";
+  const forceAdd = new Set(options.forceAdd ?? []);
   const all = [
     ...paths.scaffoldedAbsPaths,
     ...paths.overwrittenAbsPaths,
@@ -3741,7 +3910,7 @@ async function commitAndPushScaffold(
           "Commit + push the scaffold manually:",
           `  cd ${state.projectDir}`,
           `  git add ${all.map((p) => relativeTo(p, state.projectDir)).join(" ")}`,
-          `  git commit -m "chore(hatchkit): adopt scaffold + manifest"`,
+          `  git commit -m "${message}"`,
           `  git push`,
           "Then re-run: hatchkit adopt --resume",
         ],
@@ -3766,10 +3935,18 @@ async function commitAndPushScaffold(
   // Pathspec stage: only the hatchkit-owned files. `--` separates
   // pathspecs from refs so a file named "main" doesn't get confused
   // for a branch.
-  const stage = await exec("git", ["add", "--", ...all], {
-    cwd: state.projectDir,
-    silent: true,
-  });
+  const plain = all.filter((p) => !forceAdd.has(p));
+  const forced = all.filter((p) => forceAdd.has(p));
+  let stage = { exitCode: 0, stdout: "", stderr: "" };
+  if (plain.length > 0) {
+    stage = await exec("git", ["add", "--", ...plain], { cwd: state.projectDir, silent: true });
+  }
+  if (stage.exitCode === 0 && forced.length > 0) {
+    stage = await exec("git", ["add", "-f", "--", ...forced], {
+      cwd: state.projectDir,
+      silent: true,
+    });
+  }
   if (stage.exitCode !== 0) {
     return {
       pushed: false,
@@ -3780,7 +3957,7 @@ async function commitAndPushScaffold(
           "Stage + commit + push manually so the workflow runs:",
           `  cd ${state.projectDir}`,
           `  git add ${all.map((p) => relativeTo(p, state.projectDir)).join(" ")}`,
-          `  git commit -m "chore(hatchkit): adopt scaffold + manifest"`,
+          `  git commit -m "${message}"`,
           `  git push`,
           "Then re-run: hatchkit adopt --resume",
         ],
@@ -3816,11 +3993,10 @@ async function commitAndPushScaffold(
 
   // Pathspec on the commit too — anything else the user happened to
   // stage themselves before running adopt stays out of this commit.
-  const commit = await exec(
-    "git",
-    ["commit", "-m", "chore(hatchkit): adopt scaffold + manifest", "--", ...all],
-    { cwd: state.projectDir, silent: true },
-  );
+  const commit = await exec("git", ["commit", "-m", message, "--", ...all], {
+    cwd: state.projectDir,
+    silent: true,
+  });
   if (commit.exitCode !== 0) {
     return {
       pushed: false,
@@ -3830,7 +4006,7 @@ async function commitAndPushScaffold(
         recovery: [
           "Commit + push the scaffold manually:",
           `  cd ${state.projectDir}`,
-          `  git commit -m "chore(hatchkit): adopt scaffold + manifest" -- ${all.map((p) => relativeTo(p, state.projectDir)).join(" ")}`,
+          `  git commit -m "${message}" -- ${all.map((p) => relativeTo(p, state.projectDir)).join(" ")}`,
           `  git push`,
           "Then re-run: hatchkit adopt --resume",
         ],
