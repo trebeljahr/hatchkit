@@ -279,7 +279,8 @@ await check("create: after the repo and the Coolify apps, before the first push"
     "await setCoolifyDeploySecrets(",
     "await runCloudflareSetupProgrammatic(",
     "await deliverProvisionedDsn(",
-    "await pushInitialBranch(appDir)",
+    // Prefix only: the call takes an options object (makeDefaultBranch).
+    "await pushInitialBranch(appDir",
   ]);
   assert.match(body, /firstDeployPending: true/);
   assert.match(body, /deferredSteps\.push\(deferralForStep\(followUp\)\)/);
