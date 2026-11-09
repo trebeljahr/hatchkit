@@ -201,6 +201,19 @@ export function describeCoolifyPatchLimit(field: string): string | undefined {
 }
 
 /** Coolify REST API client. */
+/** Coolify (v4) refuses a description with anything but letters, digits,
+ *  spaces and `- _ . , ! ? ( ) ' " + = * / @ &` — a colon in a project's
+ *  one-liner fails the whole create with a 422. Map the common ones to a
+ *  dash and drop the rest; the text stays readable. */
+export function coolifyDescription(text: string): string {
+  return text
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\s*[:;|]\s*/g, " - ")
+    .replace(/[^\p{L}\p{N}\s\-_.,!?()'"+=*/@&]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export class CoolifyApi {
   private url: string;
   private token: string;
@@ -339,7 +352,10 @@ export class CoolifyApi {
     name: string,
     description?: string,
   ): Promise<{ uuid: string; name: string; id?: number }> {
-    return this.request("POST", "/projects", { name, description });
+    return this.request("POST", "/projects", {
+      name,
+      description: description === undefined ? undefined : coolifyDescription(description),
+    });
   }
 
   /** List Coolify apps/services so callers can resolve a UUID by name. */
@@ -773,7 +789,7 @@ export class CoolifyApi {
       ports_exposes: input.portsExposes ?? "3000",
       build_pack: buildPack,
       name: input.name,
-      description: input.description,
+      description: input.description === undefined ? undefined : coolifyDescription(input.description),
       instant_deploy: input.instantDeploy ?? true,
     };
     // `base_directory` is the repo-relative path Coolify uses as the
@@ -961,7 +977,7 @@ export class CoolifyApi {
     if (fields.gitBranch !== undefined) body.git_branch = fields.gitBranch;
     if (fields.gitRepository !== undefined) body.git_repository = fields.gitRepository;
     if (fields.githubAppUuid !== undefined) body.github_app_uuid = fields.githubAppUuid;
-    if (fields.description !== undefined) body.description = fields.description;
+    if (fields.description !== undefined) body.description = coolifyDescription(fields.description);
     if (fields.baseDirectory !== undefined) {
       body.base_directory = normalizeCoolifyBaseDirectory(fields.baseDirectory);
     }
@@ -1038,7 +1054,7 @@ export class CoolifyApi {
   ): Promise<void> {
     const body: Record<string, unknown> = {};
     if (fields.name !== undefined) body.name = fields.name;
-    if (fields.description !== undefined) body.description = fields.description;
+    if (fields.description !== undefined) body.description = coolifyDescription(fields.description);
     if (Object.keys(body).length === 0) return;
     await this.request("PATCH", `/projects/${uuid}`, body);
   }
@@ -1266,7 +1282,7 @@ export class CoolifyApi {
     };
     if (input.environmentUuid) body.environment_uuid = input.environmentUuid;
     else body.environment_name = input.environmentName ?? "production";
-    if (input.description) body.description = input.description;
+    if (input.description) body.description = coolifyDescription(input.description);
     // Without a domain Coolify would mint an sslip.io one; an app with
     // no public surface (never the case today) should say so explicitly.
     if (input.domains.length === 0) body.autogenerate_domain = false;

@@ -79,6 +79,7 @@
     "test:doctor-nginx-config": "node scripts/test.mjs test-doctor-nginx-config.ts",
     "test:doctor-env-keys": "node scripts/test.mjs test-doctor-env-keys.ts",
     "test:coolify-patch-limits": "node scripts/test.mjs test-coolify-patch-limits.ts",
+    "test:coolify-description": "node scripts/test.mjs test-coolify-description.ts",
     "test:coolify-db-network": "node scripts/test.mjs test-coolify-db-network.ts",
     "test:force-domain-override": "node scripts/test.mjs test-force-domain-override.ts",
     "test:adopt-manifest": "node scripts/test.mjs test-adopt-manifest.ts",
