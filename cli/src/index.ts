@@ -3166,6 +3166,21 @@ async function handleCreate(): Promise<void> {
           console.log(chalk.yellow("  pnpm install failed — continuing anyway."));
         }
       }
+    } else if (config.scaffoldRepo && (await execOk("pnpm", ["--version"]))) {
+      // No install, but the lockfile still has to match: features add
+      // dependencies the starter's lockfile lacks, and the first CI run
+      // installs with --frozen-lockfile. Resolving only, no node_modules.
+      const res = await exec("pnpm", ["install", "--lockfile-only", "--ignore-scripts"], {
+        cwd: appDir,
+        spinner: "Updating pnpm-lock.yaml (no install)...",
+      });
+      if (res.exitCode !== 0) {
+        console.log(
+          chalk.yellow(
+            "  Could not update pnpm-lock.yaml — run `pnpm install` before the first push, or CI's frozen install fails.",
+          ),
+        );
+      }
     }
 
     // The project's own tRPC contract snapshot. It runs before the initial
