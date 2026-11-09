@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { prepareInfrastructureRoot, resolveAssetRoot } from "./utils/asset-root.js";
+import { configureHttpTimeouts } from "./utils/http-timeouts.js";
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -108,6 +109,8 @@ import { getCliVersion } from "./utils/version.js";
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
+
+configureHttpTimeouts();
 
 const args = process.argv.slice(2);
 const command = args[0];

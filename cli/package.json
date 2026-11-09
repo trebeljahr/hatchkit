@@ -171,6 +171,7 @@
     "handlebars": "^4.7.9",
     "keytar": "^7.9.0",
     "ora": "^8.2.0",
+    "undici": "^7.30.0",
     "yaml": "^2.9.1"
   },
   "devDependencies": {
