@@ -720,6 +720,16 @@ await check("builder: edges, jobs and findings", () => {
   assert.equal(job("digest")?.health, "fail");
   assert.equal(job("guard-check")?.detail, "failed on app-vps");
   assert.equal(job("backups")?.where, "app-vps · hatchkit timers");
+  // Insertion order of the timer results (whichever ssh answered first)
+  // does not change the labels.
+  const facts = fakeFacts();
+  facts.hostTimers = {
+    "ops-vps": { timers: [{ unit: "hatchkit-backups.timer", when: "17:00 UTC", active: true }] },
+    "apps-host": { timers: [{ unit: "hatchkit-backups.timer", when: "16:00 UTC", active: true }] },
+  };
+  const swapped = buildFleetMap(facts).jobs.find((j) => j.name === "backups");
+  assert.equal(swapped?.where, "app-vps + ops-vps · hatchkit timers");
+  assert.equal(swapped?.when, "16:00 UTC / 17:00 UTC");
   assert.equal(job("monitor")?.when, "every 5 min");
   assert.equal(job("hatchkit-audit")?.tier, "made");
 

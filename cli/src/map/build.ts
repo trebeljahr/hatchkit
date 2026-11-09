@@ -672,7 +672,13 @@ export function buildFleetMap(facts: FleetFacts, extras: MapExtras = {}): FleetM
       string,
       { hosts: string[]; whens: Set<string>; what?: string; failedOn: string[] }
     >();
-    for (const [host, res] of Object.entries(facts.hostTimers)) {
+    // Host order from the config, not from whichever ssh answered first.
+    const hostOrder = (facts.backups?.hosts ?? []).map((h) => h.name);
+    const rank = (h: string) => (hostOrder.includes(h) ? hostOrder.indexOf(h) : hostOrder.length);
+    const entries = Object.entries(facts.hostTimers).sort(
+      ([a], [b]) => rank(a) - rank(b) || a.localeCompare(b),
+    );
+    for (const [host, res] of entries) {
       if (!("timers" in res)) continue;
       for (const t of res.timers) {
         const e = byUnit.get(t.unit) ?? {
