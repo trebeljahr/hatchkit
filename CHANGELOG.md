@@ -14,6 +14,7 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ### Fixed
 
+- Postgres scaffolds build again: the generated `items.create` no longer passes a `status` the create schema does not have (TS2339 in the server build).
 - API calls no longer fail with a bare "fetch failed" when opening a connection takes more than 10 s, as over a relayed tailnet link to Coolify or on a heavily loaded machine. The connect timeout is now 30 s; `HATCHKIT_CONNECT_TIMEOUT_MS` changes it.
 - `keys push --dry-run` plans delivery without provider or keychain access. Adopt defaults new repositories to private and honors explicit visibility. Signing accepts omitted project directories before flags.
 - Service removal requires exact identities recorded as created in the project ledger. Adopted, ambiguous, and legacy resources without that proof are retained. Search Console properties are retained.

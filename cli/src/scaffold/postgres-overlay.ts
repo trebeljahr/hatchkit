@@ -729,7 +729,6 @@ export const itemsRouter = router({
       const item = await Item.create({
         title: input.title,
         description: input.description,
-        status: input.status,
         ownerId: ctx.user.id,
       });
       return {
