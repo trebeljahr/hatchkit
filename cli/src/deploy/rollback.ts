@@ -32,6 +32,7 @@ import {
   parseStripeWebhookIdAccount,
 } from "../utils/secrets.js";
 import { ghSecretDelete } from "./gh-actions-secrets.js";
+import { workspaceName } from "./terraform-workspace.js";
 
 /** Pull the R2 admin token from the OS keychain. Used by rollback
  *  steps that need to talk to the R2 API (bucket/token destroy).
@@ -267,7 +268,7 @@ function recipeFor(step: LedgerStep, ledgerName: string): string | null {
     case "coolifyGhcrSshLogin":
       return `ssh -p ${step.port} ${shellEscape(`${step.user}@${step.host}`)} 'docker logout ghcr.io'`;
     case "terraformApplied":
-      return `cd ${shellEscape(step.stackDir)} && terraform destroy -var-file=${shellEscape(step.tfvarsPath)}`;
+      return `cd ${shellEscape(step.stackDir)} && TF_WORKSPACE=${shellEscape(workspaceName(step.tfvarsPath))} terraform destroy -var-file=${shellEscape(step.tfvarsPath)}`;
     case "coolifyEnv":
       return `rm ${shellEscape(step.path)}`;
     case "tfvars":
@@ -673,7 +674,7 @@ export function describeStep(step: LedgerStep): string {
     case "stripeWebhook":
       return `delete Stripe ${step.mode} webhook ${chalk.cyan(step.endpointId)} (${step.url})`;
     case "terraformApplied":
-      return `terraform destroy in ${chalk.cyan(step.stackDir)}`;
+      return `terraform destroy in ${chalk.cyan(step.stackDir)} (workspace ${workspaceName(step.tfvarsPath)})`;
     case "coolifyApp":
       return `delete Coolify app ${chalk.cyan(step.uuid)}`;
     case "coolifyProject":
@@ -919,12 +920,24 @@ async function undoStep(
           label: ledgerName,
         },
         async (tfToken) => {
+          const tfEnv = { ...env, TF_VAR_cloudflare_api_token: tfToken };
+          const init = await exec("terraform", ["init", "-input=false"], {
+            cwd: step.stackDir,
+            env: tfEnv,
+            silent: true,
+          });
+          if (init.exitCode !== 0)
+            throw new Error(`terraform init failed: ${init.stderr || init.stdout}`);
+          // Destroy only this project's workspace. The default state may
+          // hold another project's resources (terraform-workspace.ts).
+          const { projectWorkspaceEnv } = await import("./terraform-workspace.js");
+          const wsEnv = await projectWorkspaceEnv(step.stackDir, step.tfvarsPath, tfEnv);
           const res = await exec(
             "terraform",
             ["destroy", "-auto-approve", `-var-file=${step.tfvarsPath}`],
             {
               cwd: step.stackDir,
-              env: { ...env, TF_VAR_cloudflare_api_token: tfToken },
+              env: wsEnv,
               silent: true,
             },
           );

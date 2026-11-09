@@ -14,6 +14,7 @@ import { CloudflareApi, type CloudflareZone } from "../utils/cloudflare-api.js";
 import { exec, execStream } from "../utils/exec.js";
 import { InwxApi } from "../utils/inwx-api.js";
 import { withTerraformCloudflareToken } from "./terraform-token.js";
+import { projectWorkspaceEnv, workspaceName } from "./terraform-workspace.js";
 
 /**
  * Outcome of the registrar-flip preflight. Decided before plan; consumed
@@ -197,12 +198,17 @@ async function applyTerraform(params: {
     throw new Error("Terraform init failed");
   }
 
+  // Every project plans and applies in its own workspace, with its own
+  // plan file: projects share the stack directory, never the state.
+  const wsEnv = await projectWorkspaceEnv(stackDir, tfvarsFile, env);
+  const planFile = `${workspaceName(tfvarsFile)}.tfplan`;
+
   // Plan
-  console.log(chalk.dim("\n  Running terraform plan...\n"));
+  console.log(chalk.dim(`\n  Running terraform plan (workspace ${wsEnv.TF_WORKSPACE})...\n`));
   const planExitCode = await execStream(
     "terraform",
-    ["plan", `-var-file=${tfvarsFile}`, "-out=tfplan"],
-    { cwd: stackDir, env },
+    ["plan", `-var-file=${tfvarsFile}`, `-out=${planFile}`],
+    { cwd: stackDir, env: wsEnv },
   );
   if (planExitCode !== 0) {
     throw new Error("Terraform plan failed");
@@ -210,7 +216,10 @@ async function applyTerraform(params: {
 
   // Apply
   console.log();
-  const applyExitCode = await execStream("terraform", ["apply", "tfplan"], { cwd: stackDir, env });
+  const applyExitCode = await execStream("terraform", ["apply", planFile], {
+    cwd: stackDir,
+    env: wsEnv,
+  });
   if (applyExitCode !== 0) {
     throw new Error("Terraform apply failed");
   }
@@ -221,7 +230,7 @@ async function applyTerraform(params: {
   // needed and we now have creds. Both decisions live in registrarPlan
   // so this code doesn't re-derive intent.
   if (registrarPlan?.action === "flip") {
-    await updateInwxNameserversFromTfOutput(stackDir, env, {
+    await updateInwxNameserversFromTfOutput(stackDir, wsEnv, {
       username: registrarPlan.registrarUsername,
       password: registrarPlan.registrarPassword,
     });
@@ -234,7 +243,7 @@ async function applyTerraform(params: {
     dnsConfig.registrarPassword
   ) {
     // Legacy node-realtime path — preserve the original behavior.
-    await updateInwxNameserversFromTfOutput(stackDir, env, {
+    await updateInwxNameserversFromTfOutput(stackDir, wsEnv, {
       username: dnsConfig.registrarUsername,
       password: dnsConfig.registrarPassword,
     });

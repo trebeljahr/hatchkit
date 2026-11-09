@@ -153,5 +153,6 @@
   "test-base-refresh.ts",
   "test-cloudflare-audit.ts",
   "test-mac-runner.ts",
-  "test-release-flow.ts"
+  "test-release-flow.ts",
+  "test-terraform-workspace.ts"
 ]

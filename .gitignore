@@ -46,6 +46,8 @@ venv/
 # resolved values including secrets. Pattern matches anywhere in tree.
 *.tfstate
 *.tfstate.backup
+# One workspace per project: terraform.tfstate.d/<project>/terraform.tfstate
+terraform.tfstate.d/
 *.tfstate.*.backup
 .terraform/
 .terraform.lock.hcl

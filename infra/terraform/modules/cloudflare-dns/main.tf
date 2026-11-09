@@ -56,6 +56,11 @@ resource "cloudflare_record" "a" {
   # caller's chosen TTL.
   ttl     = var.proxied ? 1 : var.ttl
   proxied = var.proxied
+
+  # Take over a record of the same name and type that already exists
+  # outside this project's state (made by hand, or restored after a
+  # mistaken destroy) instead of failing with "record already exists".
+  allow_overwrite = true
 }
 
 # AAAA records — only created when an IPv6 address is provided.
@@ -71,4 +76,6 @@ resource "cloudflare_record" "aaaa" {
   content = var.ipv6
   ttl     = var.proxied ? 1 : var.ttl
   proxied = var.proxied
+
+  allow_overwrite = true
 }
