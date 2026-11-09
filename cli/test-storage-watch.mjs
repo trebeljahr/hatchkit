@@ -76,7 +76,7 @@ function worker(extra={}) {
   const cf=fakeCloudflare({kv:{ns1:5e6},d1:{db1:1e6},kvNamesDown:true,d1Error:true});
   const u=await readUsage(worker().env,start,cf.fetcher);
   assert.equal(u.resources.find(r=>r.kind==='kv').name,'ns1');
-  assert.match(u.notes[0],/KV namespace names could not be read.*Workers KV Storage Read/);
+  assert.match(u.notes[0],/KV namespaces are shown by id/);
   assert.match(u.unread.d1,/not authorized/);assert.equal(u.unread.r2,undefined);
   const down=await readUsage(worker().env,start,fakeCloudflare({graphqlDown:true}).fetcher);
   assert.deepEqual(Object.keys(down.unread),['r2','kv','d1']);assert.match(down.unread.r2,/GraphQL HTTP 403/);

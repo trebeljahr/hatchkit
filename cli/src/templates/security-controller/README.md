@@ -40,7 +40,7 @@ Upload as one ES-module Worker, `worker.mjs` as the main module:
 | `READER_KEY` | secret | Bearer for `GET /status` and `POST /test` |
 | `DIGEST_UTC_HOUR` | variable | Optional, default 22 |
 | `CF_ACCOUNT_ID` | variable | Storage watch: the account to watch |
-| `CF_USAGE_TOKEN` | secret | Storage watch: read-only token (below) |
+| `CF_USAGE_TOKEN` | secret | Storage watch: Account Analytics Read token (below) |
 | `STORAGE_LIMITS` | variable | Storage watch: optional limits (below) |
 | `STORAGE_DAILY_GROWTH` | variable | Storage watch: optional, default `1GB` |
 
@@ -60,16 +60,16 @@ Dashboard → **Manage Account → Account API Tokens → Create Token → Custo
 token** (an account-owned token survives a user leaving the account):
 
 - Name: `hatchkit-storage-watch`
-- Permissions, all **Read**, nothing else:
-  - Account → **Account Analytics** → Read (required: the sizes)
-  - Account → **Workers KV Storage** → Read (namespace names)
-  - Account → **D1** → Read (database names)
+- Permission: Account → **Account Analytics** → Read. Nothing else.
 - Account resources: only the account to watch.
 - No TTL, or a long one with a calendar reminder: an expired token shows as
   "Not checked" within a day.
 
-Without the two optional grants the mail shows KV namespace and D1 database
-ids in place of names.
+The mail names R2 buckets. KV namespaces and D1 databases appear by id,
+because the grants that list their names (Workers KV Storage Read, D1 Read)
+also read stored values and run SQL. Adding them gives names, but the token
+can then read application data, which breaks the boundary above. Look up an
+id with `npx wrangler kv namespace list` or `npx wrangler d1 list`.
 
 ### 2. Set the Worker settings
 
@@ -101,7 +101,7 @@ or the first mail lists every resource that is already above 8 GB.
 
 - `r2`, `kv`, `d1`: the account total for that kind.
 - `r2/*`, `kv/*`, `d1/*`: the default for one resource of that kind.
-- `r2/<bucket>`, `kv/<title or id>`, `d1/<name or id>`: one resource. R2
+- `r2/<bucket>`, `kv/<id>`, `d1/<id>` (or the title/name, if the token can list them): one resource. R2
   buckets with a jurisdiction are named with its prefix, e.g. `eu_backups`.
 
 `STORAGE_DAILY_GROWTH` (default `1GB`) is the growth per day that alerts.

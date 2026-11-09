@@ -5,8 +5,10 @@
 //
 // Configuration (Worker variables and secrets):
 //   CF_ACCOUNT_ID         the account to watch (variable)
-//   CF_USAGE_TOKEN        read-only account token (secret): Account Analytics
-//                         Read; Workers KV Storage Read and D1 Read add names
+//   CF_USAGE_TOKEN        account token with Account Analytics Read only (secret).
+//                         KV and D1 show by id: the grants that list their
+//                         names also read values and run SQL. With them the
+//                         names are used, but the token can read app data.
 //   STORAGE_LIMITS        optional JSON: "r2" / "kv" / "d1" = account total,
 //                         "r2/*" = default per resource, "r2/<name or id>" =
 //                         one resource. Bytes or "50GB" / "500MB".
@@ -125,7 +127,7 @@ export async function readUsage(env,now=Date.now(),fetcher=fetch) {
     let label={};
     if(kind!=='r2'&&Object.keys(sizes).length) {
       try {label=await names(env,fetcher,kind==='kv'?'storage/kv/namespaces':'d1/database');}
-      catch(error) {notes.push(`${KINDS[kind]} names could not be read (${short(error)}); ids are shown. The token needs ${kind==='kv'?'Workers KV Storage':'D1'} Read for names.`);}
+      catch {notes.push(`${KINDS[kind]}s are shown by id. Look one up with npx wrangler ${kind==='kv'?'kv namespace':'d1'} list.`);}
     }
     for(const [id,bytes] of Object.entries(sizes))resources.push({kind,id,name:label[id]??id,bytes});
   }
