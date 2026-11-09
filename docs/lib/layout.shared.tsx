@@ -3,7 +3,12 @@ import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
 export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
-      title: "hatchkit",
+      title: (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <img src="/img/favicon.svg" alt="" width={22} height={22} />
+          hatchkit
+        </span>
+      ),
     },
     links: [
       {

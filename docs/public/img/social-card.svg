@@ -12,19 +12,22 @@
     <pattern id="hatch" x="0" y="0" width="48" height="48" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
       <line x1="0" y1="0" x2="0" y2="48" stroke="#1a1f2e" stroke-width="1"/>
     </pattern>
+    <clipPath id="egg-clip">
+      <path d="M16 5.5C21.2 5.5 25 11.1 25 18.2C25 24 21.1 28 16 28C10.9 28 7 24 7 18.2C7 11.1 10.8 5.5 16 5.5Z"/>
+    </clipPath>
   </defs>
 
   <rect width="1200" height="630" fill="#0b0d12"/>
   <rect width="1200" height="630" fill="url(#hatch)"/>
   <rect width="1200" height="630" fill="url(#glow)"/>
 
-  <!-- Logo mark -->
-  <g transform="translate(96, 88)">
-    <rect width="120" height="120" rx="28" fill="#818cf8"/>
-    <path d="M34 18 L102 86" stroke="#0b0d12" stroke-width="9" stroke-linecap="round"/>
-    <path d="M18 34 L86 102" stroke="#0b0d12" stroke-width="9" stroke-linecap="round"/>
-    <path d="M50 18 L102 70" stroke="#0b0d12" stroke-width="9" stroke-linecap="round" stroke-opacity="0.55"/>
-    <path d="M18 50 L70 102" stroke="#0b0d12" stroke-width="9" stroke-linecap="round" stroke-opacity="0.55"/>
+  <!-- Logo mark: the egg (same drawing as favicon.svg, 32 units scaled to 120 px) -->
+  <g transform="translate(96, 88) scale(3.75)">
+    <rect width="32" height="32" rx="7" fill="#818cf8"/>
+    <path d="M16 5.5C21.2 5.5 25 11.1 25 18.2C25 24 21.1 28 16 28C10.9 28 7 24 7 18.2C7 11.1 10.8 5.5 16 5.5Z" fill="#ffffff"/>
+    <g clip-path="url(#egg-clip)">
+      <path d="M6.4 16.5L9.5 13.7L12.3 17.1L15 13.6L17.8 17L20.5 13.7L23.4 16.5L25.8 14.4" stroke="#0b0d12" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
   </g>
 
   <text x="240" y="180" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif" font-size="64" font-weight="700" fill="#ffffff" letter-spacing="-1">hatchkit</text>

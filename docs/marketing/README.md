@@ -2,7 +2,7 @@
 
 Images for the repository README, the GitHub social preview and posts about hatchkit. Every image is made by a script in [`scripts/marketing/`](../../scripts/marketing/), so the set can be regenerated after the CLI changes. The screenshots are real CLI output from a sandbox. The social previews are HTML layouts built from real command, provider and env-key names, and round 2's card C embeds one of the screenshots. [`manifest.json`](manifest.json) lists each file with its pixel size, bytes and SHA-256.
 
-Brand: the docs site's palettes (dark: near-black `#0b0d12` with indigo `#818cf8`; light: `#f6f7fb` with indigo `#4f46e5`; diagonal hatch lines on both), [Inter](https://fonts.google.com/specimen/Inter) for text and [JetBrains Mono](https://fonts.google.com/specimen/JetBrains+Mono) for terminal text, and the logo mark from [`docs/public/img/logo.svg`](../public/img/logo.svg). The older 1200×630 docs card stays at [`docs/public/img/social-card.png`](../public/img/social-card.png).
+Brand: the docs site's palettes (dark: near-black `#0b0d12` with indigo `#818cf8`; light: `#f6f7fb` with indigo `#4f46e5`; diagonal hatch lines on both), [Inter](https://fonts.google.com/specimen/Inter) for text and [JetBrains Mono](https://fonts.google.com/specimen/JetBrains+Mono) for terminal text, and the egg mark (a white cracked egg on an indigo tile, chosen 13 May 2026) from [`docs/public/img/logo.svg`](../public/img/logo.svg), the same drawing as the favicon. The 1200×630 docs card at [`docs/public/img/social-card.png`](../public/img/social-card.png) carries the egg too.
 
 ## Files
 
