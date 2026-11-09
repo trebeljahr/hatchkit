@@ -1109,11 +1109,11 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
       dnsUpserted.push(...dnsHostnames);
     } else {
       try {
-        const servers = await api.listServers();
-        if (servers.length === 0) throw new Error("Coolify reports no servers.");
-        const server = servers[0];
-        const resolved = await api.findServer({ ip: server.ip });
-        const ips = await discoverPublicIps(api, resolved?.uuid ?? "", server.ip);
+        const server = await projectServer(
+          api,
+          [...locations.values()].map((l) => l.uuid),
+        );
+        const ips = await discoverPublicIps(api, server.uuid, server.ip);
         for (const host of dnsHostnames) {
           const res = await wireDns(host, ips);
           if (res.managed) dnsUpserted.push(host);
@@ -2430,4 +2430,34 @@ export async function runSyncCli(args: string[]): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
   }
   if (!result.ok) process.exit(1);
+}
+
+/**
+ * The Coolify server a project's apps run on, for its DNS records.
+ * `listServers()[0]` is whichever server Coolify registered first; on a
+ * Coolify with several servers that pointed the records at the wrong
+ * box. Read the server off the apps themselves, take the only server
+ * when there is one, and otherwise refuse rather than guess.
+ */
+export async function projectServer(
+  api: Pick<CoolifyApi, "listServers" | "getApplication" | "findServer">,
+  appUuids: string[],
+): Promise<{ uuid: string; ip: string; name: string }> {
+  const servers = await api.listServers();
+  if (servers.length === 0) throw new Error("Coolify reports no servers.");
+  for (const uuid of appUuids) {
+    const app = await api.getApplication(uuid).catch(() => null);
+    const match = app?.serverUuid ? servers.find((s) => s.uuid === app.serverUuid) : undefined;
+    if (match?.uuid) return { uuid: match.uuid, ip: match.ip, name: match.name };
+  }
+  if (servers.length === 1) {
+    const only = servers[0] as (typeof servers)[number];
+    const uuid = only.uuid ?? (await api.findServer({ ip: only.ip }))?.uuid ?? "";
+    return { uuid, ip: only.ip, name: only.name };
+  }
+  throw new Error(
+    `cannot tell which of ${servers.length} Coolify servers runs this project (${servers
+      .map((s) => s.name)
+      .join(", ")}); point DNS with \`hatchkit dns publish --server <name>\`.`,
+  );
 }
