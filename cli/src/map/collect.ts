@@ -137,6 +137,10 @@ export function parseSystemctlShow(text: string): Array<Record<string, string>> 
   return out;
 }
 
+/** Service results that are not a failure. `exec-condition`: the unit's
+ *  ExecCondition= said there was nothing to do, and systemd skipped it. */
+const NOT_FAILURES = ["success", "exec-condition"];
+
 /** Timer blocks plus their service blocks → one row per timer. */
 export function timersFromShow(text: string): HostTimer[] {
   const blocks = parseSystemctlShow(text);
@@ -151,7 +155,7 @@ export function timersFromShow(text: string): HostTimer[] {
         description: svc?.Description || t.Description || undefined,
         when: humanizeTimer(t.TimersCalendar ?? "", t.TimersMonotonic ?? ""),
         active: t.ActiveState === "active",
-        failed: svc?.ActiveState === "failed" || (!!result && result !== "success"),
+        failed: svc?.ActiveState === "failed" || (!!result && !NOT_FAILURES.includes(result)),
       };
     })
     .sort((a, b) => a.unit.localeCompare(b.unit));

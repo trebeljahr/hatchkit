@@ -345,6 +345,11 @@ await check("systemctl show: blocks, repeated keys, failed services", () => {
     "Result=exit-code",
   ].join("\n");
   assert.equal(parseSystemctlShow(text).length, 4);
+  // A run its ExecCondition skipped is not a failure.
+  const skipped = timersFromShow(
+    "Id=hatchkit-scan.timer\nActiveState=active\n\nId=hatchkit-scan.service\nActiveState=inactive\nResult=exec-condition\n",
+  );
+  assert.equal(skipped[0].failed, false);
   const timers = timersFromShow(text);
   assert.deepEqual(timers, [
     {
