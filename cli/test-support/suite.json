@@ -163,5 +163,6 @@
   "test-terraform-workspace.ts",
   "test-http-timeouts.ts",
   "test-sync-dns-server.ts",
-  "test-fleet-map.ts"
+  "test-fleet-map.ts",
+  "test-default-coolify-server.ts"
 ]

@@ -113,6 +113,7 @@ import {
   type CoolifyApplication,
   describeCoolifyPatchLimit,
   parseRejectedFields,
+  pickDefaultServer,
 } from "../utils/coolify-api.js";
 import { discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { exec } from "../utils/exec.js";
@@ -1408,7 +1409,8 @@ async function createMissingApps(args: {
   if (servers.length === 0) {
     throw new Error("No Coolify servers configured. Add one in the Coolify dashboard first.");
   }
-  const server = servers[0];
+  const server = pickDefaultServer(servers);
+  if (!server) throw new Error("No Coolify servers configured.");
   if (servers.length > 1 && !args.json) {
     console.log(
       chalk.yellow(

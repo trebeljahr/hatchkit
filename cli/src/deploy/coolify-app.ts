@@ -3,7 +3,7 @@ import { getCoolifyConfig, getDnsConfig } from "../config.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
 import type { ApplicationCreateInput } from "../utils/coolify-api.js";
-import { CoolifyApi } from "../utils/coolify-api.js";
+import { CoolifyApi, pickDefaultServer } from "../utils/coolify-api.js";
 import { type PublicIps, discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
 import ora from "../utils/spinner.js";
@@ -232,7 +232,8 @@ export async function wireProjectIntoCoolify(input: WireUpInput): Promise<WireUp
       "No Coolify servers configured. Add one in the Coolify dashboard before adopting.",
     );
   }
-  const server = servers[0];
+  const server = pickDefaultServer(servers);
+  if (!server) throw new Error("No Coolify servers configured.");
   if (servers.length > 1) {
     console.log(
       chalk.yellow(

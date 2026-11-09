@@ -31,6 +31,16 @@ export interface CoolifyServer {
   isUsable?: boolean;
 }
 
+/** The server a new resource goes to when nothing names one. With several
+ *  servers, the box Coolify itself runs on: the API lists servers in
+ *  creation order, so taking the first sent every app to whichever server
+ *  was added first, such as a shared-services box reached over Tailscale.
+ *  Falls back to the first usable server, then the first one. */
+export function pickDefaultServer<T extends CoolifyServer>(servers: T[]): T | undefined {
+  const usable = servers.filter((s) => s.isUsable !== false);
+  return usable.find((s) => s.isCoolifyHost) ?? usable[0] ?? servers[0];
+}
+
 /** `listPlacements`: what runs where, without env or compose bodies. */
 export interface CoolifyPlacements {
   applications: Array<{

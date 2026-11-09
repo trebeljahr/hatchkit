@@ -16,7 +16,7 @@ import { join } from "node:path";
 import chalk from "chalk";
 import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
-import { CoolifyApi } from "../utils/coolify-api.js";
+import { CoolifyApi, pickDefaultServer } from "../utils/coolify-api.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import ora from "../utils/spinner.js";
 import { findCoolifyAppsForProject } from "./coolify-app.js";
@@ -69,7 +69,7 @@ export async function provisionCoolifyPostgres(
     }
     if (!server) {
       const servers = await api.listServers();
-      const first = servers[0];
+      const first = pickDefaultServer(servers);
       if (!first) throw new Error("No Coolify servers configured.");
       server = await api.findServer({ name: first.name });
       if (!server) throw new Error(`Couldn't resolve server uuid for "${first.name}".`);
