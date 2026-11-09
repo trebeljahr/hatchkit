@@ -41,6 +41,8 @@ export async function setupGitHub(config: ProjectConfig, appDir: string): Promis
   );
 
   if (createResult.exitCode !== 0) {
+    const reused = await reuseEmptyRepo(config.name, visibility, appDir);
+    if (reused) return reused;
     console.log(chalk.yellow("  Could not create GitHub repo. Your local git repo is ready;"));
     console.log(chalk.yellow(`  push it manually once the remote exists:`));
     console.log(chalk.dim(`    cd ${appDir}`));
@@ -61,6 +63,37 @@ export async function setupGitHub(config: ProjectConfig, appDir: string): Promis
   const repoUrl = urlResult.stdout.trim();
   console.log(chalk.green(`  ✓ GitHub repo: ${repoUrl}`));
   return repoUrl;
+}
+
+/** A create that failed after `gh repo create` leaves an empty repo
+ *  behind, and re-running create then fails on "name already exists".
+ *  Take that repo over when it is provably the leftover: empty (nothing
+ *  was ever pushed) and of the visibility asked for. A repo with any
+ *  history is never adopted here — it is someone's work. */
+async function reuseEmptyRepo(
+  name: string,
+  visibility: string,
+  appDir: string,
+): Promise<string | null> {
+  const view = await exec(
+    "gh",
+    ["repo", "view", name, "--json", "url,sshUrl,isEmpty,visibility"],
+    { cwd: appDir, silent: true },
+  );
+  if (view.exitCode !== 0) return null;
+  let repo: { url: string; sshUrl: string; isEmpty: boolean; visibility: string };
+  try {
+    repo = JSON.parse(view.stdout);
+  } catch {
+    return null;
+  }
+  if (!repo.isEmpty || repo.visibility.toLowerCase() !== visibility) return null;
+  const protocol = await exec("gh", ["config", "get", "git_protocol"], { cwd: appDir, silent: true });
+  const remote = protocol.stdout.trim() === "ssh" ? repo.sshUrl : `${repo.url}.git`;
+  const add = await exec("git", ["remote", "add", "origin", remote], { cwd: appDir, silent: true });
+  if (add.exitCode !== 0) return null;
+  console.log(chalk.green(`  ✓ GitHub repo: ${repo.url} (empty ${visibility} repo from an earlier run, reused)`));
+  return repo.url;
 }
 
 /** Push the working branch to `origin`. Run AFTER Coolify wiring +

@@ -183,6 +183,18 @@ async function handlePartialRunInterruption(
   // went wrong; let the user inspect before destroying state).
   const defaultChoice: "rollback" | "leave" = reason === "cancelled" ? "rollback" : "leave";
 
+  // No terminal (a `--yes` run, CI, an agent): nobody can answer, and an
+  // unanswerable prompt only ends in ExitPromptError noise. Keep the state
+  // and the ledger; the recipe above and `destroy` are the way back.
+  if (!process.stdin.isTTY) {
+    console.log(
+      chalk.dim(
+        `\n  No terminal to ask. Ledger preserved at ${ledger.path}. Run \`hatchkit destroy ${ledger.name}\` to undo.\n`,
+      ),
+    );
+    return;
+  }
+
   // Loop the prompt so "show recipe" doesn't drop the user back into
   // an unreviewed default.
   for (;;) {
