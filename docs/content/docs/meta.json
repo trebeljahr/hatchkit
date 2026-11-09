@@ -7,6 +7,7 @@
     "mobile",
     "commands",
     "operations",
+    "fleet-map",
     "backups",
     "migrations",
     "topology",

@@ -48,6 +48,7 @@ import { HOST_USAGE, runHostCommand } from "./host/integrity.js";
 import { UPDATES_USAGE, runUpdatesCommand } from "./host/updates.js";
 import { INFRA_USAGE, runInfraCommand } from "./infra/command.js";
 import { MAC_RUNNER_USAGE, runMacRunnerCommand } from "./mac-runner/command.js";
+import { MAP_USAGE } from "./map/usage.js";
 import {
   type Feature,
   type GpuPlatform,
@@ -181,6 +182,11 @@ async function main(): Promise<void> {
     case "audit":
       await runAuditCommand(args.slice(1));
       break;
+    case "map": {
+      const { runMapCommand } = await import("./map/command.js");
+      await runMapCommand(args.slice(1));
+      break;
+    }
     case "mac-runner":
       await runMacRunnerCommand(args.slice(1));
       break;
@@ -4266,6 +4272,9 @@ function printCommandHelp(cmd: string | undefined): void {
     case "audit":
       console.log(AUDIT_USAGE);
       return;
+    case "map":
+      console.log(MAP_USAGE);
+      return;
     case "mac-runner":
       console.log(MAC_RUNNER_USAGE);
       return;
@@ -6377,6 +6386,7 @@ function printHelp(topic?: HelpTopic): void {
     doctor          Health-check every provider with contextual fix hints
     inventory       Survey what already exists for this project (and flag drift)
     overview        Fleet-level survey — every resource across all configured providers
+    map             One HTML page: every project, server, edge service and job, and how they connect
     explain         One-page mental model of the CLI
 
   ${chalk.bold("Projects:")}
@@ -6431,6 +6441,7 @@ function printHelp(topic?: HelpTopic): void {
     doctor --json     Per-provider health with fix hints as JSON
     inventory --json  InventoryReport — resources found per provider + drift
     overview --json   OverviewReport — fleet-level resource counts + names
+    map --json        FleetMap — places, connections, projects, jobs, hatchkit tiers
     completion <shell>  Print a zsh/bash/fish completion script
 
   ${chalk.bold("Options:")}

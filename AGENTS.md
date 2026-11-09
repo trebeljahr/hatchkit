@@ -26,6 +26,8 @@ Use JSON surfaces when possible:
 - `hatchkit doctor --json` for read-only provider health and fix hints.
 - `hatchkit explain --json` for concepts, commands, workflows, and state.
 - `hatchkit overview --json` for project state.
+- `hatchkit map --json` for the whole fleet: places, connections, projects,
+  jobs and which pieces hatchkit lists, set up, or never touched.
 - `hatchkit keys show <project> --json` only when the user specifically asks for
   the dotenvx private key.
 

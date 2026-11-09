@@ -142,6 +142,14 @@ export interface R2CorsRule {
  *  the proxied DNS record and the certificate for it, which is why it
  *  refuses to attach one over a hostname that already has records
  *  (error 100117). */
+export interface CfWorkerScript {
+  id: string;
+  has_assets?: boolean;
+  handlers?: string[];
+  last_deployed_from?: string;
+  routes?: Array<{ pattern?: string }> | null;
+}
+
 export interface CfWorkerCustomDomain {
   id: string;
   hostname: string;
@@ -1509,6 +1517,21 @@ export class CloudflareApi {
       if ((err as { status?: number }).status === 404) return null;
       throw err;
     }
+  }
+
+  /** Every Worker script in the account, with its route patterns and
+   *  handlers (`scheduled` marks a cron Worker). Read-only. */
+  async listWorkerScripts(accountId: string): Promise<CfWorkerScript[]> {
+    return this.request<CfWorkerScript[]>("GET", `/accounts/${accountId}/workers/scripts`);
+  }
+
+  /** Cron triggers of one Worker. */
+  async getWorkerSchedules(accountId: string, script: string): Promise<string[]> {
+    const data = await this.request<{ schedules?: Array<{ cron?: string }> }>(
+      "GET",
+      `/accounts/${accountId}/workers/scripts/${encodeURIComponent(script)}/schedules`,
+    );
+    return (data?.schedules ?? []).map((s) => s.cron).filter((c): c is string => !!c);
   }
 
   /** Custom domains currently bound to Workers in this account. */

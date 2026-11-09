@@ -156,5 +156,6 @@
   "test-release-flow.ts",
   "test-terraform-workspace.ts",
   "test-http-timeouts.ts",
-  "test-sync-dns-server.ts"
+  "test-sync-dns-server.ts",
+  "test-fleet-map.ts"
 ]

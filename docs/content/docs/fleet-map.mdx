@@ -1,0 +1,144 @@
+---
+title: Fleet map
+description: One page with every project, server, edge service and background job you run, how they connect, and which of them hatchkit lists, set up, or never touched.
+---
+
+After a year of shipping, a fleet holds more than hatchkit made: a bot on its own
+box, a dashboard on the laptop, launchd jobs, store listings. `hatchkit overview`
+lists only provider resources. `hatchkit map` draws all of it on one page and
+marks each piece with what hatchkit knows about it.
+
+```bash
+hatchkit map            # writes the page and prints its path
+hatchkit map --open     # writes it and opens it in the browser
+hatchkit map --json     # prints the map as JSON instead
+```
+
+The command only reads. Every provider call is a GET. On backup hosts it runs
+`systemctl show` over `tailscale ssh`. On the laptop it runs `launchctl list`,
+`tailscale status`, `git log -1` and `gh repo list`. The page goes to
+`map/hatchkit-map.html` next to hatchkit's config file unless you pass `--out`.
+Keep it out of public repositories: it names your servers and domains.
+
+## What the page shows
+
+- **The plate.** Places as boxes: GitHub, Cloudflare and outside APIs on the
+  public side; this machine, your servers and tailnet devices inside the
+  tailnet. Lines between boxes show who starts the traffic. A dashed line waits
+  for a person: a push, a tag, a runner someone starts.
+- **What hatchkit sees.** Every piece on the plate counted by tier.
+- **Places.** Each box in full: every app, Worker, database, timer and launchd
+  job, with its state.
+- **Projects.** Every project hatchkit has a record of, plus the ones in your
+  extras file, grouped and with where each one ships.
+- **Clockwork.** Every job that runs without you: launchd jobs, host timers,
+  cron Workers and the jobs in your extras file.
+- **Loose ends.** Unhealthy apps and services, failing jobs and timers, servers
+  outside Terraform or without backups, Workers without a hatchkit token, and
+  `overview` cross-reference warnings.
+- **Sources.** What was read, skipped or could not be read, and why.
+
+## Tiers
+
+Each piece carries one marker:
+
+| Marker | Tier | Meaning |
+|---|---|---|
+| filled dot | listed | `hatchkit overview` lists it: Coolify apps, projects and databases, Cloudflare zones, R2 and S3 buckets, GlitchTip, Stripe |
+| ring | set up | hatchkit made it or keeps the record of it, but no command lists it: Workers with a hatchkit deploy token, Coolify services, Terraform workspaces, backup hosts and their timers, hatchkit's own launchd job, the mac-runner, the config and keychain |
+| dash | outside | hatchkit neither made nor lists it: other launchd jobs, tailnet facts, GitHub repo counts, everything from the extras file |
+| triangle | gap | something that should exist and does not: a server outside Terraform, a server without backups, or a gap you name |
+
+## Where the data comes from
+
+| Source | Read with | Needs |
+|---|---|---|
+| Coolify servers, apps, databases, services, projects | the Coolify API | `hatchkit config add coolify` |
+| Hetzner servers | the Hetzner API | `hatchkit config add hetzner` |
+| Cloudflare zones, Workers, routes, custom domains, cron triggers, R2 | the Cloudflare API | the Cloudflare token |
+| `overview` providers and cross-references | `hatchkit overview` | the same credentials |
+| Terraform workspaces | state files under `infra/terraform/stacks` | a checkout or `--stack-dir` |
+| Backup hosts and their timers | config, then `systemctl show` over `tailscale ssh` | `hatchkit backup add-host`; skip with `--no-ssh` |
+| Tailnet devices, tags, exit nodes | `tailscale status --json` | Tailscale running |
+| Tailnet grants | the Tailscale API | `TAILSCALE_API_KEY` (read-only) |
+| launchd jobs | `~/Library/LaunchAgents` and `launchctl list` | macOS |
+| Worker deploy tokens, run ledgers | hatchkit's config | nothing |
+| Repos, manifests, last commits | git repos under `projectRoots` | the extras file |
+| GitHub repo counts | `gh repo list` | `gh auth login`; skip with `--no-github` |
+
+The page leaves out IP addresses, account ids and resource ids. The collectors
+use them only to match records across providers (a Coolify server to its
+Hetzner server by address, a backup host to its Coolify server by id).
+
+Admin APIs that resolve only inside the tailnet need Tailscale on. When a
+source fails, the map is drawn without it and the failure is listed under
+Sources. Without keychain access (an unattended run), only the local sources
+are read; run it in a terminal, or set `HATCHKIT_KEYCHAIN_ACCESS=allow` when
+credential access is intended.
+
+## The extras file
+
+Pieces hatchkit never made go in one YAML (or JSON) file that you keep outside
+any repository. `hatchkit map` reads the first of `--extras <file>`,
+`$HATCHKIT_MAP_EXTRAS`, `~/.config/hatchkit/map-extras.yaml` and
+`~/.config/hatchkit/map-extras.json`. Without one, the map shows only what
+hatchkit can read.
+
+```yaml
+title: Example Fleet
+localName: Work laptop
+launchdPrefixes: [com.example.]       # com.hatchkit. is always included
+projectRoots: [~/projects]            # git repos one level down
+githubOwners: [example-org]           # default: the gh user
+hide: [friends-box]                   # node ids to leave off
+groups: [Games, Tools, Sites]         # project group order
+
+nodes:
+  - id: local                         # merges into a live node by id or name
+    components:
+      - Notes vault
+      - { label: no offsite copy, gap: true }
+  - id: edge-vps                      # a Hetzner or Coolify server, by name
+    components:
+      - Chat bot
+  - id: stores                        # a new id adds a box
+    name: Stores
+    kind: world                       # platform | world | server | device
+    components:
+      - { label: itch.io, tier: none }
+
+edges:
+  - { from: local, to: edge-vps, label: sync every 15 min }
+  - { from: github, to: stores, label: release on tag, manual: true }
+
+projects:
+  - name: game
+    group: Games
+    blurb: A small strategy game
+    ships: [Steam, itch]
+    aliases: [game-old, game-client]  # names in ledgers, Coolify or Worker repos
+
+jobs:
+  - { name: chat bot, node: edge-vps, where: edge-vps · systemd, when: always on }
+
+looseEnds:
+  - { title: The bot has no backups., detail: Its database is copied on the same box. }
+```
+
+Live node ids are `github`, `cloudflare`, `apis` (outside APIs), `local` (this
+machine), each server's name and each tailnet device's MagicDNS label.
+`hatchkit map --json` prints them. Components default to tier `outside`; set
+`tier: none` for a line without a marker that is not counted, such as an
+audience. An edge or job that names an unknown node shows up under Loose ends.
+
+## Options
+
+| Flag | Effect |
+|---|---|
+| `--out <file>` | Write the page here |
+| `--open` | Open the page when it is written |
+| `--json` | Print the map as JSON (`FleetMap`) instead of writing HTML |
+| `--extras <file>` | Use this extras file |
+| `--stack-dir <dir>` | Read Terraform workspaces from this `infra/terraform/stacks` |
+| `--no-ssh` | Skip host timers |
+| `--no-github` | Skip GitHub repo counts |

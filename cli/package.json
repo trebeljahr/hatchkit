@@ -57,6 +57,7 @@
     "test:update-watch": "node scripts/test.mjs test-update-watch.ts",
     "test:plausible-merge": "node scripts/test.mjs test-plausible-merge.ts",
     "test:cloudflare-audit": "node scripts/test.mjs test-cloudflare-audit.ts",
+    "test:fleet-map": "node scripts/test.mjs test-fleet-map.ts",
     "test:mac-runner": "node scripts/test.mjs test-mac-runner.ts",
     "test:routed-worker-site": "node scripts/test.mjs test-routed-worker-site.ts",
     "test:newsletter-worker": "node scripts/test.mjs test-newsletter-worker.ts",

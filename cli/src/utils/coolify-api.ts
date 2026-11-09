@@ -31,6 +31,21 @@ export interface CoolifyServer {
   isUsable?: boolean;
 }
 
+/** `listPlacements`: what runs where, without env or compose bodies. */
+export interface CoolifyPlacements {
+  applications: Array<{
+    name: string;
+    server?: string;
+    environmentId?: number;
+    status?: string;
+    buildPack?: string;
+    fqdn?: string;
+    gitRepository?: string;
+  }>;
+  databases: Array<{ name: string; type: string; server?: string; status?: string }>;
+  services: Array<{ name: string; server?: string; status?: string; images: string[] }>;
+}
+
 export interface CoolifyApiOptions {
   url: string;
   token: string;
@@ -420,6 +435,63 @@ export class CoolifyApi {
     return out;
   }
 
+  /** Where every application, database and service runs, for `hatchkit
+   *  map`. Keeps names, server names, status, build pack, domains,
+   *  repository and image tags; drops everything else (the list
+   *  responses carry rendered compose files with env values in them).
+   *  Server names come from each row's destination. */
+  async listPlacements(): Promise<CoolifyPlacements> {
+    const [apps, dbs, services] = await Promise.all([
+      this.request<unknown>("GET", "/applications"),
+      this.request<unknown>("GET", "/databases"),
+      this.request<unknown>("GET", "/services"),
+    ]);
+    const rows = (v: unknown) =>
+      (Array.isArray(v) ? v : []).filter(
+        (r): r is Record<string, unknown> => !!r && typeof r === "object",
+      );
+    const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+    const serverOf = (r: Record<string, unknown>) => {
+      const direct = r.server as Record<string, unknown> | undefined;
+      const dest = r.destination as Record<string, unknown> | undefined;
+      const viaDest = dest?.server as Record<string, unknown> | undefined;
+      return str(direct?.name) ?? str(viaDest?.name);
+    };
+    const images = (list: unknown) =>
+      rows(list)
+        .map((x) => str(x.image))
+        .filter((x): x is string => !!x);
+    return {
+      applications: rows(apps)
+        .filter((r) => typeof r.name === "string")
+        .map((r) => ({
+          name: r.name as string,
+          server: serverOf(r),
+          environmentId: typeof r.environment_id === "number" ? r.environment_id : undefined,
+          status: str(r.status),
+          buildPack: str(r.build_pack),
+          fqdn: str(r.fqdn),
+          gitRepository: str(r.git_repository),
+        })),
+      databases: rows(dbs)
+        .filter((r) => typeof r.name === "string")
+        .map((r) => ({
+          name: r.name as string,
+          type: str(r.database_type) ?? str(r.type) ?? "database",
+          server: serverOf(r),
+          status: str(r.status),
+        })),
+      services: rows(services)
+        .filter((r) => typeof r.name === "string")
+        .map((r) => ({
+          name: r.name as string,
+          server: serverOf(r),
+          status: str(r.status),
+          images: [...images(r.applications), ...images(r.databases)],
+        })),
+    };
+  }
+
   /** Find an existing application by exact name. Coolify doesn't
    *  enforce name uniqueness across projects, but within a single
    *  hatchkit-managed setup names ARE unique enough — first match
@@ -789,7 +861,8 @@ export class CoolifyApi {
       ports_exposes: input.portsExposes ?? "3000",
       build_pack: buildPack,
       name: input.name,
-      description: input.description === undefined ? undefined : coolifyDescription(input.description),
+      description:
+        input.description === undefined ? undefined : coolifyDescription(input.description),
       instant_deploy: input.instantDeploy ?? true,
     };
     // `base_directory` is the repo-relative path Coolify uses as the

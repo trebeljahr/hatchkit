@@ -173,6 +173,14 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   token with only the stack's grants (`INFRA_STACKS` in
   `cli/src/infra/command.ts`); `apply` applies only the saved `tfplan`.
   Ask before `apply`, and show the plan first.
+- `hatchkit map [--out <file>] [--open] [--json] [--extras <file>] [--stack-dir <dir>] [--no-ssh] [--no-github]`:
+  read-only fleet map. Collectors in `cli/src/map/collect.ts` + `discover.ts`
+  (GETs, `systemctl show` over tailscale ssh, launchctl, tailscale status, gh);
+  `build.ts` turns facts + the operator's extras YAML
+  (`~/.config/hatchkit/map-extras.yaml`) into nodes/components/edges with a
+  tier each (listed by overview / set up by hatchkit / outside); `layout.ts`
+  draws the SVG plate, `render.ts` the page. Facts never carry IPs, account ids
+  or UUIDs (joins happen inside the collectors). Test: `test-fleet-map.ts`.
 - `hatchkit explain --json`: source-of-truth mental model.
 
 Check `hatchkit help <command>` before using flags you have not verified.
