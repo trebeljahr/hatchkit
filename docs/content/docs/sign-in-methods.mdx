@@ -1,0 +1,134 @@
+---
+title: Sign-in methods
+description: Every sign-in method a Hatchkit app can offer, what each one needs, which steps only a person can do, and which ones work in a native shell.
+---
+
+A Hatchkit app signs people in with email and password out of the box. The
+[account-security feature](/docs/auth-account-security) adds the methods below. Pick them
+when you add the feature:
+
+```bash
+hatchkit update
+```
+
+Each provider-based method is **off until its variables are set**, and its button renders
+only when the server says it can work. You can take an option today and configure it
+months later.
+
+## The methods
+
+| Method | Option | What it needs | Native shell? |
+| --- | --- | --- | --- |
+| Email and password | built in | Nothing | Yes |
+| Google | `google-oauth` | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | No |
+| Apple | `apple-oauth` | `APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` | Not yet, see [Sign in with Apple](/docs/sign-in-with-apple) |
+| GitHub | `github-oauth` | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | No |
+| Discord | `discord-oauth` | `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` | No |
+| Any OAuth 2.0 / OIDC provider | `generic-oauth` | `OAUTH_PROVIDER_ID`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, and `OAUTH_DISCOVERY_URL` or three endpoint URLs | No |
+| Steam | `steam-openid` | `STEAM_SIGN_IN=true` | No |
+| Guest accounts | `guest-accounts` | Nothing | Yes |
+| Username and password | `username-sign-in` | Nothing | Yes, except accounts with two-factor |
+| Email one-time code | `email-otp` | A mail transport | Yes |
+| Magic link | `magic-link` | A mail transport | Only with extra shell work |
+| Passkeys | `passkeys` | `@better-auth/passkey` installed | No |
+
+"Native shell" means the Capacitor and Electron apps. They hold a bearer token instead
+of a cookie, and they cannot receive a browser redirect back from a provider. The
+[account-security page](/docs/auth-account-security) explains each verdict.
+
+Set the variables in `packages/server/.env.production` with `dotenvx set`, then run
+`hatchkit sync`. Every variable is listed, empty, in `packages/server/.env.example`.
+
+## Steps only a person can do
+
+Hatchkit does not register apps with providers. Google, Apple, GitHub and Discord offer
+no API for it. A self-hosted OIDC provider may have one, but it needs that provider's admin
+credentials, which stay with you. Each provider needs a person in its dashboard once. Every URL below uses the made-up domain
+`app.example.com`; use your app's domain.
+
+### Google
+
+1. In the Google Cloud console, open **APIs & Services → Credentials**.
+2. Create an **OAuth client ID** of type **Web application**.
+3. Add the redirect URI `https://app.example.com/api/auth/callback/google`.
+4. Copy the client ID and secret into `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+
+### Apple
+
+Apple needs the most steps: an App ID capability, a Services ID, a `.p8` key and your
+Team ID. [Sign in with Apple](/docs/sign-in-with-apple) has them all.
+
+### GitHub
+
+1. On GitHub, open **Settings → Developer settings → OAuth Apps** and create an app.
+2. Set the callback URL to `https://app.example.com/api/auth/callback/github`.
+3. Generate a client secret.
+4. Copy both into `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
+
+One GitHub OAuth app has one callback URL. Use a second app for a staging domain.
+
+### Discord
+
+1. In the Discord Developer Portal, create an application.
+2. Under **OAuth2**, add the redirect `https://app.example.com/api/auth/callback/discord`.
+3. Copy the client ID and secret into `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET`.
+
+### Any OAuth 2.0 / OIDC provider
+
+1. In your provider (Keycloak, Authentik, Okta, a self-hosted Gitea, …), register a
+   confidential client.
+2. Choose a short lowercase id such as `keycloak`. This is `OAUTH_PROVIDER_ID`.
+3. Set the redirect to `https://app.example.com/api/auth/oauth2/callback/keycloak`.
+4. Set `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` and `OAUTH_DISCOVERY_URL` (the
+   provider's `.well-known/openid-configuration` URL). A plain OAuth 2.0 provider without
+   discovery takes `OAUTH_AUTHORIZATION_URL`, `OAUTH_TOKEN_URL` and `OAUTH_USERINFO_URL`.
+5. Optionally set `OAUTH_PROVIDER_NAME`, the button label, and `OAUTH_SCOPES`.
+
+The environment configures one provider. For more, add entries to the array in
+`packages/server/src/auth/generic-oauth.ts`.
+
+### Steam
+
+Steam OpenID needs no app registration. Set `STEAM_SIGN_IN=true`.
+
+Optionally, request a Steam Web API key at
+[steamcommunity.com/dev/apikey](https://steamcommunity.com/dev/apikey) and set
+`STEAM_WEB_API_KEY`. New Steam accounts then start with the player's Steam name and
+avatar instead of a placeholder.
+
+Steam returns no email address. A new Steam account gets a placeholder address under
+`steam.invalid`, a domain that never receives mail. To add Steam to an existing account,
+link it from **Settings → Sign-in methods** instead of signing in with it.
+
+### Guest accounts and usernames
+
+Neither needs a provider. Both add fields to better-auth's user table (`isAnonymous`;
+`username` and `displayUsername`). MongoDB needs nothing. A Postgres project adds the
+columns to `src/db/schema.ts` and runs a migration.
+
+A guest who signs up or signs in later becomes that account. better-auth then deletes the
+guest. `packages/server/src/services/guest-upgrade.ts` moves the guest's items first. Add
+a line there for every collection your app keys by user id.
+
+## Account linking
+
+Account linking is on by default. One person can sign in with a password, Google, Apple,
+GitHub and Steam, and all of them reach the same account.
+
+- **Settings → Sign-in methods** (`/settings/accounts`) lists every linked method, links
+  another one and unlinks one.
+- Linking while signed in works even when the provider's address differs from the
+  account's address.
+- "Continue with Google" for an address that already has an account links the two only
+  when both sides verified that address. This blocks an attacker who registers a victim's
+  address with a password first.
+- The last way to sign in cannot be unlinked. The server refuses it, and the screen does
+  not offer it.
+- Passkeys, email codes and magic links belong to the address, not to a linked account,
+  so they are not listed there.
+
+Linking opens the provider in a browser, so it works in the web app only. Listing and
+unlinking also work in the native shells.
+
+The settings live in `account.accountLinking` in `packages/server/src/auth/auth.ts`. To
+allow links only from Settings, as some apps prefer, add `disableImplicitLinking: true`.

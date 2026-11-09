@@ -133,7 +133,7 @@ const MODEL: ExplainModel = {
     {
       name: "hatchkit update",
       summary:
-        "Add features (workspaces, desktop, mobile, client-core, extension, release, i18n, raycast, mcp) to an already-scaffolded project. `i18n` writes a second language into the client (and the server catalogs) without touching the existing features.",
+        "Add features (workspaces, desktop, mobile, client-core, extension, release, i18n, raycast, mcp, auth-account-security) to an already-scaffolded project. `i18n` writes a second language into the client (and the server catalogs) without touching the existing features. `auth-account-security` adds two-factor, account controls and sign-in methods — Google, Apple, GitHub, Discord, any OAuth/OIDC provider, Steam, guest accounts, usernames, email codes, magic links, passkeys — each env-gated, with account linking under Settings → Sign-in methods.",
       when: "`cd <project-dir>` first; expands an existing scaffold.",
     },
     {

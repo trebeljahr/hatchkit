@@ -26,15 +26,25 @@ detects its own previous output.
 | `credentials` | Change password and change email, without signing the caller out |
 | `google-oauth` | A Google button that renders in every build and decides after mount |
 | `apple-oauth` | Sign in with Apple, hidden until the server has every `APPLE_*` value. See [Sign in with Apple](/docs/sign-in-with-apple) |
+| `github-oauth` | GitHub sign-in, hidden until `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are set |
+| `discord-oauth` | Discord sign-in, hidden until `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET` are set |
+| `generic-oauth` | Any OAuth 2.0 / OIDC provider, configured by `OAUTH_*` variables |
+| `steam-openid` | Steam sign-in and linking over OpenID 2.0, off until `STEAM_SIGN_IN=true` |
+| `guest-accounts` | Guest accounts that become real accounts and keep their data |
+| `username-sign-in` | Sign in with a username and password |
 | `account-deletion` | Password-confirmed, with an idempotent cascade and a second pass |
 | `profile-pictures` | Squared in the browser, magic-number checked on the server |
 | `email-otp` | Sign in with a code mailed to the address |
 | `magic-link` | Sign in by following a mailed link |
 | `passkeys` | WebAuthn as an additional method |
 
-The last three, and `apple-oauth`, are **off by default**. Each one is another way into
+Every sign-in method after `google-oauth` is **off by default**. Each one is another way into
 the account, and a template should not widen that for every project scaffolded from it.
 Sign in with Apple also needs portal steps that only a person can do.
+
+[Sign-in methods](/docs/sign-in-methods) lists what each method needs and the provider
+dashboard steps only a person can do. Account linking is on by default; the same page
+explains it.
 
 Redirect validation for `?next=` is not an option — it is written whenever the feature
 is enabled at all. See below.
@@ -56,6 +66,10 @@ against the shipped source of better-auth 1.6.11 rather than its docs:
 | --- | --- | --- |
 | Two-factor | **No** | The challenge is the signed cookie `better-auth.two_factor`, and `/two-factor/verify-totp` reads nothing else. The sign-in body is `{ twoFactorRedirect, twoFactorMethods }` — no token a client could hold. |
 | Google OAuth | **No** | The redirect must return to the origin that started it, and `capacitor://localhost` or `app://-` can never be that origin. |
+| GitHub, Discord, generic OAuth | **No** | OAuth redirects, for the same reason as Google. |
+| Steam | **No** | The return from Steam is a browser redirect that ends in a session cookie on the web origin. Steam's desktop SDK tickets are the native route, and are not part of this option. |
+| Guest accounts | **Yes** | `/sign-in/anonymous` creates the session inside the handler. The upgrade then happens on whichever method the guest uses next. |
+| Username | **Yes** | `{ username, password }` in the body, session out — except for an account with two-factor. |
 | Sign in with Apple | **Only with extra work** | The web flow cannot return to a shell, for the same reason as Google. The server already accepts a native identity token at `/sign-in/social` (body in, session out, so `bearer` emits a token) once `APPLE_APP_BUNDLE_ID` is set. The shell needs a native plugin and the Sign in with Apple entitlement. |
 | Email one-time code | **Yes** | Sending sets no cookie, and `/sign-in/email-otp` takes `{ email, otp }` in the body and creates the session inside the handler — so `bearer` emits `set-auth-token`. **This is the method to offer on native.** |
 | Magic link | **Only with extra work** | `/magic-link/verify` answers JSON when no `callbackURL` is given, so the endpoint cooperates. The link is opened by a mail client in the system browser, which is not the shell — so the shell needs a deep-link handler to capture the token and call verify itself. |
@@ -83,7 +97,8 @@ signed in, and nothing anywhere logs a reason.
 So `bearer()` goes last, after every plugin that can swap the session out:
 
 ```
-twoFactorPlugin → emailOtpPlugin → magicLinkPlugin → passkeyPlugin → appleSignInPlugin → bearer
+twoFactorPlugin → emailOtpPlugin → magicLinkPlugin → passkeyPlugin → usernamePlugin
+  → genericOAuthPlugin → steamSignInPlugin → appleSignInPlugin → guestAccountsPlugin → bearer
 ```
 
 No runtime test catches a wrong order, so the CLI's test suite **reads the generated

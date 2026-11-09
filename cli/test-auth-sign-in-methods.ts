@@ -500,6 +500,30 @@ await expect("the generated docs explain linking and each selected method", () =
   assert.match(docs, /`https:\/\/<domain>\/api\/auth\/callback\/github`/);
 });
 
+await expect("the public docs page lists every method and the human-only steps", () => {
+  const page = readFileSync(join(REPO, "docs/content/docs/sign-in-methods.mdx"), "utf-8");
+  const meta = JSON.parse(readFileSync(join(REPO, "docs/content/docs/meta.json"), "utf-8"));
+  assert.ok(meta.pages.includes("sign-in-methods"));
+  for (const option of [
+    "google-oauth",
+    "apple-oauth",
+    ...NEW_METHODS,
+    "email-otp",
+    "magic-link",
+    "passkeys",
+  ]) {
+    assert.ok(page.includes(`\`${option}\``), `${option} missing from the table`);
+  }
+  for (const url of [
+    "/api/auth/callback/github",
+    "/api/auth/callback/discord",
+    "/api/auth/oauth2/callback/",
+  ]) {
+    assert.ok(page.includes(url), `${url} missing`);
+  }
+  assert.match(page, /Account linking/);
+});
+
 if (failures.length > 0) {
   console.error(`\n${failures.length} failure(s):`);
   for (const failure of failures) console.error(`  - ${failure}`);
