@@ -19,12 +19,17 @@
  * confirmed, and we don't half-update the manifest if the user cancels.
  */
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";
 import { getCoolifyConfig } from "../config.js";
-import { MANIFEST_FILENAME, type ProjectManifest, readManifest } from "../scaffold/manifest.js";
+import {
+  MANIFEST_FILENAME,
+  type ProjectManifest,
+  patchManifest,
+  readManifest,
+} from "../scaffold/manifest.js";
 import { setPackageJsonDescription } from "../scaffold/pkg-json.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
@@ -164,19 +169,15 @@ export async function runSetDescription(opts: SetDescriptionOptions): Promise<vo
 // File editor
 // ---------------------------------------------------------------------------
 
+/** Only `description` changes. `_manifest` is the migrated in-memory
+ *  copy, so it is not what gets written: the file keeps its own schema
+ *  version. */
 function rewriteManifestDescription(
   projectDir: string,
-  manifest: ProjectManifest,
+  _manifest: ProjectManifest,
   description: string,
 ): void {
-  const next: ProjectManifest = { ...manifest };
-  if (description) {
-    next.description = description;
-  } else {
-    delete next.description;
-  }
-  const path = join(projectDir, MANIFEST_FILENAME);
-  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+  patchManifest(projectDir, { description: description || undefined });
 }
 
 // ---------------------------------------------------------------------------

@@ -61,8 +61,9 @@ export const MANIFEST_VERSION = 5;
  *  (no `topology` field — adopted as `single-origin`, the shape every
  *  pre-topology `create` run actually produced) and v4 manifests (no
  *  `identifiers` block, and possibly a `desktop-tauri` feature flag) on
- *  read, and the next write bumps the file's version field to
- *  {@link MANIFEST_VERSION}. */
+ *  read. Only `hatchkit update` (and `create`/`adopt`) write the migrated
+ *  shape back, bumping the file's version field to {@link MANIFEST_VERSION};
+ *  every other command records its keys with {@link patchManifest}. */
 const MIGRATABLE_VERSIONS = new Set<number>([1, 2, 3, 4, 5]);
 
 export interface ProjectManifest {
@@ -191,9 +192,15 @@ export interface ProjectManifest {
   stripe?: { accounts?: { test?: string; live?: string } };
   integrations?: {
     /** Cloudflare Email Routing (inbound forwarding). `addresses` are
-     *  local parts with their own rule; `migrate-domain` recreates them
-     *  on the new domain. Absent on manifests written before they were
-     *  recorded. */
+     *  local parts with their own rule, and when present they are the
+     *  WHOLE list `migrate-domain` recreates on the new domain. So only
+     *  `email setup` starts that list; `email forward` adds its address
+     *  to a list that exists, and on a domain without one records just
+     *  its address's destination in `addressDestinations` and leaves
+     *  `addresses` absent — readers then take the zone's live rules, as
+     *  for manifests written before addresses were recorded. An
+     *  address's destination is `addressDestinations[localPart] ??
+     *  destinationEmail`. */
     email?: {
       domain: string;
       configuredAt: string;
@@ -641,9 +648,77 @@ export function toManifest(
   };
 }
 
+/** Write the WHOLE manifest, at the current schema version. Only for the
+ *  commands that own the whole file: `create`, `adopt`, `update` (the one
+ *  that persists {@link readManifest}'s migration), and writers of a new
+ *  file. Every other command records its own keys with
+ *  {@link patchManifest}: a manifest read here is migrated in memory, and
+ *  writing it back would land that migration in the repo as a side effect
+ *  — seeded placeholder identifiers (`com.example.<name>`, `example.com`)
+ *  included (2026-11-10, `email forward` on a public v1 repo).
+ *  `test-manifest-patch.ts` pins the list of callers. */
 export function writeManifest(outputDir: string, manifest: ProjectManifest): void {
   const path = join(outputDir, MANIFEST_FILENAME);
   writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+}
+
+/** Top-level keys a command may record with {@link patchManifest}.
+ *  `version` is not one: the schema moves only with `hatchkit update`. A
+ *  key set to `undefined` is removed from the file. */
+export type ManifestPatch = {
+  [K in Exclude<keyof ProjectManifest, "version">]?: ProjectManifest[K] | undefined;
+};
+
+/** The text of the manifest file at `path` with `patch` written onto it
+ *  AS IT IS ON DISK: same schema version, every key the patch does not
+ *  name kept as written and in order (re-serialised with hatchkit's
+ *  two-space indent). Null when the file does not exist. For callers
+ *  that show the new text before writing it (rename-domain,
+ *  rename-project); everything else calls {@link patchManifest}. */
+export function patchedManifestText(path: string, patch: ManifestPatch): string | null {
+  if (!existsSync(path)) return null;
+  const onDisk = parseManifestFile(path);
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === "version") continue;
+    if (value === undefined) delete onDisk[key];
+    else onDisk[key] = value;
+  }
+  return `${JSON.stringify(onDisk, null, 2)}\n`;
+}
+
+/** Record `patch`'s top-level keys in the project's manifest and change
+ *  nothing else — in particular NOT the in-memory schema migration
+ *  {@link readManifest} applies (that is `hatchkit update`'s job, and its
+ *  log line says so). Build nested values (`integrations`, `s3Buckets`)
+ *  from a manifest read just before: no migration touches them. Returns
+ *  false when there is no manifest to patch. */
+export function patchManifest(projectDir: string, patch: ManifestPatch): boolean {
+  const path = join(projectDir, MANIFEST_FILENAME);
+  const text = patchedManifestText(path, patch);
+  if (text === null) return false;
+  writeFileSync(path, text, "utf-8");
+  return true;
+}
+
+/** Parse + version-check a manifest file without migrating it. */
+function parseManifestFile(path: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf-8"));
+  } catch (err) {
+    throw new Error(`Manifest at ${path} is not valid JSON: ${(err as Error).message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Manifest at ${path} is not an object.`);
+  }
+  const obj = parsed as Record<string, unknown>;
+  const fileVersion = typeof obj.version === "number" ? obj.version : undefined;
+  if (fileVersion === undefined || !MIGRATABLE_VERSIONS.has(fileVersion)) {
+    throw new Error(
+      `Manifest at ${path} has unknown version (${String(obj.version)}). Expected ${MANIFEST_VERSION} or older migratable.`,
+    );
+  }
+  return obj;
 }
 
 /** Old → new surface rename map. Applied in {@link readManifest} so
@@ -673,9 +748,8 @@ const SURFACE_RENAME: Record<string, ProjectManifest["surfaces"]> = {
 interface ReadManifestResult {
   manifest: ProjectManifest;
   /** True when the in-memory manifest differs from the on-disk file
-   *  because the reader applied a migration. Callers that intend to
-   *  write the manifest back should observe this so the next write
-   *  bumps the file's `version` field. */
+   *  because the reader applied a migration. `hatchkit update` observes
+   *  this to persist it; nothing else writes the migrated shape. */
   migrated: boolean;
   /** Human-readable notes describing what migrated. Empty when
    *  `migrated` is false. */
@@ -720,11 +794,12 @@ export function logManifestMigrationNotes(
  *  or an unknown schema version so downstream code doesn't silently
  *  operate on a wrong shape.
  *
- *  Transparently migrates v1 manifests (and the rename-map aliases)
- *  to v2 in memory. The on-disk file isn't touched here — the next
- *  call to {@link writeManifest} re-emits the file at the current
- *  schema version, which is the natural moment to upgrade. Migration
- *  notes print once per process ({@link logManifestMigrationNotes}). */
+ *  Transparently migrates older manifests to {@link MANIFEST_VERSION} in
+ *  memory. The on-disk file isn't touched here, and must not be touched
+ *  as a side effect elsewhere: `hatchkit update` writes the migration,
+ *  any other command records only its own keys with
+ *  {@link patchManifest}. Migration notes print once per process
+ *  ({@link logManifestMigrationNotes}). */
 export function readManifest(projectDir: string): ProjectManifest | null {
   const result = readManifestWithMigrationInfo(projectDir);
   if (!result) return null;
@@ -738,22 +813,11 @@ export function readManifest(projectDir: string): ProjectManifest | null {
 export function readManifestWithMigrationInfo(projectDir: string): ReadManifestResult | null {
   const path = join(projectDir, MANIFEST_FILENAME);
   if (!existsSync(path)) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf-8"));
-  } catch (err) {
-    throw new Error(`Manifest at ${path} is not valid JSON: ${(err as Error).message}`);
-  }
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error(`Manifest at ${path} is not an object.`);
-  }
-  const obj = parsed as Record<string, unknown> & { version?: unknown; surfaces?: unknown };
-  const fileVersion = typeof obj.version === "number" ? obj.version : undefined;
-  if (fileVersion === undefined || !MIGRATABLE_VERSIONS.has(fileVersion)) {
-    throw new Error(
-      `Manifest at ${path} has unknown version (${String(obj.version)}). Expected ${MANIFEST_VERSION} or older migratable.`,
-    );
-  }
+  const obj = parseManifestFile(path) as Record<string, unknown> & {
+    version: number;
+    surfaces?: unknown;
+  };
+  const fileVersion: number = obj.version;
 
   const migrationNotes: string[] = [];
 
@@ -860,8 +924,7 @@ export function readManifestWithMigrationInfo(projectDir: string): ReadManifestR
     }
   }
 
-  // Schema-version bump (in memory only — the file is rewritten on
-  // the next writeManifest call).
+  // Schema-version bump (in memory only — `hatchkit update` writes it).
   if (fileVersion !== MANIFEST_VERSION) {
     obj.version = MANIFEST_VERSION;
     migrationNotes.push(`Migrated manifest schema v${fileVersion} → v${MANIFEST_VERSION}`);

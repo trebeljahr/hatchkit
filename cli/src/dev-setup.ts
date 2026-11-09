@@ -1774,7 +1774,7 @@ export async function runDevSetupCli(args: string[]): Promise<void> {
 async function runDevSetupEnableCli(args: string[]): Promise<void> {
   const chalk = (await import("chalk")).default;
   const { resolve } = await import("node:path");
-  const { readManifest, writeManifest } = await import("./scaffold/manifest.js");
+  const { patchManifest, readManifest } = await import("./scaffold/manifest.js");
   const { sanitiseSlug } = await import("@hatchkit/dev-shared");
   const { input, confirm: askConfirm } = await import("@inquirer/prompts");
 
@@ -1882,8 +1882,7 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
   // Persist the slug in the manifest so subsequent runs (plugin, doctor,
   // future `dev-setup disable`) all converge on the same identity.
   if (manifest.localDev?.slug !== slug || manifest.localDev?.domain !== localDevDomain) {
-    const updated = { ...manifest, localDev: { slug, domain: localDevDomain } };
-    writeManifest(projectDir, updated);
+    patchManifest(projectDir, { localDev: { slug, domain: localDevDomain } });
   }
 
   console.log(`\n  Framework:       ${chalk.cyan(result.framework)}`);
@@ -1946,7 +1945,7 @@ async function runDevSetupEnableCli(args: string[]): Promise<void> {
 async function runDevSetupDisableCli(args: string[]): Promise<void> {
   const chalk = (await import("chalk")).default;
   const { resolve } = await import("node:path");
-  const { readManifest, writeManifest } = await import("./scaffold/manifest.js");
+  const { patchManifest, readManifest } = await import("./scaffold/manifest.js");
 
   const projectDirFlagIdx = args.findIndex(
     (a) => a === "--project-dir" || a.startsWith("--project-dir="),
@@ -1975,8 +1974,7 @@ async function runDevSetupDisableCli(args: string[]): Promise<void> {
   const result = disableProjectLocalDev(projectDir, slug);
   // Drop the manifest field so future doctor / plugin runs don't think
   // the integration is still active.
-  const { localDev: _, ...rest } = manifest;
-  writeManifest(projectDir, rest);
+  patchManifest(projectDir, { localDev: undefined });
 
   console.log(chalk.bold(`\n  Disabled local-dev for ${chalk.cyan(manifest.name)}\n`));
   console.log(

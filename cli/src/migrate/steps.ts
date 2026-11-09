@@ -71,7 +71,7 @@ import {
   sesMailFromSubdomain,
   setSesMailFromDomain,
 } from "../provision/ses.js";
-import { type ProjectManifest, readManifest, writeManifest } from "../scaffold/manifest.js";
+import { type ProjectManifest, patchManifest, readManifest } from "../scaffold/manifest.js";
 import { CloudflareApi, isEmailDestinationVerified } from "../utils/cloudflare-api.js";
 import { type StripeWebhookEndpoint, getCloudflareTokenValue } from "../utils/secrets.js";
 import { readSesFromEnv, rewriteFromAddress, rewriteSesFromEnv } from "./ses-env.js";
@@ -540,8 +540,7 @@ export const stepSesCutover: StepFn = async (ctx) => {
     defaultsWhenUnreadable: true,
   });
 
-  writeManifest(ctx.projectDir, {
-    ...manifest,
+  patchManifest(ctx.projectDir, {
     ses: {
       identity: identityName,
       mailFromDomain: mailFrom,
@@ -780,8 +779,7 @@ export const stepEmailRoutingSetup: StepFn = async (ctx) => {
 
   // Re-read: runEmailSetup is slow, and the manifest is shared state.
   const fresh = manifestOf(ctx);
-  writeManifest(ctx.projectDir, {
-    ...fresh,
+  patchManifest(ctx.projectDir, {
     integrations: {
       ...fresh.integrations,
       email: {
@@ -1058,8 +1056,7 @@ export const stepR2Cutover: StepFn = async (ctx) => {
   }
 
   const publicUrl = `https://${desiredHost}`;
-  writeManifest(ctx.projectDir, {
-    ...manifest,
+  patchManifest(ctx.projectDir, {
     s3Buckets: {
       ...manifest.s3Buckets,
       assets: { ...manifest.s3Buckets?.assets, name: bucket, publicUrl },
@@ -1181,8 +1178,7 @@ export const stepSearchConsoleCreate: StepFn = async (ctx) => {
   const manifest = manifestOf(ctx);
   const { provisionSearchConsoleForDomain } = await import("../provision/search-console.js");
   const res = await provisionSearchConsoleForDomain(ctx.newDomain);
-  writeManifest(ctx.projectDir, {
-    ...manifest,
+  patchManifest(ctx.projectDir, {
     integrations: {
       ...manifest.integrations,
       searchConsole: {

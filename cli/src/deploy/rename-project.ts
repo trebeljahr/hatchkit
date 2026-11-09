@@ -75,7 +75,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";
 import { getConfigPath, getCoolifyConfig } from "../config.js";
-import { type ProjectManifest, readManifest } from "../scaffold/manifest.js";
+import { type ProjectManifest, patchedManifestText, readManifest } from "../scaffold/manifest.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
 import {
@@ -458,13 +458,16 @@ interface FileOp {
   changes: string[];
 }
 
+/** Only `name` changes: the file keeps its own schema version (the
+ *  in-memory migration is `hatchkit update`'s to write). */
 function rewriteManifest(path: string, m: ProjectManifest, newName: string): FileOp {
-  const next = { ...m, name: newName };
   return {
     label: basename(path),
     verb: "wrote",
     newPath: path,
-    after: `${JSON.stringify(next, null, 2)}\n`,
+    after:
+      patchedManifestText(path, { name: newName }) ??
+      `${JSON.stringify({ ...m, name: newName }, null, 2)}\n`,
     changes: [`name: "${m.name}" → "${newName}"`],
   };
 }

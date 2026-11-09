@@ -51,8 +51,8 @@ import {
   type BucketCors,
   MANIFEST_FILENAME,
   type ProjectManifest,
+  patchManifest,
   readManifest,
-  writeManifest,
 } from "../scaffold/manifest.js";
 import { CloudflareApi, type R2CorsRule } from "../utils/cloudflare-api.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
@@ -804,7 +804,7 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
       accountId,
     },
   };
-  writeManifest(opts.projectDir, updated);
+  patchManifest(opts.projectDir, { s3Buckets: updated.s3Buckets });
   console.log(chalk.dim(`  · Recorded bucket names in ${MANIFEST_FILENAME} (${publicUrlSource}).`));
 
   return {
@@ -1094,7 +1094,7 @@ export async function reconcileAssetsCorsFromManifest(
       },
     },
   };
-  writeManifest(projectDir, next);
+  patchManifest(projectDir, { s3Buckets: next.s3Buckets });
   return applied;
 }
 

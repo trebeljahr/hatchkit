@@ -46,6 +46,7 @@ import {
   MANIFEST_FILENAME,
   MANIFEST_VERSION,
   type ProjectManifest,
+  patchManifest,
   readManifest,
   writeManifest,
 } from "../scaffold/manifest.js";
@@ -972,8 +973,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
           const latestManifest = readManifest(projectDir);
           if (latestManifest) {
             const { SES_MAIL_FROM_SPF, sesMailFromMxTarget } = await import("./ses.js");
-            writeManifest(projectDir, {
-              ...latestManifest,
+            patchManifest(projectDir, {
               ses: {
                 ...(latestManifest.ses ?? {}),
                 identity: result.mailFrom.identity,
@@ -1242,8 +1242,7 @@ export async function runProvision(opts: ProvisionOptions): Promise<ProvisionRun
             created: r.created,
           })),
         });
-        writeManifest(projectDir, {
-          ...manifest,
+        patchManifest(projectDir, {
           integrations: {
             ...manifest.integrations,
             email: {
@@ -1878,8 +1877,7 @@ export function writeSearchConsoleManifest(
     verifiedAt,
   };
   if (manifest) {
-    writeManifest(projectDir, {
-      ...manifest,
+    patchManifest(projectDir, {
       domain: manifest.domain || result.domain,
       integrations: {
         ...manifest.integrations,
@@ -2022,7 +2020,7 @@ function clearRemovedR2Token(
       changed = true;
     }
   }
-  if (changed) writeManifest(opts.projectDir, { ...manifest, s3Buckets: buckets });
+  if (changed) patchManifest(opts.projectDir, { s3Buckets: buckets });
 }
 
 export async function runUnprovision(opts: UnprovisionOptions): Promise<void> {

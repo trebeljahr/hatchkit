@@ -31,7 +31,12 @@ import {
   setWorkflowClientBuildArgUrls,
 } from "../scaffold/client-build-args.js";
 import { setWorkflowDeployVerifyUrls } from "../scaffold/deploy-verification.js";
-import { type ProjectManifest, findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
+import {
+  type ProjectManifest,
+  findManifestDirUpward,
+  patchedManifestText,
+  readManifest,
+} from "../scaffold/manifest.js";
 import { parseDomain, validateDomain } from "../utils/validate.js";
 import {
   isRoutedWorkerSite,
@@ -324,12 +329,15 @@ interface FileEdit {
   changes: string[];
 }
 
+/** Only `domain` changes: the file keeps its own schema version (the
+ *  in-memory migration is `hatchkit update`'s to write). */
 function rewriteManifest(path: string, m: ProjectManifest, newDomain: string): FileEdit {
-  const next = { ...m, domain: newDomain };
   return {
     label: basename(path),
     path,
-    after: `${JSON.stringify(next, null, 2)}\n`,
+    after:
+      patchedManifestText(path, { domain: newDomain }) ??
+      `${JSON.stringify({ ...m, domain: newDomain }, null, 2)}\n`,
     changes: [`domain: "${m.domain}" → "${newDomain}"`],
   };
 }

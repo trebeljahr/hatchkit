@@ -41,6 +41,7 @@
   "test-rename-project.ts",
   "test-migrate-domain.ts",
   "test-email-routing.ts",
+  "test-manifest-patch.ts",
   "test-assets-mirror.ts",
   "test-manifest.ts",
   "test-routing.ts",

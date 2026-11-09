@@ -69,9 +69,9 @@
 
 import chalk from "chalk";
 import {
+  patchManifest,
   readManifest,
   readManifestWithMigrationInfo,
-  writeManifest,
 } from "../scaffold/manifest.js";
 import type { ProvisionService } from "./index.js";
 
@@ -401,7 +401,7 @@ export function persistDeferredSteps(
   );
   if (deferredStepsEqual(previous, next)) return next;
 
-  writeManifest(projectDir, { ...manifest, deferred: next.length > 0 ? next : undefined });
+  patchManifest(projectDir, { deferred: next.length > 0 ? next : undefined });
   return next;
 }
 

@@ -38,7 +38,7 @@
  * Run: `pnpm test` (via the script in cli/package.json).
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -58,7 +58,7 @@ const {
   summarizeEmailRoutingProbe,
 } = await import("./src/email/routing-access.js");
 const { runEmailSetup } = await import("./src/email/setup.js");
-const { parseEmailFlags, recordEmailSetup, recordForwarding } = await import(
+const { parseEmailFlags, recordEmailSetup, recordForwarding, runEmailForward } = await import(
   "./src/email/index.js"
 );
 const { isEmailDestinationVerified } = await import("./src/utils/cloudflare-api.js");
@@ -1090,6 +1090,165 @@ await expect("email setup records its forwarding in the project manifest", () =>
     // Another domain's setup leaves the manifest alone.
     recordEmailSetup(dir, { ...(result as object), domain: "other.example.com" } as never);
     assert.equal(readManifest(dir)?.integrations?.email?.domain, "app.example.com");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** A v1 manifest as `create` wrote it in early 2026: readManifest migrates
+ *  it to v5 in memory (surfaces rename, email intent, topology,
+ *  publicService, placeholder identifiers). */
+const V1_MANIFEST = {
+  version: 1,
+  cliVersion: "0.1.0",
+  scaffoldedAt: "2026-01-01T00:00:00.000Z",
+  name: "studio-site",
+  domain: "example.com",
+  features: [],
+  mlServices: [],
+  s3Provider: "none",
+  deployTarget: "existing",
+  surfaces: "client-only",
+  ports: { server: 3001, client: 3000 },
+};
+
+const forwardRule = (address: string, to: string) => ({
+  id: `rule-${address}`,
+  enabled: true,
+  matchers: [{ type: "literal", field: "to", value: address }],
+  actions: [{ type: "forward", value: [to] }],
+});
+
+/** `hatchkit email forward` against the fake zone, in `dir`. */
+async function emailForward(dir: string, args: string[], rules: FakeCloudflareState["rules"]) {
+  getStore().set("providers.dns", { status: "configured", provider: "cloudflare" });
+  await setSecret(SECRET_KEYS.cloudflareOperatorToken, "t");
+  const state: FakeCloudflareState = {
+    records: lockedMx("example.com"),
+    routingEnabled: true,
+    destinations: ["me@example.org", "help@example.org"].map((email, i) => ({
+      id: `d${i + 1}`,
+      email,
+      verified: "2026-01-01T00:00:00Z",
+    })),
+    rules,
+    calls: [],
+  };
+  const restore = installFakeCloudflare(state);
+  try {
+    await runEmailForward(args, dir);
+  } finally {
+    restore();
+  }
+  return state;
+}
+
+const readFile = (dir: string) =>
+  JSON.parse(readFileSync(join(dir, ".hatchkit.json"), "utf-8")) as Record<string, unknown>;
+
+await expect(
+  "email forward on a v1 manifest records only its rule — no schema migration written",
+  async () => {
+    // 2026-11-10: a forward in a public v1 repo wrote the whole v1 → v5
+    // migration (com.example.* identifiers, email intent "none", …) and
+    // `addresses: ["hello"]` while the zone had five other rules.
+    const dir = mkdtempSync(join(tmpdir(), "email-forward-v1-"));
+    try {
+      writeFileSync(join(dir, ".hatchkit.json"), `${JSON.stringify(V1_MANIFEST, null, 2)}\n`);
+      const rules = [
+        "a@example.com",
+        "b@example.com",
+        "c@example.com",
+        "d@example.com",
+        "e@example.com",
+      ].map((a) => forwardRule(a, "other@example.org"));
+      const state = await emailForward(
+        dir,
+        ["hello@example.com", "--to", "me@example.org"],
+        rules,
+      );
+      assert.ok(
+        state.calls?.some((c) => c.method === "POST" && c.path === "/zones/z1/email/routing/rules"),
+        "the rule itself is created",
+      );
+
+      const file = readFile(dir);
+      assert.equal(file.version, 1, "the file keeps its own schema version");
+      const { integrations, ...rest } = file;
+      assert.deepEqual(rest, V1_MANIFEST, "nothing but the forwarding record changes");
+      const email = (integrations as { email: Record<string, unknown> }).email;
+      assert.deepEqual(Object.keys(integrations as object), ["email"]);
+      assert.equal(email.domain, "example.com");
+      assert.deepEqual(email.addressDestinations, { hello: "me@example.org" });
+      assert.equal("addresses" in email, false, "no claim to know the zone's full rule list");
+      assert.equal("destinationEmail" in email, false);
+      assert.equal("catchAll" in email, false);
+
+      // Re-run: the rule is in place, so the record is not rewritten.
+      writeFileSync(
+        join(dir, ".hatchkit.json"),
+        `${JSON.stringify({ ...file, integrations: { email: { ...email, configuredAt: "2026-02-02T00:00:00.000Z" } } }, null, 2)}\n`,
+      );
+      await emailForward(dir, ["hello", "--to", "me@example.org"], [
+        ...rules,
+        forwardRule("hello@example.com", "me@example.org"),
+      ]);
+      const again = readFile(dir);
+      assert.equal(again.version, 1);
+      assert.equal(
+        (again.integrations as { email: { configuredAt: string } }).email.configuredAt,
+        "2026-02-02T00:00:00.000Z",
+      );
+
+      // A later `email setup` starts the list and takes the address in.
+      recordEmailSetup(dir, {
+        domain: "example.com",
+        rules: [{ address: "imprint@example.com", id: "1", created: true, updated: false }],
+        destination: { record: { id: "d1", email: "me@example.org" } },
+      } as never);
+      const afterSetup = readFile(dir);
+      assert.equal(afterSetup.version, 1);
+      assert.deepEqual(
+        (afterSetup.integrations as { email: { addresses: string[] } }).email.addresses,
+        ["hello", "imprint"],
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+await expect("email forward adds to a list `email setup` started, on the file's version", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "email-forward-list-"));
+  try {
+    const before = {
+      ...V1_MANIFEST,
+      integrations: {
+        email: {
+          domain: "example.com",
+          configuredAt: "2026-01-01T00:00:00.000Z",
+          destinationEmail: "me@example.org",
+          addresses: ["imprint"],
+          catchAll: true,
+        },
+      },
+    };
+    writeFileSync(join(dir, ".hatchkit.json"), JSON.stringify(before));
+    await emailForward(dir, ["support", "--to", "help@example.org"], [
+      forwardRule("imprint@example.com", "me@example.org"),
+    ]);
+    const file = readFile(dir);
+    const { integrations, ...rest } = file;
+    assert.deepEqual(rest, V1_MANIFEST);
+    const { configuredAt: _, ...email } = (integrations as { email: Record<string, unknown> })
+      .email;
+    assert.deepEqual(email, {
+      domain: "example.com",
+      destinationEmail: "me@example.org",
+      catchAll: true,
+      addresses: ["imprint", "support"],
+      addressDestinations: { support: "help@example.org" },
+    });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

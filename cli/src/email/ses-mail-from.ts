@@ -21,7 +21,7 @@
  * templates, or SMTP settings.
  */
 
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import { ensureDns, ensureSes, getDnsConfig, getSesConfig } from "../config.js";
@@ -39,7 +39,12 @@ import {
   sesMailFromSubdomain,
   setSesMailFromDomain,
 } from "../provision/ses.js";
-import { MANIFEST_FILENAME, type ProjectManifest, readManifest } from "../scaffold/manifest.js";
+import {
+  MANIFEST_FILENAME,
+  type ProjectManifest,
+  patchManifest,
+  readManifest,
+} from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 
 export interface SesMailFromCommandFlags {
@@ -384,8 +389,7 @@ function writeMailFromIntoManifest(
     region: string;
   },
 ): void {
-  const next: ProjectManifest = {
-    ...manifest,
+  patchManifest(projectDir, {
     ses: {
       ...(manifest.ses ?? {}),
       identity: info.identity,
@@ -402,8 +406,7 @@ function writeMailFromIntoManifest(
         { type: "TXT", name: info.mailFromDomain, value: SES_MAIL_FROM_SPF },
       ],
     },
-  };
-  writeFileSync(join(projectDir, MANIFEST_FILENAME), `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+  });
 }
 
 function clearMailFromFromManifest(projectDir: string, manifest: ProjectManifest): void {
@@ -414,11 +417,7 @@ function clearMailFromFromManifest(projectDir: string, manifest: ProjectManifest
   delete ses.mailFromBehaviorOnMxFailure;
   delete ses.mailFromManagedDnsRecords;
   const hasAnyRemaining = Object.keys(ses).some((k) => k !== "identity");
-  const next: ProjectManifest = {
-    ...manifest,
-    ses: hasAnyRemaining ? ses : undefined,
-  };
-  writeFileSync(join(projectDir, MANIFEST_FILENAME), `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+  patchManifest(projectDir, { ses: hasAnyRemaining ? ses : undefined });
 }
 
 /** Parse the `ses-mail-from` flag slice (everything after the

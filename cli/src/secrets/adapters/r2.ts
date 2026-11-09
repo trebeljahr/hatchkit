@@ -31,8 +31,8 @@ import { getStore } from "../../config.js";
 import { accountIdFromR2Endpoint } from "../../provision/s3-buckets.js";
 import {
   type ProjectManifest,
+  patchManifest,
   readManifestWithMigrationInfo,
-  writeManifest,
 } from "../../scaffold/manifest.js";
 import { CloudflareApi, type CfTokenPolicy } from "../../utils/cloudflare-api.js";
 import { SECRET_KEYS, getCloudflareTokenValue, getSecret } from "../../utils/secrets.js";
@@ -401,7 +401,7 @@ const r2Rotator: ProviderRotator = {
         changed = true;
       }
     }
-    if (changed) writeManifest(ctx.projectDir, { ...read.manifest, s3Buckets: buckets });
+    if (changed) patchManifest(ctx.projectDir, { s3Buckets: buckets });
   },
 };
 

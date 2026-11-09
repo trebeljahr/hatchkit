@@ -35,7 +35,7 @@
 
 import { join } from "node:path";
 import chalk from "chalk";
-import { type ProjectManifest, readManifest, writeManifest } from "../scaffold/manifest.js";
+import { type ProjectManifest, patchManifest, readManifest } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { resolveEnvFileTarget } from "../utils/env-files.js";
 import { getCloudflareTokenValue } from "../utils/secrets.js";
@@ -249,8 +249,7 @@ export async function provisionR2BucketTokens(
       ...(manifest.s3Buckets ?? {}),
       ...updatedBucketEntries,
     };
-    const updated: ProjectManifest = { ...manifest, s3Buckets: merged };
-    writeManifest(opts.projectDir, updated);
+    patchManifest(opts.projectDir, { s3Buckets: merged });
   }
 
   return { endpoint: meta.endpoint, bucketTokens };
@@ -377,7 +376,7 @@ export async function unprovisionR2BucketTokens(opts: {
         };
       }
     }
-    writeManifest(opts.projectDir, { ...manifest, s3Buckets: updated });
+    patchManifest(opts.projectDir, { s3Buckets: updated });
   }
 
   return out;

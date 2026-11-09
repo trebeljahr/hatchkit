@@ -25,7 +25,7 @@
  */
 
 import chalk from "chalk";
-import { readManifest, writeManifest } from "../scaffold/manifest.js";
+import { patchManifest, readManifest } from "../scaffold/manifest.js";
 import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
 
 export type StripeMode = "test" | "live";
@@ -408,7 +408,7 @@ export function saveStripeAccounts(projectDir: string, accounts: StripeAccounts 
   const merged = { ...manifest.stripe?.accounts, ...accounts };
   const current = manifest.stripe?.accounts ?? {};
   if (merged.test === current.test && merged.live === current.live) return;
-  writeManifest(projectDir, { ...manifest, stripe: { ...manifest.stripe, accounts: merged } });
+  patchManifest(projectDir, { stripe: { ...manifest.stripe, accounts: merged } });
 }
 
 // ── Doctor ────────────────────────────────────────────────────────────

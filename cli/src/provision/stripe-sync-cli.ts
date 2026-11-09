@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import chalk from "chalk";
 import { type StripeClient, parseUnlockConfig } from "../paid-unlock/core.js";
-import { MANIFEST_FILENAME, readManifest, writeManifest } from "../scaffold/manifest.js";
+import { MANIFEST_FILENAME, patchManifest, readManifest } from "../scaffold/manifest.js";
 import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
 import { type StripeMode, type StripeSyncResult, syncStripe } from "./stripe-sync.js";
 import { STRIPE_USAGE } from "./stripe-usage.js";
@@ -322,7 +322,7 @@ async function runSync(args: Args): Promise<void> {
       ...manifest.stripe,
       accounts: { ...manifest.stripe?.accounts, [mode]: account },
     };
-    writeManifest(projectDir, manifest);
+    patchManifest(projectDir, { stripe: manifest.stripe });
   }
 
   // Destroy deletes the endpoint. Recorded when hatchkit made it: created

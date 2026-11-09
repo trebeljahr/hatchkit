@@ -26,7 +26,7 @@ import {
   getDnsConfig,
   getPersonalEmailLocalPart,
 } from "../config.js";
-import { readManifest, writeManifest } from "../scaffold/manifest.js";
+import { type ProjectManifest, patchManifest, readManifest } from "../scaffold/manifest.js";
 import { CloudflareApi, isEmailDestinationVerified } from "../utils/cloudflare-api.js";
 import { multiselect } from "../utils/multiselect.js";
 import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./presets.js";
@@ -385,8 +385,7 @@ export function recordEmailSetup(cwd: string, result: EmailSetupResult): void {
   if (manifest?.domain?.toLowerCase() !== result.domain.toLowerCase()) return;
   const old = manifest.integrations?.email;
   const sameDomain = old?.domain?.toLowerCase() === result.domain.toLowerCase();
-  writeManifest(cwd, {
-    ...manifest,
+  patchManifest(cwd, {
     integrations: {
       ...manifest.integrations,
       email: {
@@ -397,6 +396,9 @@ export function recordEmailSetup(cwd: string, result: EmailSetupResult): void {
         addresses: [
           ...new Set([
             ...(sameDomain ? (old?.addresses ?? []) : []),
+            // `email forward` on a domain with no list records only
+            // these; setup starts the list, so it takes them in.
+            ...(sameDomain ? Object.keys(old?.addressDestinations ?? {}) : []),
             ...result.rules.map((r) => r.address.split("@")[0]),
           ]),
         ],
@@ -406,6 +408,23 @@ export function recordEmailSetup(cwd: string, result: EmailSetupResult): void {
   });
 }
 
+/** Record the rule `hatchkit email forward` added (or found in place) in
+ *  `.hatchkit.json`, when it is on the project's own domain.
+ *
+ *  Writes `integrations.email` onto the file as it is on disk and nothing
+ *  else: never the schema migration {@link readManifest} applies in memory
+ *  (2026-11-10: a forward in a public v1 repo wrote the whole v1 → v5
+ *  migration, `com.example.*` placeholder identifiers included).
+ *
+ *  Records only the address it handled, and never claims a full list it
+ *  did not build. `addresses` is the whole list `migrate-domain`
+ *  recreates, so a forward adds to it only where `email setup` started
+ *  it. On a domain with no list, the record holds just this address's
+ *  destination (`addressDestinations`) and leaves `addresses` absent, so
+ *  readers keep taking the zone's live rules. Deliberately not merged
+ *  with the zone's other rules: that would adopt rules hatchkit did not
+ *  make, and their destinations, into what the Cloudflare audit accepts.
+ *  An unchanged record is not rewritten. */
 export function recordForwarding(
   cwd: string,
   domain: string,
@@ -413,30 +432,43 @@ export function recordForwarding(
   destination: string,
 ): void {
   const manifest = readManifest(cwd);
-  if (manifest?.domain?.toLowerCase() === domain.toLowerCase()) {
-    const old = manifest.integrations?.email;
-    const defaultDestination = old?.destinationEmail ?? destination;
-    const addressDestinations = { ...old?.addressDestinations };
-    if (defaultDestination.toLowerCase() === destination.toLowerCase()) {
-      delete addressDestinations[localPart];
-    } else {
-      addressDestinations[localPart] = destination;
-    }
-    writeManifest(cwd, {
-      ...manifest,
-      integrations: {
-        ...manifest.integrations,
-        email: {
-          ...old,
-          domain,
-          configuredAt: new Date().toISOString(),
-          destinationEmail: defaultDestination,
-          addresses: [...new Set([...(old?.addresses ?? []), localPart])],
-          addressDestinations,
-        },
-      },
-    });
+  if (manifest?.domain?.toLowerCase() !== domain.toLowerCase()) return;
+  const prior = manifest.integrations?.email;
+  // A record for another domain predates a rename; it says nothing here.
+  const old = prior?.domain?.toLowerCase() === domain.toLowerCase() ? prior : undefined;
+  const addressDestinations = { ...old?.addressDestinations };
+  if (old?.destinationEmail?.toLowerCase() === destination.toLowerCase()) {
+    delete addressDestinations[localPart];
+  } else {
+    addressDestinations[localPart] = destination;
   }
+  const { addresses: oldAddresses, addressDestinations: _, ...rest } = old ?? {};
+  const email: EmailRecord = {
+    ...rest,
+    domain: old?.domain ?? domain,
+    configuredAt: new Date().toISOString(),
+    ...(oldAddresses ? { addresses: [...new Set([...oldAddresses, localPart])] } : {}),
+    ...(Object.keys(addressDestinations).length > 0 ? { addressDestinations } : {}),
+  };
+  if (old && sameRecord(old, email)) return;
+  patchManifest(cwd, { integrations: { ...manifest.integrations, email } });
+}
+
+type EmailRecord = NonNullable<NonNullable<ProjectManifest["integrations"]>["email"]>;
+
+/** Two email records say the same thing, `configuredAt` aside. */
+function sameRecord(a: EmailRecord, b: EmailRecord): boolean {
+  const canonical = (r: EmailRecord) =>
+    JSON.stringify({
+      domain: r.domain,
+      destinationEmail: r.destinationEmail,
+      addresses: r.addresses,
+      addressDestinations: Object.entries(r.addressDestinations ?? {}).sort(([x], [y]) =>
+        x.localeCompare(y),
+      ),
+      catchAll: r.catchAll,
+    });
+  return canonical(a) === canonical(b);
 }
 
 async function assertForwardingReady(

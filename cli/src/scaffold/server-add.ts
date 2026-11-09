@@ -24,8 +24,8 @@ import { DEV_LAUNCHER_LIB_FILES } from "./dev-launcher.js";
 import {
   MANIFEST_FILENAME,
   type ProjectManifest,
+  patchManifest,
   readManifest,
-  writeManifest,
 } from "./manifest.js";
 import { readPackageName, setPackageJsonScript } from "./pkg-json.js";
 import { applyPorts, applyProjectName, updateEnvExample } from "./starter-files.js";
@@ -175,8 +175,7 @@ export async function runServerAdd(
     updateEnvExample(root, rel(root, join(serverDir, ".env.example")), projectConfig);
     applyPorts(root, manifest.ports, { wantsDesktop: false, wantsMobile: false });
     rewriteRootScripts(root, { serverDir, sharedDir });
-    writeManifest(root, {
-      ...manifest,
+    patchManifest(root, {
       surfaces: "fullstack",
       deploymentMode:
         manifest.deploymentMode === "gh-pages" || manifest.deploymentMode === "cloudflare"

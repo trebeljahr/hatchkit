@@ -255,6 +255,11 @@ Key paths:
 - `cli/src/doctor.ts`: health checks and hints.
 - `cli/src/explain.ts`: mental model.
 - `cli/src/scaffold/`: scaffolding.
+- `.hatchkit.json` writes: `readManifest` migrates old schemas in memory
+  only. A command that records a value calls `patchManifest` (its own
+  top-level keys onto the file as it is on disk); `writeManifest` is for
+  `create`, `adopt`, `update` and a new file. `cli/test-manifest-patch.ts`
+  pins the `writeManifest` callers.
 - `cli/src/features/auth-account-security/`: opt-in account-security feature
   (two-factor, account controls, extra sign-in methods). Additive via
   `hatchkit update`. `plugin-order.ts` holds the one rule that fails
