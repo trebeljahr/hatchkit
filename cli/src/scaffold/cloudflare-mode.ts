@@ -307,7 +307,7 @@ function renderWorkflow(
     ? `
 
       # Leave a GitHub Deployment for this commit on the \`web\` channel, so
-      # launchdeck's Shipped view and the Environments page show what is live.
+      # HQ's Shipped view and the Environments page show what is live.
       - name: Record the web deploy
         uses: ./.github/actions/record-ship
         with:

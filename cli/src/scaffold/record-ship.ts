@@ -1,7 +1,7 @@
 // The `record-ship` composite action: every workflow hatchkit generates
 // that makes something live (a web deploy, a Worker switch, a TestFlight or
 // Play upload) calls it right after that step, under the same `if:`, so the
-// repository gets a GitHub Deployment per ship. launchdeck's Shipped view
+// repository gets a GitHub Deployment per ship. HQ's Shipped view
 // and the repo's Environments page read those.
 //
 // `starter/.github/actions/record-ship/action.yml` is the copy a scaffolded

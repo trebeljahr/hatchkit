@@ -179,7 +179,7 @@ const CLIENT_JOB_PERMISSIONS = [
  *  Worker serves this commit. No `if:` of their own: the switch has none,
  *  and the job's `if:` gates both. */
 const CLIENT_RECORD_STEPS = `      # Leave a GitHub Deployment for this commit on the \`web\` channel, so
-      # launchdeck's Shipped view and the Environments page show what is
+      # HQ's Shipped view and the Environments page show what is
       # live. Here and not in \`deploy\`: the Worker switch makes the site
       # live. This job has no checkout, so the action is fetched on its own.
       - name: Check out the record-ship action

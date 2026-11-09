@@ -1,7 +1,7 @@
 /**
  * The deploy record every workflow hatchkit generates leaves when it makes
  * something live: a `record-ship` step (a GitHub Deployment, which
- * launchdeck's Shipped view reads) after the step that makes it live,
+ * HQ's Shipped view reads) after the step that makes it live,
  * under that step's own `if:`, in a job allowed to write deployments,
  * with the action itself written into the project.
  *

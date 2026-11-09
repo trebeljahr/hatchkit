@@ -130,7 +130,7 @@ jobs:
           status: completed
           changesNotSentForReview: false
 
-      # A GitHub Deployment per upload, so launchdeck's Shipped view shows
+      # A GitHub Deployment per upload, so HQ's Shipped view shows
       # which version each track has. Same gate as the upload: a failed
       # upload stops the job before it, so it records only what was uploaded.
       - name: Record the Google Play upload

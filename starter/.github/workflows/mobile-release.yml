@@ -276,7 +276,7 @@ jobs:
           track: ${{ fromJSON(needs.plan.outputs.plan).android.track }}
           status: completed
 
-      # A GitHub Deployment per upload, so launchdeck's Shipped view shows
+      # A GitHub Deployment per upload, so HQ's Shipped view shows
       # which version each track has. Same gate as the upload: no upload, no
       # record.
       - name: Record the Google Play upload
