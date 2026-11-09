@@ -77,6 +77,30 @@ export async function initAuth(): Promise<void> {
         : {}),
     },
 
+    // Account linking: one person, several ways to sign in.
+    //
+    // - Linking while signed in (`linkSocial`; Settings → Sign-in methods
+    //   when the auth-account-security feature is on) always works, even when
+    //   the provider's address differs from the account's
+    //   (allowDifferentEmails): the person is signed in and asked for it.
+    // - Implicit linking — "Continue with Google" for an address that already
+    //   has an account — happens only when BOTH sides verified that address
+    //   (requireLocalEmailVerified). Without it, anybody could register a
+    //   victim's address with a password and inherit their Google sign-in.
+    // - trustedProviders: Google and Apple verify every address they return.
+    //   Never add a provider that can report an unverified address.
+    // - The last way to sign in cannot be unlinked: better-auth refuses it
+    //   while allowUnlinkingAll is false.
+    account: {
+      accountLinking: {
+        enabled: true,
+        trustedProviders: ["google", "apple"],
+        allowDifferentEmails: true,
+        requireLocalEmailVerified: true,
+        allowUnlinkingAll: false,
+      },
+    },
+
     session: {
       cookieCache: {
         enabled: true,

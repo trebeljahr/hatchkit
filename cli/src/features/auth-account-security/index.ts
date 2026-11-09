@@ -15,30 +15,48 @@
  */
 
 import { FeatureLedger } from "../contract.js";
-import { rewriteAuthClient, rewriteLoginPage, rewriteLoginPageApple } from "./client-rewriter.js";
+import {
+  APPLE_LOGIN_EXTRA,
+  type LoginExtra,
+  rewriteAuthClient,
+  rewriteLoginPage,
+  rewriteLoginPageExtras,
+  rewriteSettingsPage,
+} from "./client-rewriter.js";
 import { renderAuthSecurityDocs } from "./docs.js";
 import { PASSKEY_PACKAGE } from "./options.js";
-import { APPLE_ENV_VARS, filesFor, planAuthAccountSecurity } from "./plan.js";
+import { APPLE_ENV_VARS, METHOD_ENV_VARS, filesFor, planAuthAccountSecurity } from "./plan.js";
 import {
   type AuthSecurityTokens,
   renderAuthSecurityString,
   renderAuthSecurityTemplate,
 } from "./render.js";
 import {
+  APPLE_ADDITION,
+  APPLE_HEALTH_EXTRA,
+  type AuthAddition,
+  GENERIC_OAUTH_ADDITION,
+  GUEST_ACCOUNTS_ADDITION,
+  type HealthExtra,
   type RewriteResult,
+  SIGN_IN_METHODS_HEALTH_EXTRA,
+  SOCIAL_PROVIDERS_ADDITION,
+  STEAM_ADDITION,
+  USERNAME_ADDITION,
   rewriteHealthRouter,
-  rewriteHealthRouterApple,
+  rewriteHealthRouterExtras,
   rewriteProfileRouter,
   rewriteServerApp,
   rewriteServerAuth,
-  rewriteServerAuthApple,
+  rewriteServerAuthAccountLinking,
+  rewriteServerAuthAddition,
   rewriteSharedIndex,
 } from "./server-rewriter.js";
 import type { ApplyAuthSecurityOptions, AuthSecurityAudit, AuthSecurityOption } from "./types.js";
 
 export * from "./types.js";
 export { AUTH_SECURITY_SPECS, specFor, signInMethods, PASSKEY_PACKAGE } from "./options.js";
-export { planAuthAccountSecurity, filesFor, APPLE_ENV_VARS } from "./plan.js";
+export { planAuthAccountSecurity, filesFor, APPLE_ENV_VARS, METHOD_ENV_VARS } from "./plan.js";
 export { renderAuthSecurityDocs, tokenShellVerdicts } from "./docs.js";
 export {
   ORDERED_SERVER_PLUGINS,
@@ -49,10 +67,20 @@ export {
 } from "./plugin-order.js";
 export {
   rewriteServerAuth,
+  rewriteServerAuthAddition,
+  rewriteServerAuthAccountLinking,
   rewriteServerAuthApple,
   rewriteHealthRouterApple,
+  rewriteHealthRouterExtras,
+  ACCOUNT_LINKING_BLOCK,
 } from "./server-rewriter.js";
-export { rewriteAuthClient, rewriteLoginPage, rewriteLoginPageApple } from "./client-rewriter.js";
+export {
+  rewriteAuthClient,
+  rewriteLoginPage,
+  rewriteLoginPageApple,
+  rewriteLoginPageExtras,
+  rewriteSettingsPage,
+} from "./client-rewriter.js";
 
 /** Screens a signed-out visitor may be sent back to after signing in.
  *  The starter's protected routes; a project adds its own. */
@@ -89,13 +117,14 @@ function chain(
   };
 }
 
-/** Sign in with Apple's lines in `.env.example`: a managed block under the
- *  Google pair, every value empty and commented out. */
-function appleEnvExampleBlock(): string {
-  const lines = [
-    "# Sign in with Apple (optional — leave empty to disable). See docs/account-security.md.",
-  ];
-  for (const { key, comment } of APPLE_ENV_VARS) {
+/** One method's lines in `.env.example`: a managed block under the Google
+ *  pair, every value empty and commented out. */
+function envExampleBlock(
+  title: string,
+  vars: ReadonlyArray<{ key: string; comment: string }>,
+): string {
+  const lines = [`# ${title} (optional — leave empty to disable). See docs/account-security.md.`];
+  for (const { key, comment } of vars) {
     lines.push(`# ${comment}`, `# ${key}=`);
   }
   return lines.join("\n");
@@ -103,8 +132,123 @@ function appleEnvExampleBlock(): string {
 
 /** The same variables, passed through to the server container by the
  *  compose runtime — the way Coolify learns there is a field to fill. */
-function appleComposeBlock(): string {
-  return APPLE_ENV_VARS.map(({ key }) => `      ${key}: \${${key}:-}`).join("\n");
+function composeBlock(vars: ReadonlyArray<{ key: string }>): string {
+  return vars.map(({ key }) => `      ${key}: \${${key}:-}`).join("\n");
+}
+
+/** Every env-gated method's block: id, title, variables. */
+function envBlocksFor(
+  has: (option: AuthSecurityOption) => boolean,
+): Array<{ id: string; title: string; vars: ReadonlyArray<{ key: string; comment: string }> }> {
+  const blocks = [
+    {
+      option: "apple-oauth",
+      id: "apple-sign-in",
+      title: "Sign in with Apple",
+      vars: APPLE_ENV_VARS,
+    },
+    { option: "github-oauth", id: "github-sign-in", title: "GitHub sign-in" },
+    { option: "discord-oauth", id: "discord-sign-in", title: "Discord sign-in" },
+    { option: "generic-oauth", id: "generic-oauth", title: "Generic OAuth / OIDC sign-in" },
+    { option: "steam-openid", id: "steam-sign-in", title: "Steam sign-in" },
+  ] as const;
+  return blocks
+    .filter((block) => has(block.option))
+    .map((block) => ({
+      id: block.id,
+      title: block.title,
+      vars: "vars" in block ? block.vars : (METHOD_ENV_VARS[block.option] ?? []),
+    }));
+}
+
+/**
+ * How `services/guest-upgrade.ts` moves a guest's items, for the database the
+ * project's `Item` model actually uses: a Mongoose model in the starter, a
+ * drizzle repository in the Postgres overlay. Read from the model file rather
+ * than from the manifest, because the file is what the code will import.
+ */
+function guestMoveTokens(itemModel: string | undefined): {
+  GUEST_MOVE_IMPORTS: string;
+  GUEST_MOVE_BODY: string;
+} {
+  if (itemModel?.includes("mongoose")) {
+    return {
+      GUEST_MOVE_IMPORTS: `import { Item } from "../models/Item.js";`,
+      GUEST_MOVE_BODY:
+        "  await Item.updateMany({ ownerId: fromUserId }, { $set: { ownerId: toUserId } });",
+    };
+  }
+  if (itemModel?.includes("drizzle")) {
+    return {
+      GUEST_MOVE_IMPORTS: [
+        `import { eq } from "drizzle-orm";`,
+        `import { getDb } from "../db/connection.js";`,
+        `import { items } from "../db/schema.js";`,
+      ].join("\n"),
+      GUEST_MOVE_BODY:
+        "  await getDb().update(items).set({ ownerId: toUserId }).where(eq(items.ownerId, fromUserId));",
+    };
+  }
+  return {
+    GUEST_MOVE_IMPORTS: "",
+    GUEST_MOVE_BODY:
+      "  // No per-user collections yet. Add one statement per collection keyed by user id.",
+  };
+}
+
+/**
+ * `auth/sign-in-methods.ts`: which extra methods this project offers, and
+ * which can work right now. Generated from the selection and OWNED by
+ * hatchkit — the selection lives in `.hatchkit.json`, so this file can always
+ * be rebuilt from it.
+ */
+export function renderSignInMethodsModule(has: (option: AuthSecurityOption) => boolean): string {
+  const social = (["github", "discord"] as const).filter((id) => has(`${id}-oauth`));
+  const imports = [
+    ...(social.length > 0
+      ? [
+          `import { type ExtraSocialProvider, enabledExtraSocialProviders } from "./social-providers.js";`,
+        ]
+      : []),
+    ...(has("generic-oauth") ? [`import { genericOAuthButton } from "./generic-oauth.js";`] : []),
+    ...(has("steam-openid") ? [`import { isSteamSignInEnabled } from "./steam-sign-in.js";`] : []),
+  ];
+  return `/**
+ * Which extra sign-in methods this project offers, and which of them can work
+ * right now. Served publicly by \`health.check\` (ids and a label, never a
+ * credential), so the login page and Settings → Sign-in methods only offer
+ * buttons that can finish.
+ *
+ * GENERATED by hatchkit's auth-account-security feature from
+ * \`.hatchkit.json\` → authSecurity.options. \`hatchkit update\` rewrites it.
+ */
+${imports.join("\n")}${imports.length > 0 ? "\n" : ""}${
+  social.length > 0
+    ? `
+/** The extra social providers this project offers. Each is live once its
+ *  client id and secret are set (see social-providers.ts). */
+export const EXTRA_SOCIAL_PROVIDERS: readonly ExtraSocialProvider[] = [${social.map((id) => `"${id}"`).join(", ")}];
+`
+    : ""
+}
+export type PublicSignInMethods = {
+  social: string[];
+  oauth: { id: string; name: string } | null;
+  steam: boolean;
+  guest: boolean;
+  username: boolean;
+};
+
+export function publicSignInMethods(): PublicSignInMethods {
+  return {
+    social: ${social.length > 0 ? "enabledExtraSocialProviders(EXTRA_SOCIAL_PROVIDERS)" : "[]"},
+    oauth: ${has("generic-oauth") ? "genericOAuthButton()" : "null"},
+    steam: ${has("steam-openid") ? "isSteamSignInEnabled()" : "false"},
+    guest: ${has("guest-accounts")},
+    username: ${has("username-sign-in")},
+  };
+}
+`;
 }
 
 /**
@@ -237,12 +381,73 @@ export async function applyAuthAccountSecurity(
     DELETION_USER_STEPS: userSteps.join("\n"),
     DELETION_MODEL_IMPORTS: modelImports.join("\n"),
     DELETION_MODEL_MAP: modelMap.join("\n"),
+    ...guestMoveTokens(ledger.read("packages/server/src/models/Item.ts")),
+    ACCOUNTS_IMPORTS: has("username-sign-in")
+      ? `import { UsernameSettings } from "@/components/settings/username";`
+      : "",
+    ACCOUNTS_SECTIONS: has("username-sign-in") ? "        <UsernameSettings />" : "",
   };
 
   // 1. New files.
   for (const file of filesFor(plan.options)) {
     writeIfAbsent(ledger, file.target, renderAuthSecurityTemplate(file.template, tokens), audit);
   }
+  // Owned and regenerated, like the docs: it is a pure function of the
+  // selection recorded in the manifest.
+  const methodsAction = ledger.writeIfChanged(
+    "packages/server/src/auth/sign-in-methods.ts",
+    renderSignInMethodsModule(has),
+  );
+  if (methodsAction === "written" || methodsAction === "would-write") {
+    audit.rewritten.push("packages/server/src/auth/sign-in-methods.ts");
+  }
+
+  // Applied in this order so that Apple's provider line, inserted last, ends
+  // up FIRST in socialProviders. Plugins are placed by rank, not by order.
+  const additions: AuthAddition[] = [
+    ...(has("github-oauth") || has("discord-oauth") ? [SOCIAL_PROVIDERS_ADDITION] : []),
+    ...(has("generic-oauth") ? [GENERIC_OAUTH_ADDITION] : []),
+    ...(has("steam-openid") ? [STEAM_ADDITION] : []),
+    ...(has("username-sign-in") ? [USERNAME_ADDITION] : []),
+    ...(has("guest-accounts") ? [GUEST_ACCOUNTS_ADDITION] : []),
+    ...(has("apple-oauth") ? [APPLE_ADDITION] : []),
+  ];
+  const healthExtras: HealthExtra[] = [
+    SIGN_IN_METHODS_HEALTH_EXTRA,
+    ...(has("apple-oauth") ? [APPLE_HEALTH_EXTRA] : []),
+  ];
+  const loginExtras: LoginExtra[] = [
+    ...(has("apple-oauth") ? [APPLE_LOGIN_EXTRA] : []),
+    ...((
+      ["github-oauth", "discord-oauth", "generic-oauth", "steam-openid", "guest-accounts"] as const
+    ).some(has)
+      ? [
+          {
+            name: "MoreSignInMethods",
+            importLine: `import { MoreSignInMethods } from "@/components/auth/more-sign-in-methods";`,
+            jsx: "<MoreSignInMethods />",
+            position: "last" as const,
+          },
+        ]
+      : []),
+    ...(has("username-sign-in")
+      ? [
+          {
+            name: "UsernameSignIn",
+            importLine: `import { UsernameSignIn } from "@/components/auth/username-sign-in";`,
+            jsx: [
+              "<UsernameSignIn",
+              "  onSignedIn={() => {",
+              "    router.replace(safeNextFromSearch(window.location.search) ?? POST_AUTH_REDIRECT);",
+              "  }}",
+              ...(has("two-factor") ? [`  onTwoFactor={() => setStep("two-factor")}`] : []),
+              "/>",
+            ].join("\n"),
+            position: "last" as const,
+          },
+        ]
+      : []),
+  ];
 
   // 2. Patches to files the starter already ships.
   rewriteExisting(
@@ -260,7 +465,10 @@ export async function applyAuthAccountSecurity(
           wantsMagicLink: has("magic-link"),
           wantsPasskeys: has("passkeys"),
         }),
-      has("apple-oauth") && rewriteServerAuthApple,
+      rewriteServerAuthAccountLinking,
+      ...additions.map(
+        (addition) => (source: string) => rewriteServerAuthAddition(source, addition),
+      ),
     ),
     tokens,
     audit,
@@ -270,7 +478,7 @@ export async function applyAuthAccountSecurity(
     ledger,
     "packages/server/src/trpc/routers/health.ts",
     "health router",
-    chain(rewriteHealthRouter, has("apple-oauth") && rewriteHealthRouterApple),
+    chain(rewriteHealthRouter, (source) => rewriteHealthRouterExtras(source, healthExtras)),
     tokens,
     audit,
   );
@@ -335,7 +543,7 @@ export async function applyAuthAccountSecurity(
           wantsEmailOtp: has("email-otp"),
           wantsMagicLink: has("magic-link"),
         }),
-      has("apple-oauth") && rewriteLoginPageApple,
+      loginExtras.length > 0 && ((source: string) => rewriteLoginPageExtras(source, loginExtras)),
     ),
     tokens,
     audit,
@@ -346,30 +554,41 @@ export async function applyAuthAccountSecurity(
   // else, and a project without the file (or without the Google anchor in
   // the compose file) is left alone rather than given a block in the wrong
   // place.
-  if (has("apple-oauth")) {
-    if (ledger.read("packages/server/.env.example")?.includes("GOOGLE_CLIENT_SECRET")) {
+  const exampleHasAnchor = ledger
+    .read("packages/server/.env.example")
+    ?.includes("GOOGLE_CLIENT_SECRET");
+  const compose = ledger.read("docker-compose.yml");
+  const composeAnchor = "GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET";
+  for (const block of envBlocksFor(has)) {
+    if (exampleHasAnchor) {
       ledger.ensureManagedBlock(
         "packages/server/.env.example",
-        "apple-sign-in",
-        appleEnvExampleBlock(),
-        {
-          anchor: "GOOGLE_CLIENT_SECRET",
-          commentPrefix: "#",
-        },
+        block.id,
+        envExampleBlock(block.title, block.vars),
+        { anchor: "GOOGLE_CLIENT_SECRET", commentPrefix: "#" },
       );
     }
-    const compose = ledger.read("docker-compose.yml");
-    if (compose?.includes("GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET")) {
-      ledger.ensureManagedBlock("docker-compose.yml", "apple-sign-in", appleComposeBlock(), {
-        anchor: "GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET",
+    if (compose?.includes(composeAnchor)) {
+      ledger.ensureManagedBlock("docker-compose.yml", block.id, composeBlock(block.vars), {
+        anchor: composeAnchor,
         commentPrefix: "      #",
       });
     } else if (compose !== undefined) {
       audit.manualResidue.push(
-        "Sign in with Apple: docker-compose.yml has no GOOGLE_CLIENT_SECRET line to place the APPLE_* variables by. Add them to the server's environment by hand if this project deploys with compose.",
+        `${block.title}: docker-compose.yml has no GOOGLE_CLIENT_SECRET line to place ${block.vars.map((v) => v.key).join(", ")} by. Add them to the server's environment by hand if this project deploys with compose.`,
       );
     }
   }
+
+  // Settings links to the new Sign-in methods screen.
+  rewriteExisting(
+    ledger,
+    "packages/client/src/app/(protected)/settings/page.tsx",
+    "settings link",
+    rewriteSettingsPage,
+    tokens,
+    audit,
+  );
 
   // 3. package.json, through the ledger's add-only merge: a script or a
   // version the user has changed is reported as a conflict and left
@@ -408,6 +627,37 @@ export async function applyAuthAccountSecurity(
   if (has("apple-oauth")) {
     audit.manualResidue.push(
       `Sign in with Apple: in the Apple Developer portal, enable the capability on your App ID, create a Services ID with the return URL https://${opts.domain ?? "<domain>"}/api/auth/callback/apple (Apple accepts no localhost or IP address), and create a Sign in with Apple key. Then set APPLE_CLIENT_ID, APPLE_TEAM_ID, APPLE_KEY_ID and APPLE_PRIVATE_KEY in packages/server/.env.production and run hatchkit sync. hatchkit cannot do the portal steps: Apple has no API for them. Until all four are set the button does not render. Steps: docs/account-security.md.`,
+    );
+  }
+  const domain = opts.domain ?? "<domain>";
+  if (has("github-oauth")) {
+    audit.manualResidue.push(
+      `GitHub sign-in: create an OAuth app (github.com → Settings → Developer settings) with the callback https://${domain}/api/auth/callback/github, then set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET. Until both are set the button does not render.`,
+    );
+  }
+  if (has("discord-oauth")) {
+    audit.manualResidue.push(
+      `Discord sign-in: create an application (discord.com/developers) and add the OAuth2 redirect https://${domain}/api/auth/callback/discord, then set DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET.`,
+    );
+  }
+  if (has("generic-oauth")) {
+    audit.manualResidue.push(
+      `Generic OAuth: register a client with your provider using the redirect https://${domain}/api/auth/oauth2/callback/<OAUTH_PROVIDER_ID>, then set the OAUTH_* variables.`,
+    );
+  }
+  if (has("steam-openid")) {
+    audit.manualResidue.push(
+      "Steam sign-in: set STEAM_SIGN_IN=true. Steam OpenID needs no app registration; STEAM_WEB_API_KEY (steamcommunity.com/dev/apikey) is optional and only fills in names and avatars.",
+    );
+  }
+  if (has("guest-accounts") || has("username-sign-in")) {
+    audit.manualResidue.push(
+      "Guest accounts / usernames add fields to better-auth's user table (isAnonymous; username, displayUsername). MongoDB needs nothing. A Postgres project must add the columns to src/db/schema.ts and run a migration.",
+    );
+  }
+  if (has("guest-accounts")) {
+    audit.manualResidue.push(
+      "Guest accounts: add a line to services/guest-upgrade.ts for every collection your app keys by user id. Anything not moved there is deleted with the guest.",
     );
   }
   if (has("email-verification")) {

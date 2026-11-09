@@ -13,7 +13,7 @@
  */
 
 import { AUTH_SECURITY_SPECS, specFor } from "./options.js";
-import { APPLE_ENV_VARS } from "./plan.js";
+import { APPLE_ENV_VARS, METHOD_ENV_VARS } from "./plan.js";
 import type { AuthSecurityOption, AuthSecurityPlan, TokenShellSupport } from "./types.js";
 
 const VERDICT_LABEL: Record<TokenShellSupport, string> = {
@@ -211,6 +211,87 @@ export function renderAuthSecurityDocs(input: AuthSecurityDocsInput): string {
       `After an upload the client re-reads the session with the cookie cache disabled —`,
       `\`user.image\` is written through the adapter, so the cached cookie would otherwise serve`,
       `the old user for up to five minutes.`,
+      "",
+    );
+  }
+
+  lines.push(
+    `### Account linking is on`,
+    "",
+    `One person can sign in several ways. \`auth.ts\` sets better-auth's \`account.accountLinking\`:`,
+    "",
+    `- Linking while signed in always works, from **Settings → Sign-in methods**`,
+    `  (\`/settings/accounts\`), even when the provider's address differs from the account's.`,
+    `- "Continue with Google" for an address that already has an account links the two only`,
+    `  when BOTH sides verified the address. Otherwise somebody could register a victim's`,
+    `  address with a password first and inherit their Google sign-in later.`,
+    `- Google and Apple are trusted providers: both verify every address they return. Never`,
+    `  add one that can report an unverified address.`,
+    `- The last way to sign in cannot be unlinked. better-auth refuses it on the server, and`,
+    `  the screen does not offer it. Passkeys, email codes and magic links belong to the`,
+    `  address, not to an account row, so they never count as "the last one".`,
+    "",
+    `Linking is a browser redirect to the provider, so it cannot finish in a native or desktop`,
+    `shell. Listing and unlinking are plain requests and work there with a bearer token.`,
+    "",
+  );
+
+  const methodSections: Array<[AuthSecurityOption, string, string[]]> = [
+    ["github-oauth", "GitHub", [`Callback URL: \`https://<domain>/api/auth/callback/github\`.`]],
+    ["discord-oauth", "Discord", [`Redirect: \`https://<domain>/api/auth/callback/discord\`.`]],
+    [
+      "generic-oauth",
+      "Generic OAuth / OIDC",
+      [
+        `Redirect: \`https://<domain>/api/auth/oauth2/callback/<OAUTH_PROVIDER_ID>\`. One provider`,
+        `comes from the environment; add more entries in \`auth/generic-oauth.ts\`.`,
+      ],
+    ],
+    [
+      "steam-openid",
+      "Steam",
+      [
+        `OpenID 2.0, verified with Steam on every return (\`auth/steam-sign-in.ts\`). An unlinked`,
+        `Steam ID signs up a new account with a placeholder address under \`steam.invalid\`; to`,
+        `add Steam to an existing account, link it from Settings → Sign-in methods.`,
+      ],
+    ],
+  ];
+  for (const [option, title, notes] of methodSections) {
+    if (!plan.options.includes(option)) continue;
+    lines.push(`### ${title} sign-in`, "", ...notes, "");
+    const vars = METHOD_ENV_VARS[option] ?? [];
+    if (vars.length > 0) {
+      lines.push(`| Variable | Value |`, `| --- | --- |`);
+      for (const { key, comment } of vars) lines.push(`| \`${key}\` | ${codeSpanUrls(comment)} |`);
+      lines.push("");
+    }
+  }
+
+  if (plan.options.includes("guest-accounts")) {
+    lines.push(
+      `### Guest accounts keep their data by being moved`,
+      "",
+      `A guest who signs up or signs in later becomes that account, and better-auth deletes the`,
+      `guest. \`services/guest-upgrade.ts\` moves the guest's rows first. Add a line there for`,
+      `every collection keyed by a user id: anything not moved is deleted with the guest.`,
+      `Steam sign-in hands guests over too, through the same function.`,
+      "",
+    );
+  }
+  if (plan.options.includes("username-sign-in")) {
+    lines.push(
+      `### Usernames`,
+      "",
+      `People set a username under Settings → Sign-in methods, then sign in with it and their`,
+      `password. Two-factor applies to this path exactly as to email sign-in.`,
+      "",
+    );
+  }
+  if (plan.options.includes("guest-accounts") || plan.options.includes("username-sign-in")) {
+    lines.push(
+      `A Postgres project must add the plugins' user fields (\`isAnonymous\`; \`username\`,`,
+      `\`displayUsername\`) to \`src/db/schema.ts\` and migrate. MongoDB needs nothing.`,
       "",
     );
   }

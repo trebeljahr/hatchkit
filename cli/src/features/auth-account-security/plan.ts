@@ -48,7 +48,27 @@ const CORE_FILES: readonly AuthSecurityFile[] = [
     template: "server/email-delivery.ts",
     target: "packages/server/src/services/email-delivery.ts",
   },
+  // Account linking is the default, so its screen is core: every project
+  // with a second sign-in method needs somewhere to attach and detach it.
+  {
+    template: "client/linked-accounts.tsx",
+    target: "packages/client/src/components/settings/linked-accounts.tsx",
+  },
+  {
+    template: "client/settings-accounts-page.tsx",
+    target: "packages/client/src/app/(protected)/settings/accounts/page.tsx",
+  },
 ] as const;
+
+/** The login-page component every extra method shares. */
+const MORE_METHODS_BUTTONS: AuthSecurityFile = {
+  template: "client/more-sign-in-methods.tsx",
+  target: "packages/client/src/components/auth/more-sign-in-methods.tsx",
+};
+const SOCIAL_PROVIDERS_MODULE: AuthSecurityFile = {
+  template: "server/social-providers.ts",
+  target: "packages/server/src/auth/social-providers.ts",
+};
 
 const FILES_BY_OPTION: Record<AuthSecurityOption, readonly AuthSecurityFile[]> = {
   "two-factor": [
@@ -90,6 +110,44 @@ const FILES_BY_OPTION: Record<AuthSecurityOption, readonly AuthSecurityFile[]> =
     {
       template: "client/apple-sign-in-button.tsx",
       target: "packages/client/src/components/auth/apple-sign-in-button.tsx",
+    },
+  ],
+  "github-oauth": [SOCIAL_PROVIDERS_MODULE, MORE_METHODS_BUTTONS],
+  "discord-oauth": [SOCIAL_PROVIDERS_MODULE, MORE_METHODS_BUTTONS],
+  "generic-oauth": [
+    { template: "server/generic-oauth.ts", target: "packages/server/src/auth/generic-oauth.ts" },
+    MORE_METHODS_BUTTONS,
+  ],
+  "steam-openid": [
+    { template: "server/steam-sign-in.ts", target: "packages/server/src/auth/steam-sign-in.ts" },
+    // Runs the plugin inside a real better-auth instance with Steam stubbed:
+    // a skipped check_authentication or a replayable return fails here.
+    {
+      template: "server/steam-sign-in.test.ts",
+      target: "packages/server/src/tests/steam-sign-in.test.ts",
+    },
+    MORE_METHODS_BUTTONS,
+  ],
+  "guest-accounts": [
+    { template: "server/guest-accounts.ts", target: "packages/server/src/auth/guest-accounts.ts" },
+    {
+      template: "server/guest-upgrade.ts",
+      target: "packages/server/src/services/guest-upgrade.ts",
+    },
+    MORE_METHODS_BUTTONS,
+  ],
+  "username-sign-in": [
+    {
+      template: "server/username-sign-in.ts",
+      target: "packages/server/src/auth/username-sign-in.ts",
+    },
+    {
+      template: "client/username-sign-in.tsx",
+      target: "packages/client/src/components/auth/username-sign-in.tsx",
+    },
+    {
+      template: "client/settings-username.tsx",
+      target: "packages/client/src/components/settings/username.tsx",
     },
   ],
   "account-deletion": [
@@ -184,6 +242,59 @@ export const APPLE_ENV_VARS: ReadonlyArray<{ key: string; comment: string }> = [
   },
 ];
 
+/** Variables of the other env-gated sign-in methods, written into
+ *  `.env.example` and the compose file beside Apple's. Read from
+ *  `process.env` by each method's own module. */
+export const METHOD_ENV_VARS: Partial<
+  Record<AuthSecurityOption, ReadonlyArray<{ key: string; comment: string }>>
+> = {
+  "github-oauth": [
+    {
+      key: "GITHUB_CLIENT_ID",
+      comment:
+        "GitHub OAuth app client id. Callback URL: https://<domain>/api/auth/callback/github.",
+    },
+    { key: "GITHUB_CLIENT_SECRET", comment: "GitHub OAuth app client secret. A secret." },
+  ],
+  "discord-oauth": [
+    {
+      key: "DISCORD_CLIENT_ID",
+      comment: "Discord application id. Redirect: https://<domain>/api/auth/callback/discord.",
+    },
+    { key: "DISCORD_CLIENT_SECRET", comment: "Discord OAuth2 client secret. A secret." },
+  ],
+  "generic-oauth": [
+    {
+      key: "OAUTH_PROVIDER_ID",
+      comment:
+        "Lowercase slug, e.g. keycloak. Redirect: https://<domain>/api/auth/oauth2/callback/<id>.",
+    },
+    { key: "OAUTH_PROVIDER_NAME", comment: "Button label, e.g. Company SSO." },
+    { key: "OAUTH_CLIENT_ID", comment: "Client id from the provider." },
+    { key: "OAUTH_CLIENT_SECRET", comment: "Client secret from the provider. A secret." },
+    {
+      key: "OAUTH_DISCOVERY_URL",
+      comment:
+        "OIDC discovery URL (.well-known/openid-configuration). Or set the three URLs below for plain OAuth 2.0.",
+    },
+    { key: "OAUTH_AUTHORIZATION_URL", comment: "Plain OAuth 2.0 only." },
+    { key: "OAUTH_TOKEN_URL", comment: "Plain OAuth 2.0 only." },
+    { key: "OAUTH_USERINFO_URL", comment: "Plain OAuth 2.0 only." },
+    { key: "OAUTH_SCOPES", comment: "Optional, space-separated. Default: openid email profile." },
+  ],
+  "steam-openid": [
+    {
+      key: "STEAM_SIGN_IN",
+      comment: "true switches Steam sign-in on. Steam OpenID needs no credentials.",
+    },
+    {
+      key: "STEAM_WEB_API_KEY",
+      comment:
+        "Optional. Gives new Steam accounts their Steam name and avatar. https://steamcommunity.com/dev/apikey",
+    },
+  ],
+};
+
 /** Env vars the feature introduces, with the comment written above each
  *  in `.env.example` / `config/env.ts`. Only vars that are genuinely new
  *  — `GOOGLE_CLIENT_ID` and friends are already in the starter. */
@@ -205,6 +316,10 @@ const ENV_BY_OPTION: Partial<Record<AuthSecurityOption, Array<{ key: string; com
       },
     ],
     "apple-oauth": [...APPLE_ENV_VARS],
+    "github-oauth": [...(METHOD_ENV_VARS["github-oauth"] ?? [])],
+    "discord-oauth": [...(METHOD_ENV_VARS["discord-oauth"] ?? [])],
+    "generic-oauth": [...(METHOD_ENV_VARS["generic-oauth"] ?? [])],
+    "steam-openid": [...(METHOD_ENV_VARS["steam-openid"] ?? [])],
   };
 
 /** Order the options are applied and reported in — catalogue order, not

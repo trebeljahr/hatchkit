@@ -321,44 +321,120 @@ ${extras.map((node) => `          ${node}`).join("\n")}
 /** The block of alternative sign-in methods `rewriteLoginPage` writes. */
 const ALT_METHODS_OPEN = '<div className="space-y-3 border-t pt-6">\n';
 
+export interface LoginExtra {
+  /** The component name, which is also the idempotency marker. */
+  name: string;
+  importLine: string;
+  /** The element as written, one or more lines, without leading indent. */
+  jsx: string;
+  /** Apple goes first (its guidelines ask for equal prominence); the rest
+   *  after whatever is already there. */
+  position: "first" | "last";
+}
+
+const indentJsx = (jsx: string): string =>
+  jsx
+    .split("\n")
+    .map((line) => `          ${line}`)
+    .join("\n");
+
 /**
- * Add the Apple button to the login page.
+ * Add sign-in components to the login page's alternative-methods block,
+ * creating the block above the forgot-password link when there is none.
  *
  * Separate from `rewriteLoginPage`, which returns early on a page it has
- * already patched, so Apple can be added on a later run too. The button goes
- * FIRST among the alternative methods: Apple's guidelines ask that it be at
- * least as prominent as any other sign-in button.
+ * already patched, so a method can be added on a later run too. Each
+ * component is skipped when the page already names it.
  */
-export function rewriteLoginPageApple(source: string): RewriteResult {
-  if (source.includes("AppleSignInButton")) return alreadyDone(source);
+export function rewriteLoginPageExtras(
+  source: string,
+  extras: readonly LoginExtra[],
+): RewriteResult {
+  const wanted = extras.filter((extra) => !source.includes(`<${extra.name}`));
+  if (wanted.length === 0) return alreadyDone(source);
 
-  const importLine = `import { AppleSignInButton } from "@/components/auth/apple-sign-in-button";`;
   const authImport = /^import \{[^}]*\} from "@\/lib\/auth-client";\n/m.exec(source);
   if (!authImport) {
     return unchanged(source, "login page does not import from @/lib/auth-client where expected");
   }
   const importAt = authImport.index + authImport[0].length;
-  let out = `${source.slice(0, importAt)}${importLine}\n${source.slice(importAt)}`;
+  const imports = wanted
+    .map((extra) => extra.importLine)
+    .filter((line) => !source.includes(line))
+    .map((line) => `${line}\n`)
+    .join("");
+  let out = `${source.slice(0, importAt)}${imports}${source.slice(importAt)}`;
 
-  const block = out.indexOf(ALT_METHODS_OPEN);
-  if (block !== -1) {
-    const at = block + ALT_METHODS_OPEN.length;
-    return {
-      source: `${out.slice(0, at)}          <AppleSignInButton />\n${out.slice(at)}`,
-      applied: true,
-    };
+  if (!out.includes(ALT_METHODS_OPEN)) {
+    const forgot =
+      /(\n\s*<div className="text-center text-sm">\n\s*<Link href="\/forgot-password")/;
+    if (!forgot.test(out)) {
+      return unchanged(
+        source,
+        "login page has neither the alternative sign-in block nor the forgot-password link to place the sign-in buttons by",
+      );
+    }
+    out = out.replace(forgot, `\n        ${ALT_METHODS_OPEN}        </div>\n$1`);
   }
 
-  const forgot = /(\n\s*<div className="text-center text-sm">\n\s*<Link href="\/forgot-password")/;
-  if (!forgot.test(out)) {
+  const open = out.indexOf(ALT_METHODS_OPEN) + ALT_METHODS_OPEN.length;
+  const first = wanted
+    .filter((extra) => extra.position === "first")
+    .map((extra) => indentJsx(extra.jsx));
+  if (first.length > 0) out = `${out.slice(0, open)}${first.join("\n")}\n${out.slice(open)}`;
+  const last = wanted
+    .filter((extra) => extra.position === "last")
+    .map((extra) => indentJsx(extra.jsx));
+  if (last.length > 0) {
+    const close = out.indexOf("\n        </div>", out.indexOf(ALT_METHODS_OPEN));
+    out = `${out.slice(0, close)}\n${last.join("\n")}${out.slice(close)}`;
+  }
+  return { source: out, applied: true };
+}
+
+export const APPLE_LOGIN_EXTRA: LoginExtra = {
+  name: "AppleSignInButton",
+  importLine: `import { AppleSignInButton } from "@/components/auth/apple-sign-in-button";`,
+  jsx: "<AppleSignInButton />",
+  position: "first",
+};
+
+/** Kept for callers and tests that name Apple directly. */
+export function rewriteLoginPageApple(source: string): RewriteResult {
+  return rewriteLoginPageExtras(source, [APPLE_LOGIN_EXTRA]);
+}
+
+/**
+ * Link Settings to Settings → Sign-in methods, below the page heading. A
+ * settings page that has been rewritten past recognition is left alone; the
+ * route works without the link.
+ */
+export function rewriteSettingsPage(source: string): RewriteResult {
+  if (source.includes('href="/settings/accounts"')) return alreadyDone(source);
+  const heading =
+    /(<p className="text-muted-foreground">Manage your account settings<\/p>\n\s*<\/div>\n)/;
+  if (!heading.test(source)) {
     return unchanged(
       source,
-      "login page has neither the alternative sign-in block nor the forgot-password link to place the Apple button by",
+      "settings page heading not found, so no link to Sign-in methods was added",
     );
   }
-  out = out.replace(
-    forgot,
-    `\n        ${ALT_METHODS_OPEN}          <AppleSignInButton />\n        </div>\n$1`,
+  let out = source.replace(
+    heading,
+    `$1
+      <Link
+        href="/settings/accounts"
+        className="inline-flex text-sm text-primary hover:underline"
+        data-testid="settings-sign-in-methods"
+      >
+        Sign-in methods: link or remove a way to sign in →
+      </Link>
+`,
   );
+  if (!/^import Link from "next\/link";$/m.test(out)) {
+    out = out.replace(/^("use client";\n\n)/, `$1import Link from "next/link";\n`);
+    if (!out.includes('import Link from "next/link";'))
+      out = `import Link from "next/link";\n${out}`;
+  }
   return { source: out, applied: true };
 }

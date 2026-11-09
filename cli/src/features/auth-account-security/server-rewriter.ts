@@ -20,6 +20,7 @@
  * template or spliced in here.
  */
 
+import { ORDERED_SERVER_PLUGINS } from "./plugin-order.js";
 import { renderPluginList } from "./render.js";
 
 export interface RewriteResult {
@@ -202,11 +203,12 @@ async function deliverAuthMail(
     },`);
   }
 
-  // Apple's plugin is left to `rewriteServerAuthApple`, which writes it
-  // together with the `appleConfig` it reads and the import it needs. Written
-  // here, a later decline of that step would leave a reference to a name
-  // nothing declares.
-  const rendered = options.serverPlugins.filter((name) => name !== "appleSignInPlugin");
+  // Only the plugins this function also writes the imports and helpers for.
+  // The sign-in methods added later (Apple, Steam, guests, …) are placed by
+  // `rewriteServerAuthAddition` together with their own imports: written
+  // here, a later decline of that step would leave a call to a name nothing
+  // imports.
+  const rendered = options.serverPlugins.filter((name) => BASE_RENDERED_PLUGINS.has(name));
   if (rendered.length > 0) {
     const calls = rendered.map((name) => {
       if (name === "twoFactorPlugin") return "twoFactorPlugin()";
@@ -254,26 +256,35 @@ ${renderPluginList(calls, 6)}
   };
 }
 
-// ── Sign in with Apple ─────────────────────────────────────────────────
+// ── Sign-in methods added after the base patch ──────────────────────────
 //
-// Its own transforms, each detecting its own output, rather than branches
-// inside `rewriteServerAuth`: that one returns early on any file it has
-// already patched, so Apple could otherwise never be added on a later run.
-// Nothing here touches `trustedOrigins:` — other features replace that line
-// wholesale — so Apple's origin arrives through `appleSignInPlugin()`.
+// Each method is an `AuthAddition`: imports, an optional line above
+// `betterAuth({`, optional `socialProviders` entries and an optional plugin.
+// Every piece detects its own output, so a method can be added on a later run
+// to a file `rewriteServerAuth` patched long ago — that one returns early on
+// any file it has seen. Nothing here touches `trustedOrigins:`: other
+// features replace that line wholesale.
 
-/** The plugin registration, as it is written into the `plugins` array. */
-export const APPLE_PLUGIN_CALL = "appleSignInPlugin(appleConfig)";
+/** Plugins `rewriteServerAuth` renders itself, with their imports. */
+const BASE_RENDERED_PLUGINS: ReadonlySet<string> = new Set([
+  "twoFactorPlugin",
+  "emailOtpPlugin",
+  "magicLinkPlugin",
+  "passkeyPlugin",
+  "bearer",
+]);
 
-const APPLE_IMPORT = `import { appleProviderOptions, appleSignInConfig, appleSignInPlugin } from "./apple-sign-in.js";`;
-
-const APPLE_CONFIG_LINE = `  // Sign in with Apple: off unless every APPLE_* variable is set. Read once,
-  // here, so the provider and the plugin below agree. See auth/apple-sign-in.ts.
-  const appleConfig = appleSignInConfig();
-`;
-
-const APPLE_PROVIDER_LINE =
-  "      ...(appleConfig ? { apple: appleProviderOptions(appleConfig) } : {}),\n";
+export interface AuthAddition {
+  /** Names the step in a manual-residue line when it declines. */
+  label: string;
+  imports?: readonly string[];
+  /** Inserted above `_auth = betterAuth({` unless `marker` is present. */
+  preamble?: { marker: string; text: string };
+  /** First entries of `socialProviders`, each skipped when its marker is. */
+  providers?: ReadonlyArray<{ marker: string; line: string }>;
+  /** One plugin registration, placed by its rank in ORDERED_SERVER_PLUGINS. */
+  plugin?: { name: string; call: string };
+}
 
 /** Bounds of the first `plugins: [ ... ]` array, or null. Bracket-matched,
  *  so a nested call with its own array cannot end it early. */
@@ -292,33 +303,49 @@ function pluginArrayBounds(source: string): { open: number; close: number } | nu
   return null;
 }
 
+/** Plugin names this module ranks, outranking `name`, as one regex. */
+function outrankingPattern(name: string): RegExp | null {
+  const rank = ORDERED_SERVER_PLUGINS.indexOf(name);
+  const later = ORDERED_SERVER_PLUGINS.slice(rank + 1);
+  return later.length === 0 ? null : new RegExp(`\\b(?:${later.join("|")})\\(`);
+}
+
 /**
- * Put `appleSignInPlugin(appleConfig)` into an existing plugin array: on its
- * own line directly above the first line that mentions `bearer(` — which
- * also catches a conditional `...(x ? [bearer()] : [])` — or as the last
- * element when there is no bearer. A one-line array gets the same rule
- * inline.
+ * Put one plugin call into an existing plugin array, at its rank: on its own
+ * line directly above the first line that registers a plugin ranked after it
+ * — which also catches a conditional `...(x ? [bearer()] : [])` — or as the
+ * last element. A one-line array gets the same rule inline.
  */
-function insertIntoPluginArray(source: string, bounds: { open: number; close: number }): string {
+function insertPluginByRank(
+  source: string,
+  bounds: { open: number; close: number },
+  plugin: { name: string; call: string },
+): string {
   const body = source.slice(bounds.open + 1, bounds.close);
   const before = source.slice(0, bounds.open + 1);
   const after = source.slice(bounds.close);
+  const later = outrankingPattern(plugin.name);
 
   if (!body.includes("\n")) {
-    const bearerAt = body.search(/(?:\.\.\.\()?[^,]*\bbearer\(/);
-    if (bearerAt !== -1) {
-      const lead = body.slice(0, bearerAt).replace(/\s*$/, "");
+    const hit = later ? later.exec(body) : null;
+    if (hit) {
+      // Start of the element holding the later plugin: just past the
+      // previous separator, so a spread `...(x ? [bearer()] : [])` moves whole.
+      const elementStart = Math.max(body.lastIndexOf(",", hit.index) + 1, 0);
+      const lead = body.slice(0, elementStart).replace(/\s*$/, "");
       const sep = lead === "" ? "" : `${lead} `;
-      return `${before}${sep}${APPLE_PLUGIN_CALL}, ${body.slice(bearerAt).trimStart()}${after}`;
+      return `${before}${sep}${plugin.call}, ${body.slice(elementStart).trimStart()}${after}`;
     }
     const trimmed = body.trim().replace(/,$/, "");
-    return `${before}${trimmed ? `${trimmed}, ` : ""}${APPLE_PLUGIN_CALL}${after}`;
+    return `${before}${trimmed ? `${trimmed}, ` : ""}${plugin.call}${after}`;
   }
 
-  const bearerLine = /\n([ \t]*)[^\n]*\bbearer\(/.exec(body);
-  if (bearerLine) {
-    const at = bearerLine.index + 1;
-    return `${before}${body.slice(0, at)}${bearerLine[1]}${APPLE_PLUGIN_CALL},\n${body.slice(at)}${after}`;
+  const lines = body.split("\n");
+  const at = later ? lines.findIndex((line) => later.test(line)) : -1;
+  if (at !== -1) {
+    const indent = /^[ \t]*/.exec(lines[at] ?? "")?.[0] ?? "      ";
+    lines.splice(at, 0, `${indent}${plugin.call},`);
+    return `${before}${lines.join("\n")}${after}`;
   }
 
   // Last element. The one before it may lack a trailing comma.
@@ -326,83 +353,260 @@ function insertIntoPluginArray(source: string, bounds: { open: number; close: nu
   const head = body.slice(0, lastNewline).replace(/\s*$/, "");
   const closingIndent = body.slice(lastNewline + 1);
   const element = /\n([ \t]*)\S/.exec(body)?.[1] ?? `${closingIndent}  `;
-  const comma = head.endsWith(",") || head.endsWith("[") || head === "" ? "" : ",";
-  return `${before}${head}${comma}\n${element}${APPLE_PLUGIN_CALL},\n${closingIndent}${after}`;
+  const comma = head.endsWith(",") || head === "" ? "" : ",";
+  return `${before}${head}${comma}\n${element}${plugin.call},\n${closingIndent}${after}`;
 }
 
 /**
- * Add Sign in with Apple to an `auth.ts` that `rewriteServerAuth` has
- * already patched (or that never needed patching). Four independent steps,
- * each skipped when its output is already there:
- *
- *  1. the import;
- *  2. `const appleConfig = appleSignInConfig();` above `betterAuth({`;
- *  3. the provider, first in `socialProviders`;
- *  4. `appleSignInPlugin(appleConfig)` in the plugin array — BEFORE
- *     `bearer()`, which must stay last (see plugin-order.ts).
+ * Apply one {@link AuthAddition} to `auth.ts`. All or nothing: a missing
+ * anchor declines the whole addition, so the file never imports a module it
+ * does not call or calls a name it does not import.
  */
-export function rewriteServerAuthApple(source: string): RewriteResult {
-  let out = addImports(source, [APPLE_IMPORT]);
+export function rewriteServerAuthAddition(source: string, addition: AuthAddition): RewriteResult {
+  let out = addImports(source, addition.imports ?? []);
 
-  if (!out.includes("const appleConfig = appleSignInConfig()")) {
+  if (addition.preamble && !out.includes(addition.preamble.marker)) {
     const at = out.search(/\n {2}_auth = betterAuth\(\{/);
-    if (at === -1)
-      return unchanged(
-        source,
-        "auth.ts has no `_auth = betterAuth({` to anchor Apple's config above",
-      );
-    out = `${out.slice(0, at + 1)}${APPLE_CONFIG_LINE}\n${out.slice(at + 1)}`;
+    if (at === -1) {
+      return unchanged(source, "auth.ts has no `_auth = betterAuth({` to anchor the config above");
+    }
+    out = `${out.slice(0, at + 1)}${addition.preamble.text}\n${out.slice(at + 1)}`;
   }
 
-  if (!out.includes("apple: appleProviderOptions(")) {
+  for (const provider of addition.providers ?? []) {
+    if (out.includes(provider.marker)) continue;
     const match = /\n {4}socialProviders: \{\n/.exec(out);
-    if (!match)
-      return unchanged(source, "auth.ts has no `socialProviders: {` block for the Apple provider");
+    if (!match) return unchanged(source, "auth.ts has no `socialProviders: {` block");
     const at = match.index + match[0].length;
-    out = `${out.slice(0, at)}${APPLE_PROVIDER_LINE}${out.slice(at)}`;
+    out = `${out.slice(0, at)}${provider.line}${out.slice(at)}`;
   }
 
-  if (!out.includes("appleSignInPlugin(")) {
+  const plugin = addition.plugin;
+  if (plugin && !new RegExp(`\\b${plugin.name}\\(`).test(out)) {
     const bounds = pluginArrayBounds(out);
     if (bounds) {
-      out = insertIntoPluginArray(out, bounds);
+      out = insertPluginByRank(out, bounds, plugin);
     } else {
       const marker = "\n  });";
       const at = out.lastIndexOf(marker);
-      if (at === -1)
+      if (at === -1) {
         return unchanged(source, "could not find the end of the betterAuth({ ... }) call");
-      out = `${out.slice(0, at)}\n\n    // Adds Apple's origin for its form_post callback. Must stay ahead of\n    // bearer() if one is ever added (see auth/apple-sign-in.ts).\n    plugins: [${APPLE_PLUGIN_CALL}],${out.slice(at)}`;
+      }
+      out = `${out.slice(0, at)}\n\n    // Contract order: see plugin-order.ts. bearer(), if it is ever added,\n    // goes after every one of these.\n    plugins: [${plugin.call}],${out.slice(at)}`;
     }
   }
 
   return { source: out, applied: true };
 }
 
+/** The plugin registration, as it is written into the `plugins` array. */
+export const APPLE_PLUGIN_CALL = "appleSignInPlugin(appleConfig)";
+
+export const APPLE_ADDITION: AuthAddition = {
+  label: "Sign in with Apple",
+  imports: [
+    `import { appleProviderOptions, appleSignInConfig, appleSignInPlugin } from "./apple-sign-in.js";`,
+  ],
+  preamble: {
+    marker: "const appleConfig = appleSignInConfig()",
+    text: `  // Sign in with Apple: off unless every APPLE_* variable is set. Read once,
+  // here, so the provider and the plugin below agree. See auth/apple-sign-in.ts.
+  const appleConfig = appleSignInConfig();
+`,
+  },
+  providers: [
+    {
+      marker: "apple: appleProviderOptions(",
+      line: "      ...(appleConfig ? { apple: appleProviderOptions(appleConfig) } : {}),\n",
+    },
+  ],
+  plugin: { name: "appleSignInPlugin", call: APPLE_PLUGIN_CALL },
+};
+
+/** GitHub and Discord, whichever `sign-in-methods.ts` lists. */
+export const SOCIAL_PROVIDERS_ADDITION: AuthAddition = {
+  label: "GitHub and Discord sign-in",
+  imports: [
+    `import { extraSocialProviders } from "./social-providers.js";`,
+    `import { EXTRA_SOCIAL_PROVIDERS } from "./sign-in-methods.js";`,
+  ],
+  providers: [
+    {
+      marker: "extraSocialProviders(",
+      line: "      ...extraSocialProviders(EXTRA_SOCIAL_PROVIDERS),\n",
+    },
+  ],
+};
+
+export const GENERIC_OAUTH_ADDITION: AuthAddition = {
+  label: "Generic OAuth sign-in",
+  imports: [`import { genericOAuthPlugin } from "./generic-oauth.js";`],
+  plugin: { name: "genericOAuthPlugin", call: "genericOAuthPlugin()" },
+};
+
+export const STEAM_ADDITION: AuthAddition = {
+  label: "Steam sign-in",
+  imports: [`import { steamSignInPlugin } from "./steam-sign-in.js";`],
+  plugin: { name: "steamSignInPlugin", call: "steamSignInPlugin()" },
+};
+
+export const GUEST_ACCOUNTS_ADDITION: AuthAddition = {
+  label: "Guest accounts",
+  imports: [`import { guestAccountsPlugin } from "./guest-accounts.js";`],
+  plugin: { name: "guestAccountsPlugin", call: "guestAccountsPlugin()" },
+};
+
+export const USERNAME_ADDITION: AuthAddition = {
+  label: "Username sign-in",
+  imports: [`import { usernamePlugin } from "./username-sign-in.js";`],
+  plugin: { name: "usernamePlugin", call: "usernamePlugin()" },
+};
+
+/** Kept for callers and tests that name Apple directly. */
+export function rewriteServerAuthApple(source: string): RewriteResult {
+  return rewriteServerAuthAddition(source, APPLE_ADDITION);
+}
+
 /**
- * Publish whether Apple is configured, beside the existing booleans the
- * login page reads before anyone is signed in. Wraps rather than edits
- * `resolveAuthConfig(...)`: `account-security.ts` is a file the project
- * owns, and an earlier copy of it has no Apple field to pass.
+ * better-auth's account-linking settings, as the starter ships them. The same
+ * text is in `starter/packages/server/src/auth/auth.ts` and the Postgres
+ * overlay; the test suite checks they agree.
  */
-export function rewriteHealthRouterApple(source: string): RewriteResult {
-  if (source.includes("appleEnabled")) return alreadyDone(source);
-  const match = /\n( +)authConfig: resolveAuthConfig\((\{[\s\S]*?\n\1\})\),/.exec(source);
-  if (!match) {
+export const ACCOUNT_LINKING_BLOCK = `    // Account linking: one person, several ways to sign in.
+    //
+    // - Linking while signed in (\`linkSocial\`; Settings → Sign-in methods
+    //   when the auth-account-security feature is on) always works, even when
+    //   the provider's address differs from the account's
+    //   (allowDifferentEmails): the person is signed in and asked for it.
+    // - Implicit linking — "Continue with Google" for an address that already
+    //   has an account — happens only when BOTH sides verified that address
+    //   (requireLocalEmailVerified). Without it, anybody could register a
+    //   victim's address with a password and inherit their Google sign-in.
+    // - trustedProviders: Google and Apple verify every address they return.
+    //   Never add a provider that can report an unverified address.
+    // - The last way to sign in cannot be unlinked: better-auth refuses it
+    //   while allowUnlinkingAll is false.
+    account: {
+      accountLinking: {
+        enabled: true,
+        trustedProviders: ["google", "apple"],
+        allowDifferentEmails: true,
+        requireLocalEmailVerified: true,
+        allowUnlinkingAll: false,
+      },
+    },`;
+
+/** Index just past the `}` that closes the brace opened at `open`. */
+function closingBrace(source: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}" && --depth === 0) return i + 1;
+  }
+  return -1;
+}
+
+/**
+ * Give an existing project the starter's account-linking settings, after its
+ * `socialProviders` block. A project that already configures `account:` is
+ * left alone: merging into somebody's own linking policy is a decision.
+ */
+export function rewriteServerAuthAccountLinking(source: string): RewriteResult {
+  if (source.includes("accountLinking")) return alreadyDone(source);
+  if (/\n {4}account: \{/.test(source)) {
+    return unchanged(source, "auth.ts already has an `account:` block; add `accountLinking` to it");
+  }
+  const providers = source.indexOf("\n    socialProviders: {");
+  if (providers !== -1) {
+    const end = closingBrace(source, source.indexOf("{", providers));
+    const lineEnd = source.indexOf("\n", end);
+    if (end !== -1 && lineEnd !== -1) {
+      return {
+        source: `${source.slice(0, lineEnd)}\n\n${ACCOUNT_LINKING_BLOCK}${source.slice(lineEnd)}`,
+        applied: true,
+      };
+    }
+  }
+  const marker = "\n  });";
+  const at = source.lastIndexOf(marker);
+  if (at === -1) return unchanged(source, "could not find the end of the betterAuth({ ... }) call");
+  return {
+    source: `${source.slice(0, at)}\n\n${ACCOUNT_LINKING_BLOCK}${source.slice(at)}`,
+    applied: true,
+  };
+}
+
+export interface HealthExtra {
+  key: string;
+  expr: string;
+  importLine: string;
+  comment: string;
+}
+
+/**
+ * Publish more public facts beside the booleans the login page reads before
+ * anyone is signed in. Wraps rather than edits `resolveAuthConfig(...)`:
+ * `account-security.ts` is a file the project owns, and an earlier copy of it
+ * knows nothing of these fields.
+ */
+export function rewriteHealthRouterExtras(
+  source: string,
+  extras: readonly HealthExtra[],
+): RewriteResult {
+  const wanted = extras.filter((extra) => !source.includes(`${extra.key}:`));
+  if (wanted.length === 0) return alreadyDone(source);
+
+  let out = source;
+  const call = /\n( +)authConfig: resolveAuthConfig\((\{[\s\S]*?\n\1\})\),/.exec(out);
+  if (call) {
+    const indent = call[1] ?? "      ";
+    const args = (call[2] ?? "").replace(/\n/g, "\n  ");
+    out = out.replace(
+      call[0],
+      `\n${indent}authConfig: {\n${indent}  ...resolveAuthConfig(${args}),\n${indent}},`,
+    );
+  }
+  const open = /\n( +)authConfig: \{\n/.exec(out);
+  if (!open) {
     return unchanged(
       source,
       "health router has no `authConfig: resolveAuthConfig({ ... })` to extend",
     );
   }
-  const indent = match[1] ?? "      ";
-  const args = (match[2] ?? "").replace(/\n/g, "\n  ");
-  const replacement = `\n${indent}authConfig: {\n${indent}  ...resolveAuthConfig(${args}),\n${indent}  // Whether the Apple button can work. A boolean, like the rest.\n${indent}  appleEnabled: isAppleSignInConfigured(),\n${indent}},`;
-  const withImport = addImports(source, [
-    `import { isAppleSignInConfigured } from "../../auth/apple-sign-in.js";`,
-  ]);
+  const indent = open[1] ?? "      ";
+  const end = closingBrace(out, out.indexOf("{", open.index));
+  if (end === -1) return unchanged(source, "health router's authConfig block is not closed");
+  const closeAt = out.lastIndexOf("\n", end);
+  const lines = wanted
+    .map((extra) => `${indent}  // ${extra.comment}\n${indent}  ${extra.key}: ${extra.expr},`)
+    .join("\n");
+  out = `${out.slice(0, closeAt)}\n${lines}${out.slice(closeAt)}`;
   return {
-    source: withImport.replace(match[0], replacement),
+    source: addImports(
+      out,
+      wanted.map((extra) => extra.importLine),
+    ),
     applied: true,
   };
+}
+
+export const APPLE_HEALTH_EXTRA: HealthExtra = {
+  key: "appleEnabled",
+  expr: "isAppleSignInConfigured()",
+  importLine: `import { isAppleSignInConfigured } from "../../auth/apple-sign-in.js";`,
+  comment: "Whether the Apple button can work. A boolean, like the rest.",
+};
+
+export const SIGN_IN_METHODS_HEALTH_EXTRA: HealthExtra = {
+  key: "signInMethods",
+  expr: "publicSignInMethods()",
+  importLine: `import { publicSignInMethods } from "../../auth/sign-in-methods.js";`,
+  comment: "Which extra sign-in buttons can work: ids and a label, no secrets.",
+};
+
+/** Kept for callers and tests that name Apple directly. */
+export function rewriteHealthRouterApple(source: string): RewriteResult {
+  return rewriteHealthRouterExtras(source, [APPLE_HEALTH_EXTRA]);
 }
 
 /** Mount the avatar route in `app.ts`, after helmet — whose

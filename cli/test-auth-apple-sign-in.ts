@@ -503,7 +503,7 @@ await expect("applying twice changes nothing", async () => {
 await expect("Apple added on a LATER run lands in an already-patched project", async () => {
   const dir = makeProject();
   await apply(dir, ["two-factor", "google-oauth"]);
-  assert.ok(!read(dir, AUTH).includes("apple"), "control: no Apple yet");
+  assert.ok(!read(dir, AUTH).includes("apple-sign-in.js"), "control: no Apple yet");
   await apply(dir, ["two-factor", "google-oauth", "apple-oauth"]);
   const auth = read(dir, AUTH);
   assert.deepEqual(extractRegisteredPlugins(auth), [

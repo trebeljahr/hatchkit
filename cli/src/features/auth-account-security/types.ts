@@ -30,6 +30,21 @@ export type AuthSecurityOption =
    *  re-minted before Apple's six-month limit. Off until every APPLE_*
    *  variable is set. Net-new — not in the reference implementation. */
   | "apple-oauth"
+  /** GitHub sign-in through better-auth's social provider. Env-gated. */
+  | "github-oauth"
+  /** Discord sign-in through better-auth's social provider. Env-gated. */
+  | "discord-oauth"
+  /** One more OAuth 2.0 / OIDC provider through better-auth's
+   *  `genericOAuth` plugin, configured entirely by env. */
+  | "generic-oauth"
+  /** Steam sign-in and linking over OpenID 2.0 — not OAuth, so a plugin of
+   *  hatchkit's own. Switched on by `STEAM_SIGN_IN=true`. */
+  | "steam-openid"
+  /** better-auth `anonymous`: guest accounts that become real accounts on
+   *  sign-up or sign-in and keep their data. */
+  | "guest-accounts"
+  /** better-auth `username`: sign in with a username and password. */
+  | "username-sign-in"
   /** Password-confirmed account deletion with an idempotent cascade. */
   | "account-deletion"
   /** Avatar upload: squared client-side, validated server-side, served
@@ -53,6 +68,12 @@ export const AUTH_SECURITY_OPTIONS: readonly AuthSecurityOption[] = [
   "credentials",
   "google-oauth",
   "apple-oauth",
+  "github-oauth",
+  "discord-oauth",
+  "generic-oauth",
+  "steam-openid",
+  "guest-accounts",
+  "username-sign-in",
   "account-deletion",
   "profile-pictures",
   "email-otp",

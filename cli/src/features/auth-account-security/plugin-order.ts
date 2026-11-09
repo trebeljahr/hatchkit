@@ -35,12 +35,25 @@ export const ORDERED_SERVER_PLUGINS: readonly string[] = [
   "emailOtpPlugin",
   "magicLinkPlugin",
   "passkeyPlugin",
+  // Before-hooks only (validation). Its sign-in endpoint creates the session
+  // in the handler, and twoFactorPlugin above already intercepts it.
+  "usernamePlugin",
+  // Its callback creates the session in the handler; no after-hooks.
+  "genericOAuthPlugin",
+  // A before-hook that only refuses placeholder addresses; sessions are made
+  // in its own endpoints.
+  "steamSignInPlugin",
   // Has no hooks and never touches a session: it only adds Apple's origin
   // to the trusted list for the cross-site `form_post` callback. Placed
   // ahead of bearer() because EVERY plugin is — a name outside this list
   // has no defined position, and "harmless anywhere" is the claim the
   // contract exists not to take on trust.
   "appleSignInPlugin",
+  // better-auth `anonymous`. Its after-hook deletes the GUEST once a real
+  // sign-in succeeded — never the new session — and must run after
+  // twoFactorPlugin, which expires the new session cookie on a challenge so
+  // this hook sees no sign-in yet and leaves the guest alone.
+  "guestAccountsPlugin",
   // Always last. See the file header.
   "bearer",
 ] as const;
@@ -54,6 +67,9 @@ export const ORDERED_CLIENT_PLUGINS: readonly string[] = [
   "emailOTPClient",
   "magicLinkClient",
   "passkeyClient",
+  "usernameClient",
+  "genericOAuthClient",
+  "anonymousClient",
 ] as const;
 
 /** Which option contributes which server plugin. Options that add no
@@ -64,6 +80,10 @@ const SERVER_PLUGIN_BY_OPTION: Partial<Record<AuthSecurityOption, string>> = {
   "magic-link": "magicLinkPlugin",
   passkeys: "passkeyPlugin",
   "apple-oauth": "appleSignInPlugin",
+  "username-sign-in": "usernamePlugin",
+  "generic-oauth": "genericOAuthPlugin",
+  "steam-openid": "steamSignInPlugin",
+  "guest-accounts": "guestAccountsPlugin",
 };
 
 const CLIENT_PLUGIN_BY_OPTION: Partial<Record<AuthSecurityOption, string>> = {
@@ -71,6 +91,9 @@ const CLIENT_PLUGIN_BY_OPTION: Partial<Record<AuthSecurityOption, string>> = {
   "email-otp": "emailOTPClient",
   "magic-link": "magicLinkClient",
   passkeys: "passkeyClient",
+  "username-sign-in": "usernameClient",
+  "generic-oauth": "genericOAuthClient",
+  "guest-accounts": "anonymousClient",
 };
 
 /** Sort an unordered set of plugin names into the mandatory order.

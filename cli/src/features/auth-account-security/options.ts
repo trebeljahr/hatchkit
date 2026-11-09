@@ -69,6 +69,66 @@ export const AUTH_SECURITY_SPECS: Record<AuthSecurityOption, AuthSecurityOptionS
     tokenShellNote:
       "The web flow cannot come back to a shell: Apple returns with a `form_post` to `/api/auth/callback/apple` on the web origin, and a shell origin (`capacitor://localhost`, Electron's `app://-`) can be neither a registered return URL nor a place Apple will send a browser, so the button renders disabled with a note there. The server side of the native path is already done: `/sign-in/social` with `{ provider: \"apple\", idToken: { token, nonce } }` takes the identity token in the request BODY, verifies it against Apple's keys with `APPLE_APP_BUNDLE_ID` as the audience, and creates the session inside the handler, so `bearer` emits `set-auth-token`. What is missing is the shell half: a native Sign in with Apple plugin (e.g. `@capacitor-community/apple-sign-in`) and the Sign in with Apple entitlement in the iOS project. Without `APPLE_APP_BUNDLE_ID` the ID-token path is switched off entirely.",
   },
+  "github-oauth": {
+    id: "github-oauth",
+    label: "GitHub sign-in button",
+    summary:
+      "better-auth's GitHub provider. Hidden until GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are both set.",
+    needsEmail: false,
+    tokenShell: "no",
+    tokenShellNote:
+      "The same reason as Google: the OAuth redirect returns to the web origin that started it, and a shell origin (`capacitor://localhost`, Electron's `app://-`) can be neither a registered callback nor a place GitHub sends a browser. The button renders disabled with a note in a shell.",
+  },
+  "discord-oauth": {
+    id: "discord-oauth",
+    label: "Discord sign-in button",
+    summary:
+      "better-auth's Discord provider. Hidden until DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET are both set.",
+    needsEmail: false,
+    tokenShell: "no",
+    tokenShellNote:
+      "The same reason as Google: the OAuth redirect returns to the web origin that started it, and a shell origin can be neither a registered redirect nor a place Discord sends a browser. The button renders disabled with a note in a shell.",
+  },
+  "generic-oauth": {
+    id: "generic-oauth",
+    label: "Any OAuth 2.0 / OIDC provider",
+    summary:
+      "better-auth's genericOAuth plugin for a provider with no built-in support (Keycloak, Authentik, Okta, …), configured by OAUTH_* variables.",
+    needsEmail: false,
+    tokenShell: "no",
+    tokenShellNote:
+      "An OAuth redirect flow like Google's: `/oauth2/callback/<id>` is reached by a browser on the web origin and sets a cookie there, which a shell can neither be redirected to nor read.",
+  },
+  "steam-openid": {
+    id: "steam-openid",
+    label: "Steam sign-in and linking",
+    summary:
+      "Steam OpenID 2.0, verified with Steam on every return. Signs a Steam player in or links Steam to the signed-in account. Off until STEAM_SIGN_IN=true.",
+    needsEmail: false,
+    tokenShell: "no",
+    tokenShellNote:
+      "`/steam/callback` is reached by a browser coming back from steamcommunity.com and answers with a session cookie and a redirect to the web app. A shell origin is not where Steam returns, and a shell could not hold the cookie if it were. Steam's own desktop SDK (session tickets) is the native route and is not part of this option.",
+  },
+  "guest-accounts": {
+    id: "guest-accounts",
+    label: "Guest accounts that upgrade",
+    summary:
+      "better-auth's anonymous plugin. A guest plays or works without an address; signing up or in later keeps what they made.",
+    needsEmail: false,
+    tokenShell: "yes",
+    tokenShellNote:
+      "`/sign-in/anonymous` takes no input and creates the session inside the handler, so `bearer` emits `set-auth-token`. The upgrade happens on whichever sign-in the guest completes next, so it works in a shell exactly when that sign-in method does (email codes, username, password).",
+  },
+  "username-sign-in": {
+    id: "username-sign-in",
+    label: "Username and password sign-in",
+    summary:
+      "better-auth's username plugin. People sign in with a username instead of their address and set it under Settings → Sign-in methods.",
+    needsEmail: false,
+    tokenShell: "yes",
+    tokenShellNote:
+      "`/sign-in/username` takes `{ username, password }` in the request BODY and creates the session inside the handler, so `bearer` emits `set-auth-token`. An account with two-factor is the exception: two-factor intercepts this path too, and its challenge is a cookie.",
+  },
   "account-deletion": {
     id: "account-deletion",
     label: "Delete account",

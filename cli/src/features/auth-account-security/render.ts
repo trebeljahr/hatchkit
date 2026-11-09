@@ -57,6 +57,15 @@ export type AuthSecurityTokens = {
   DELETION_USER_STEPS?: string;
   DELETION_MODEL_IMPORTS?: string;
   DELETION_MODEL_MAP?: string;
+  /** How `services/guest-upgrade.ts` moves a guest's rows: the import lines
+   *  and the statements, rendered for the project's database (a Mongoose
+   *  model, or a drizzle table in the Postgres overlay). */
+  GUEST_MOVE_IMPORTS?: string;
+  GUEST_MOVE_BODY?: string;
+  /** Sections of the Sign-in methods page that exist only for some
+   *  selections (the username field), with their imports. */
+  ACCOUNTS_IMPORTS?: string;
+  ACCOUNTS_SECTIONS?: string;
 };
 
 const TOKEN_NAMES: Array<keyof AuthSecurityTokens> = [
@@ -72,6 +81,10 @@ const TOKEN_NAMES: Array<keyof AuthSecurityTokens> = [
   "DELETION_USER_STEPS",
   "DELETION_MODEL_IMPORTS",
   "DELETION_MODEL_MAP",
+  "GUEST_MOVE_IMPORTS",
+  "GUEST_MOVE_BODY",
+  "ACCOUNTS_IMPORTS",
+  "ACCOUNTS_SECTIONS",
 ];
 
 /** Substitute `__HATCHKIT_<TOKEN>__` placeholders in `source`. A token
