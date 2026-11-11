@@ -140,6 +140,7 @@ export const env = {
   SES_PROJECT_TENANT: getOptional("SES_PROJECT_TENANT"),
   SES_PROJECT_CONFIGURATION_SET: getOptional("SES_PROJECT_CONFIGURATION_SET"),
   SES_PROJECT_FROM_EMAIL: getOptional("SES_PROJECT_FROM_EMAIL"),
+  SES_PROJECT_FROM_NAME: getOptional("SES_PROJECT_FROM_NAME"),
   EMAIL_TEST_RECIPIENT: getOptional("EMAIL_TEST_RECIPIENT"),
 
   // Email — Listmonk + SES. Listmonk owns the API surface (tx + campaigns

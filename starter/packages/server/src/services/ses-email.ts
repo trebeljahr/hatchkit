@@ -12,6 +12,8 @@ export interface ProjectSesConfig {
   SES_PROJECT_TENANT: string;
   SES_PROJECT_CONFIGURATION_SET: string;
   SES_PROJECT_FROM_EMAIL: string;
+  /** Optional display name, e.g. "Example App". The address stays the IAM boundary. */
+  SES_PROJECT_FROM_NAME?: string;
   EMAIL_TEST_RECIPIENT: string;
   isProduction: boolean;
   isTest: boolean;
@@ -29,6 +31,8 @@ export function projectSesMessage(params: EmailParams, source: ProjectSesConfig)
   if (!identity || identity[1] !== source.SES_PROJECT_REGION || source.SES_PROJECT_FROM_EMAIL.split("@")[1] !== identity[2] || !/^[a-z0-9][a-z0-9._+-]*@[a-z0-9.-]+$/.test(source.SES_PROJECT_FROM_EMAIL)) throw new Error("SES sender identity, From address and region do not agree.");
   if (!/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(params.to) || /[\r\n]/.test(params.subject)) throw new Error("Invalid email recipient or subject.");
   if (!source.isProduction && (!source.EMAIL_TEST_RECIPIENT || params.to.toLowerCase() !== source.EMAIL_TEST_RECIPIENT.toLowerCase())) throw new Error("Non-production email may only target EMAIL_TEST_RECIPIENT.");
+  const fromName = (source.SES_PROJECT_FROM_NAME ?? "").trim();
+  if (fromName && !/^[^"\\<>\r\n@]{1,64}$/.test(fromName)) throw new Error("Invalid SES_PROJECT_FROM_NAME.");
   if (params.replyTo !== undefined && !/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(params.replyTo)) throw new Error("Invalid Reply-To address.");
   const attachments = (params.attachments ?? []).map((a) => {
     // Header values: no line breaks, no path parts in the file name.
@@ -39,7 +43,7 @@ export function projectSesMessage(params: EmailParams, source: ProjectSesConfig)
   });
   if (attachments.length > 10 || attachments.reduce((n, a) => n + a.RawContent.byteLength, 0) > 10 * 1024 * 1024) throw new Error("Too many or too large attachments (10 files, 10 MB).");
   return {
-    FromEmailAddress: source.SES_PROJECT_FROM_EMAIL,
+    FromEmailAddress: fromName ? `"${fromName}" <${source.SES_PROJECT_FROM_EMAIL}>` : source.SES_PROJECT_FROM_EMAIL,
     FromEmailAddressIdentityArn: source.SES_PROJECT_IDENTITY_ARN,
     TenantName: source.SES_PROJECT_TENANT,
     ConfigurationSetName: source.SES_PROJECT_CONFIGURATION_SET,

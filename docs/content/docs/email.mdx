@@ -521,6 +521,8 @@ Bounce and complaint notifications are not routed: that path ends in Listmonk's 
 
 When `hatchkit ses list domains` or the `--dry-run` shows the identity as verified, usually within 30 minutes, prepare and activate the sender as above with `hatchkit ses isolate /path/to/project --activate`. No Listmonk credential exists, so no `--acknowledge-listmonk-gap` is needed.
 
+`SES_PROJECT_FROM_NAME` sets the display name inboxes show, as in `"Example App" <noreply@mail.<project-domain>>`. It is plain config, not a secret; the address stays the boundary the sender policy checks.
+
 The direct transport also sends attachments and a Reply-To address, which the Listmonk path does not: `sendEmail({ to, subject, text, html, replyTo, attachments: [{ filename: "invite.ics", content, contentType: "text/calendar; method=REQUEST" }] })`. File names and content types must not contain line breaks; at most 10 files and 10 MB per message.
 
 ### Limits and verification

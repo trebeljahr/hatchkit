@@ -65,6 +65,16 @@ assert.throws(
   () => projectSesMessage({ ...email, subject: "Hello\r\nFrom: foreign@example.com" }, source),
   /Invalid/,
 );
+assert.equal(message.FromEmailAddress, "noreply@mail.example.com");
+assert.equal(
+  projectSesMessage(email, { ...source, SES_PROJECT_FROM_NAME: "Example App" }).FromEmailAddress,
+  '"Example App" <noreply@mail.example.com>',
+);
+for (const bad of ['A "quoted" name', "a <b>", "x@y", "line\nbreak"])
+  assert.throws(
+    () => projectSesMessage(email, { ...source, SES_PROJECT_FROM_NAME: bad }),
+    /SES_PROJECT_FROM_NAME/,
+  );
 const withFiles = projectSesMessage(
   {
     ...email,
