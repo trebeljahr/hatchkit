@@ -700,7 +700,9 @@ def version_ge(a, b):
 
 def overlay_dockerfile(base_ref, user, packages):
     """Only the named packages move; the image keeps its entrypoint, health check and user."""
-    labels = 'LABEL io.hatchkit.overlay.base="%s" io.hatchkit.overlay.packages="%s"' % (base_ref, ','.join(packages))
+    # original-image lets update-watch keep matching upstream advisories to this container.
+    labels = 'LABEL io.hatchkit.overlay.base="%s" io.hatchkit.overlay.packages="%s" io.hatchkit.security.original-image="%s"' % (
+        base_ref, ','.join(packages), base_ref.split('@', 1)[0])
     return '\n'.join([
         'FROM ' + base_ref,
         labels,

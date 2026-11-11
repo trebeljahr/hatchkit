@@ -300,6 +300,19 @@ running image. The PHP goes to `php` on stdin, never into the container's /tmp,
 where host-integrity would report it. Anything else is refused and listed under
 Needs you.
 
+## Images built on the host
+
+Every image built or retagged on a host (security rebuilds, rollback copies,
+overlays) is named `localhost/<namespace>/<name>:<tag>`. A bare
+`hatchkit-security/x:tag` resolves to a Docker Hub namespace anyone can
+register: a Coolify redeploy, `docker compose pull`, or an `up` after the image
+was removed would fetch whatever that account publishes. The `localhost/`
+registry host can only resolve to a registry on the host itself. Label such an
+image `io.hatchkit.security.original-image=<upstream ref>` so update-watch keeps
+matching the upstream's advisories (an overlay's `io.hatchkit.overlay.base`
+counts too). update-watch reports any running container whose image still uses
+a bare `hatchkit-security/`, `hatchkit-rollback/` or `hatchkit-overlay/` name.
+
 ## Security overlays (Uptime Kuma)
 
 A Debian security fix can sit unshipped for weeks when upstream does not rebuild

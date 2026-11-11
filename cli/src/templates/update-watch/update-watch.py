@@ -90,6 +90,11 @@ CONSTRAINT = re.compile(r'(>=|<=|==|=|>|<)?\s*([vV]?\d[0-9A-Za-z.+-]*)')
 UPGRADE_LOGS = 60
 MAX_MAIL_FINDINGS = 50
 IMAGE_ASSESSMENTS = '/etc/hatchkit-security/image-assessments.json'
+# Images built on the host. They must carry a registry host (`localhost/`): a
+# bare `hatchkit-security/x:tag` is a Docker Hub namespace anyone can register,
+# and any pull of that name (a Coolify redeploy, a missing image) fetches it.
+HUB_RESOLVABLE_LOCAL = ('hatchkit-security/', 'hatchkit-rollback/', 'hatchkit-overlay/')
+DERIVED_PREFIXES = HUB_RESOLVABLE_LOCAL + tuple('localhost/' + p for p in HUB_RESOLVABLE_LOCAL)
 # The file-integrity check accepts a changed review file only with exactly this hash.
 RENEWAL_RECORD = '/var/lib/hatchkit-backups/review-renewal.json'
 
@@ -600,9 +605,16 @@ def list_services(docker, services, skipped=None):
             images[image_id] = {'labels': config.get('Labels') or {}, 'env': config.get('Env') or [],
                                 'digests': digests or []}
     containers = []
-    derived = lambda ref: isinstance(ref, str) and ref.startswith(('hatchkit-security/', 'hatchkit-rollback/', 'sha256:'))
+    derived = lambda ref: isinstance(ref, str) and ref.startswith(DERIVED_PREFIXES + ('sha256:',))
     for name, ref, image_id, original in inventory:
-        baked = images.get(image_id, {}).get('labels', {}).get('io.hatchkit.security.original-image')
+        labels = images.get(image_id, {}).get('labels', {})
+        # A service-patches overlay records its upstream as `<tag>@<digest>`.
+        baked = labels.get('io.hatchkit.security.original-image') or \
+            (labels.get('io.hatchkit.overlay.base') or '').split('@', 1)[0] or None
+        if (ref or '').startswith(HUB_RESOLVABLE_LOCAL):
+            skipped.append('Local image name in ' + name.lstrip('/') + ': ' + ref.split(':', 1)[0] +
+                           ' is a free Docker Hub namespace; a pull would fetch it from there. '
+                           'Retag it as localhost/' + ref + ' and point the compose file at that name')
         candidates = [origin for origin in (original, baked) if origin and not derived(origin)]
         if len(set(candidates)) > 1:
             skipped.append('Upstream advisory coverage in ' + name.lstrip('/') + ': conflicting upstream provenance')
@@ -612,7 +624,7 @@ def list_services(docker, services, skipped=None):
         if repo in by_repo:
             containers.append({'name': name.lstrip('/'), 'ref': ref, 'repo': repo, 'tag': tag,
                                'imageId': image_id, 'service': by_repo[repo]})
-        elif not candidates and (derived(original) or derived(baked) or (ref or '').startswith(('hatchkit-security/', 'hatchkit-rollback/'))):
+        elif not candidates and (derived(original) or derived(baked) or (ref or '').startswith(DERIVED_PREFIXES)):
             skipped.append('Upstream advisory coverage in ' + name.lstrip('/') + ': unresolved derived-image provenance')
     return containers, images
 

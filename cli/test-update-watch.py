@@ -804,7 +804,7 @@ class RuntimeSecurityTests(unittest.TestCase):
             self.assertFalse(uw.vulnerable_node(value),value)
 
     def test_custom_image_keeps_original_advisory_identity(self):
-        fake=FakeDocker([container('kuma','hatchkit-security/kuma:20261023')])
+        fake=FakeDocker([container('kuma','localhost/hatchkit-security/kuma:20261023')])
         def docker(args,**kwargs):
             result=fake(args,**kwargs)
             return result.rstrip()+'\t'+json.dumps('louislam/uptime-kuma:2.5.6')+'\n' if args[0]=='inspect' else result
@@ -813,11 +813,11 @@ class RuntimeSecurityTests(unittest.TestCase):
         self.assertEqual(found[0]['service']['key'],'uptime-kuma')
 
     def test_nested_derived_origin_is_visible_as_lost_coverage(self):
-        row=container('kuma','hatchkit-security/kuma:2')
+        row=container('kuma','localhost/hatchkit-security/kuma:2')
         fake=FakeDocker([row])
         def docker(args,**kwargs):
             result=fake(args,**kwargs)
-            return result.rstrip()+'\t'+json.dumps('hatchkit-security/kuma:1')+'\n' if args[0]=='inspect' else result
+            return result.rstrip()+'\t'+json.dumps('localhost/hatchkit-security/kuma:1')+'\n' if args[0]=='inspect' else result
         skipped=[]
         found,_=uw.list_services(docker,SERVICES,skipped)
         self.assertEqual(found,[])
@@ -825,21 +825,38 @@ class RuntimeSecurityTests(unittest.TestCase):
         self.assertNotIn(SECRET,json.dumps(skipped))
 
     def test_baked_upstream_survives_container_recreation(self):
-        row=container('kuma','hatchkit-security/kuma:2',labels={'io.hatchkit.security.original-image':'louislam/uptime-kuma:2.5.6'})
+        row=container('kuma','localhost/hatchkit-security/kuma:2',labels={'io.hatchkit.security.original-image':'louislam/uptime-kuma:2.5.6'})
         skipped=[]
         found,_=uw.list_services(FakeDocker([row]),SERVICES,skipped)
         self.assertEqual(found[0]['service']['key'],'uptime-kuma')
         self.assertEqual(skipped,[])
 
+    def test_a_service_patches_overlay_keeps_its_upstream_advisories(self):
+        row=container('kuma','localhost/hatchkit-overlay/uptime-kuma:2.5.9-rootless-hk1',
+                      labels={'io.hatchkit.overlay.base':'louislam/uptime-kuma:2.5.9-rootless@sha256:'+'c'*64})
+        skipped=[]
+        found,_=uw.list_services(FakeDocker([row]),SERVICES,skipped)
+        self.assertEqual((found[0]['service']['key'],found[0]['tag']),('uptime-kuma','2.5.9-rootless'))
+        self.assertEqual(skipped,[])
+
+    def test_a_local_image_under_a_free_docker_hub_namespace_is_reported(self):
+        row=container('kuma','hatchkit-security/kuma:2',labels={'io.hatchkit.security.original-image':'louislam/uptime-kuma:2.5.6'})
+        skipped=[]
+        found,_=uw.list_services(FakeDocker([row]),SERVICES,skipped)
+        self.assertEqual(found[0]['service']['key'],'uptime-kuma','coverage itself still resolves')
+        self.assertEqual(len(skipped),1)
+        self.assertIn('free Docker Hub namespace',skipped[0])
+        self.assertIn('localhost/hatchkit-security/kuma:2',skipped[0])
+
     def test_resolved_database_origin_is_not_missing_vendor_coverage(self):
-        row=container('postgres','hatchkit-security/postgres:20261023',labels={'io.hatchkit.security.original-image':'postgres:16-alpine'})
+        row=container('postgres','localhost/hatchkit-security/postgres:20261023',labels={'io.hatchkit.security.original-image':'postgres:16-alpine'})
         skipped=[]
         found,_=uw.list_services(FakeDocker([row]),SERVICES,skipped)
         self.assertEqual(found,[])
         self.assertEqual(skipped,[])
 
     def test_conflicting_origins_fail_coverage_instead_of_choosing_one(self):
-        row=container('kuma','hatchkit-security/kuma:2',labels={'io.hatchkit.security.original-image':'louislam/uptime-kuma:2.5.6'})
+        row=container('kuma','localhost/hatchkit-security/kuma:2',labels={'io.hatchkit.security.original-image':'louislam/uptime-kuma:2.5.6'})
         fake=FakeDocker([row])
         def docker(args,**kwargs):
             result=fake(args,**kwargs)
