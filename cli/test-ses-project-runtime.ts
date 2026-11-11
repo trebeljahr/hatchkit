@@ -65,6 +65,56 @@ assert.throws(
   () => projectSesMessage({ ...email, subject: "Hello\r\nFrom: foreign@example.com" }, source),
   /Invalid/,
 );
+const withFiles = projectSesMessage(
+  {
+    ...email,
+    replyTo: "booker@example.org",
+    attachments: [
+      {
+        filename: "invite.ics",
+        content: "BEGIN:VCALENDAR",
+        contentType: "text/calendar; method=REQUEST",
+      },
+    ],
+  },
+  source,
+);
+assert.deepEqual(withFiles.ReplyToAddresses, ["booker@example.org"]);
+const file = withFiles.Content.Simple.Attachments?.[0];
+assert.equal(file?.FileName, "invite.ics");
+assert.equal(file?.ContentType, "text/calendar; method=REQUEST");
+assert.equal(file?.ContentDisposition, "ATTACHMENT");
+assert.equal(new TextDecoder().decode(file?.RawContent), "BEGIN:VCALENDAR");
+assert.equal(message.Content.Simple.Attachments, undefined);
+assert.equal(message.ReplyToAddresses, undefined);
+for (const bad of [
+  { filename: "a\r\nX-Header: y.ics", contentType: "text/calendar" },
+  { filename: "../a.ics", contentType: "text/calendar" },
+  { filename: "a.ics", contentType: "text/calendar\r\nX: y" },
+])
+  assert.throws(
+    () => projectSesMessage({ ...email, attachments: [{ ...bad, content: "x" }] }, source),
+    /Invalid attachment/,
+  );
+assert.throws(
+  () => projectSesMessage({ ...email, replyTo: "x@example.com\r\nBcc: y@example.com" }, source),
+  /Reply-To/,
+);
+assert.throws(
+  () =>
+    projectSesMessage(
+      {
+        ...email,
+        attachments: Array.from({ length: 11 }, (_, i) => ({
+          filename: `f${i}.txt`,
+          content: "x",
+          contentType: "text/plain",
+        })),
+      },
+      source,
+    ),
+  /Too many/,
+);
 const prod = projectSesMessage(
   { ...email, to: "account-without-newsletter@example.com" },
   { ...source, isProduction: true },

@@ -1,10 +1,27 @@
 import { env } from "../config/env.js";
 
+export interface EmailAttachment {
+  /** File name shown to the recipient, e.g. `invite.ics`. */
+  filename: string;
+  /** File body. A string is sent as UTF-8. */
+  content: string | Uint8Array;
+  /** MIME type, parameters allowed: `text/calendar; method=REQUEST`. */
+  contentType: string;
+  /** `attachment` (default) or `inline`. */
+  disposition?: "attachment" | "inline";
+}
+
 export interface EmailParams {
   to: string;
   subject: string;
   text: string;
   html?: string;
+  /** Where replies go instead of the From address. */
+  replyTo?: string;
+  /** Files sent with the message. Only the direct SES transport
+   *  (`EMAIL_TRANSPORT=ses`) carries them; the Listmonk path refuses
+   *  them rather than drop a file silently. */
+  attachments?: EmailAttachment[];
 }
 
 /**
@@ -40,9 +57,12 @@ export async function sendEmail(params: EmailParams): Promise<void> {
     env.LISTMONK_TX_TEMPLATE_ID &&
     (env.LISTMONK_FROM_EMAIL || env.LISTMONK_FROM);
   if (!ready) {
-    console.log(`[email] Would send to ${params.to}: ${params.subject}`);
+    const files = params.attachments?.length ? ` (+${params.attachments.length} attachment(s))` : "";
+    console.log(`[email] Would send to ${params.to}: ${params.subject}${files}`);
     return;
   }
+  if (params.attachments?.length)
+    throw new Error("Email attachments need EMAIL_TRANSPORT=ses; the Listmonk transport does not send them.");
 
   const baseUrl = env.LISTMONK_URL.replace(/\/$/, "");
   const auth = Buffer.from(

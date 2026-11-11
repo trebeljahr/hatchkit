@@ -410,10 +410,43 @@ export async function repairEscapedTxTemplate(
   return "repaired";
 }
 
-export async function provisionListmonkSesForProject(
-  opts: ListmonkSesProvisionOptions,
-  events: ListmonkSesProvisionEvents = {},
-): Promise<ListmonkSesProvisionResult> {
+/** The options the SES sending-domain steps read. A subset of the
+ *  Listmonk + SES options, so `hatchkit ses domain` can run the same
+ *  steps for a project that sends with direct SES and has no Listmonk. */
+export type SesSendingDomainOptions = Pick<
+  ListmonkSesProvisionOptions,
+  | "projectDomain"
+  | "publishDns"
+  | "cf"
+  | "sesAuth"
+  | "mailFromLabel"
+  | "mailFromBehaviorOnMxFailure"
+  | "configureMailFrom"
+  | "mailFromPollTimeoutMs"
+>;
+
+export type SesSendingDomainEvents = Pick<
+  ListmonkSesProvisionEvents,
+  "onSesDomain" | "onSesDns" | "onSesMailFromConfigured"
+>;
+
+export interface SesSendingDomainResult {
+  sendingDomain: string;
+  fromEmail: string;
+  ses: SesIdentity;
+  dnsPublish: ListmonkSesProvisionResult["dnsPublish"];
+  mailFrom: ListmonkSesProvisionResult["mailFrom"];
+}
+
+/**
+ * Steps 1–3 of Listmonk + SES provisioning, without Listmonk: the SES
+ * identity `mail.<projectDomain>`, its DKIM CNAMEs in Cloudflare, and the
+ * custom MAIL FROM with its MX + SPF rows. Idempotent on re-run.
+ */
+export async function provisionSesSendingDomain(
+  opts: SesSendingDomainOptions,
+  events: SesSendingDomainEvents = {},
+): Promise<SesSendingDomainResult> {
   const sendingDomain = sesSendingSubdomain(opts.projectDomain);
   const fromEmail = `noreply@${sendingDomain}`;
 
@@ -469,6 +502,21 @@ export async function provisionListmonkSesForProject(
     cf: opts.cf,
     events,
   });
+
+  return { sendingDomain, fromEmail, ses: identity, dnsPublish, mailFrom: mailFromResult };
+}
+
+export async function provisionListmonkSesForProject(
+  opts: ListmonkSesProvisionOptions,
+  events: ListmonkSesProvisionEvents = {},
+): Promise<ListmonkSesProvisionResult> {
+  const {
+    sendingDomain,
+    fromEmail,
+    ses: identity,
+    dnsPublish,
+    mailFrom: mailFromResult,
+  } = await provisionSesSendingDomain(opts, events);
 
   // 4. Listmonk lists — live + test. Idempotent by-name: if the user
   //    re-runs and the list already exists, we adopt it instead of
@@ -682,11 +730,11 @@ async function resolveSesRegion(auth: SesAuth | undefined): Promise<string> {
 }
 
 interface ConfigureMailFromStepInput {
-  opts: ListmonkSesProvisionOptions;
+  opts: SesSendingDomainOptions;
   sendingDomain: string;
   region: string;
   cf: import("../utils/cloudflare-api.js").CloudflareApi | undefined;
-  events: ListmonkSesProvisionEvents;
+  events: SesSendingDomainEvents;
 }
 
 /**

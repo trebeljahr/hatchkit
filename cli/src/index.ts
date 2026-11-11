@@ -2414,6 +2414,11 @@ async function handleSesCommand(rest: string[]): Promise<void> {
     await runSesPolicyVerification(rest.slice(1));
     return;
   }
+  if (sub === "domain") {
+    const { runSesDomainCli } = await import("./provision/ses-domain-cli.js");
+    await runSesDomainCli(rest.slice(1));
+    return;
+  }
   if (sub === "isolate") {
     const { runSesSenderCli } = await import("./provision/ses-sender-cli.js");
     await runSesSenderCli(rest.slice(1));
@@ -4577,6 +4582,12 @@ function printSesUsage(): void {
 
     ${chalk.cyan("verify-policy <dir> --account <id> --region <region> [--dry-run | --profile <name>]")}
       Read-only AWS IAM simulation; dry-run needs no credentials. No email or writes.
+
+    ${chalk.cyan("domain [<project-directory>] [--dry-run]")}
+                       The sending domain for a project with direct SES and no
+                       Listmonk: identity mail.<domain>, DKIM CNAMEs and custom
+                       MAIL FROM rows in Cloudflare. Recorded in the run ledger
+                       for destroy. Run isolate --activate once it is verified.
 
     ${chalk.cyan("isolate [<project-directory>] [--dry-run] [--from <mailboxes>]")}
                        Prepare an AWS-restricted project sender and tenant.

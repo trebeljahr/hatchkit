@@ -80,6 +80,7 @@ const EXTRA_SUBCOMMANDS: Record<string, readonly string[]> = {
     "status",
     "operator-plan",
     "verify-policy",
+    "domain",
     "isolate",
     "smtp",
     "webhook-auth",

@@ -152,6 +152,7 @@
     "test:keychain-isolation": "node scripts/test.mjs test-keychain-isolation.ts",
     "test:ses-project-sender": "node scripts/test.mjs test-ses-project-sender.ts",
     "test:ses-project-runtime": "node scripts/test.mjs test-ses-project-runtime.ts",
+    "test:ses-domain": "node scripts/test.mjs test-ses-domain.ts",
     "test:release-flow": "node scripts/test.mjs test-release-flow.ts",
     "check:package": "node scripts/package-smoke.mjs"
   },

@@ -93,6 +93,7 @@
   "test-listmonk-bridge.ts",
   "test-ses-project-sender.ts",
   "test-ses-project-runtime.ts",
+  "test-ses-domain.ts",
   "test-ses-smtp.ts",
   "test-ses-mail-from.ts",
   "test-cloudflare-dns-publish.ts",
