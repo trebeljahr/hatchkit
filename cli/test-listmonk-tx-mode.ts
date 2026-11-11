@@ -228,10 +228,11 @@ await expect("the newsletter sender is never touched", () => {
   const dir = makeProject({ [EMAIL_SERVICE_REL_PATH]: PRE_FIX_EMAIL_TS });
   copyFromStarter(dir, NEWSLETTER_REL_PATH);
   const newsletter = readFileSync(join(STARTER, NEWSLETTER_REL_PATH), "utf-8");
-  // It posts to /api/tx with a subscriber_email and no mode, so the
-  // transform alone would patch it. The retrofit must not reach it.
+  // It posts to /api/tx with a subscriber_email and no `subscriber_mode:`
+  // property line (it picks the mode per send), so the transform alone
+  // would patch it. The retrofit must not reach it.
   assert.match(newsletter, /\/api\/tx/);
-  assert.doesNotMatch(newsletter, /subscriber_mode/);
+  assert.doesNotMatch(newsletter, /^\s*subscriber_mode\s*:/m);
   const ledger = new FeatureLedger(dir, false);
   retrofitListmonkTxMode(ledger);
   assert.equal(readFileSync(join(dir, NEWSLETTER_REL_PATH), "utf-8"), newsletter);

@@ -10,9 +10,12 @@
  *   cron (daily)                    delete subscribers that never confirmed (30 days)
  *
  * Membership order matters (see "Double opt-in" in hatchkit's email docs):
- * the address exists as a Listmonk subscriber on NO list until the link
- * is clicked, then it joins the list as `confirmed`. Adding it earlier
- * would make Listmonk send its own shared-sender opt-in mail as well.
+ * the form post writes nothing to Listmonk. A new address has no record
+ * until the link is clicked; then it is created on the list as
+ * `confirmed`. Its confirmation mail goes out in tx `external` mode,
+ * which needs no record. A membership before the click would make
+ * Listmonk send its own shared-sender opt-in mail as well, and a record
+ * on no list could never be confirmed (see `signupState`).
  *
  * Tokens are stateless: `<base64url payload>.<base64url HMAC-SHA256>`,
  * keyed by NEWSLETTER_TOKEN_SECRET. Confirm payload `{ e, x, m? }`
@@ -164,7 +167,13 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
   }
 
   try {
-    if (await isConfirmedOnList(env, email)) {
+    const state = await signupState(env, email);
+    // A disabled or blocklisted address gets no mail; same page as a send.
+    if (state === "suppressed") {
+      log("info", "subscribe", "suppressed");
+      return redirect(env, "/sub/check-email");
+    }
+    if (state === "confirmed") {
       log("info", "subscribe", "already_subscribed");
       // A confirmed member who asks for a download gets it at once; the
       // address is proven. Same page either way, so nothing is revealed.
@@ -183,11 +192,13 @@ async function handleSubscribe(request: Request, env: Env): Promise<Response> {
     }
     const token = await mintConfirmToken(env.NEWSLETTER_TOKEN_SECRET, email, { magnet: magnet?.key });
     const confirmUrl = `${trimSlash(env.API_URL)}${CONFIRM_PATH}?token=${encodeURIComponent(token)}`;
-    await ensureSubscriber(env, email);
+    // Nothing is written to Listmonk here: a new address gets its record
+    // only when the link is clicked, so its mail goes out in `external` mode.
     await sendTransactional(env, {
       to: email,
       subject: `Confirm your subscription · ${env.SITE_NAME}`,
       html: renderConfirmationHtml({ confirmUrl, siteName: env.SITE_NAME }),
+      external: state === "new",
     });
   } catch (err) {
     log("error", "subscribe", "send_confirmation_failed", { message: (err as Error).message });
@@ -511,7 +522,7 @@ export function normalizeEmail(raw: unknown): string | null {
 type ListmonkSubscriber = {
   id: number;
   email: string;
-  status?: "enabled" | "disabled" | "blocklisted";
+  status: "enabled" | "disabled" | "blocklisted";
   created_at?: string;
   lists?: { id: number; subscription_status: "unconfirmed" | "confirmed" | "unsubscribed" }[];
 };
@@ -552,12 +563,6 @@ async function findSubscriber(env: Env, email: string): Promise<ListmonkSubscrib
   return res.data.results.find((s) => s.email.toLowerCase() === email) ?? null;
 }
 
-async function isConfirmedOnList(env: Env, email: string): Promise<boolean> {
-  const id = listId(env);
-  const sub = await findSubscriber(env, email);
-  return sub?.lists?.find((l) => l.id === id)?.subscription_status === "confirmed";
-}
-
 /** Writes no attribs. Never update an existing subscriber with
  *  `PUT /api/subscribers/:id`: it deletes every membership missing from
  *  its `lists`, i.e. every other project's. */
@@ -577,21 +582,47 @@ async function createSubscriber(env: Env, email: string, listIds: number[]): Pro
   });
 }
 
-/** Make sure the address exists as a subscriber, on no list. An existing
- *  subscriber stays untouched: it may be on other projects' lists, or
- *  unsubscribed from ours, and a repeat form post must not change that. */
-async function ensureSubscriber(env: Env, email: string): Promise<void> {
-  if (!(await findSubscriber(env, email))) await createSubscriber(env, email, []);
+/**
+ * Where the address stands before the confirmation mail goes out:
+ *
+ *   - `new`: Listmonk has no record of it;
+ *   - `confirmed`: a confirmed member of the list;
+ *   - `suppressed`: disabled or blocklisted, so send nothing;
+ *   - `known`: a record exists but is not a confirmed member here
+ *     (unsubscribed from this list, on another project's lists, or left
+ *     on no list by the signup flow before November 2026).
+ *
+ * Signup writes nothing. Listmonk lets a project's API user change only
+ * subscribers already on one of its lists (`hasSubPerm` in
+ * cmd/subscribers.go), so a record created on no list could never be
+ * confirmed: the click's `PUT /api/subscribers/lists` answered 403
+ * "Permission denied: subscriber" for every new address (2026-11-11).
+ * `confirmSubscription` creates a new address on the list instead, which
+ * list permission allows.
+ */
+async function signupState(env: Env, email: string): Promise<"new" | "known" | "confirmed" | "suppressed"> {
+  const existing = await findSubscriber(env, email);
+  if (!existing) return "new";
+  if (existing.status !== "enabled") return "suppressed";
+  const entry = existing.lists?.find((l) => l.id === listId(env));
+  return entry?.subscription_status === "confirmed" ? "confirmed" : "known";
 }
 
-/** Add the address to the list as `confirmed`. Idempotent. A subscriber
- *  deleted since the token was issued is created again on the list. */
+/** Add the address to the list as `confirmed`, creating its record on the
+ *  list when it has none (every new address). Idempotent. A disabled or
+ *  blocklisted subscriber is refused. A record none of this project's
+ *  lists hold (left on no list before November 2026, or only on another
+ *  project's lists) cannot be changed by the project's API user: Listmonk
+ *  answers 403. */
 async function confirmSubscription(env: Env, email: string): Promise<{ alreadyConfirmed: boolean }> {
   const id = listId(env);
   const existing = await findSubscriber(env, email);
   if (!existing) {
     await createSubscriber(env, email, [id]);
     return { alreadyConfirmed: false };
+  }
+  if (existing.status !== "enabled") {
+    throw new Error("Subscriber is suppressed; subscription cannot be confirmed.");
   }
   const alreadyConfirmed = existing.lists?.find((l) => l.id === id)?.subscription_status === "confirmed";
   await listmonkFetch(env, "/api/subscribers/lists", {
@@ -603,12 +634,18 @@ async function confirmSubscription(env: Env, email: string): Promise<{ alreadyCo
 
 /** Send through Listmonk's passthrough tx template, which renders
  *  `{{ .Tx.Data.subject }}` and `{{ .Tx.Data.body | Safe }}`. `from_email`
- *  is what keeps this off Listmonk's shared default sender. */
-async function sendTransactional(env: Env, params: { to: string; subject: string; html: string }): Promise<void> {
+ *  is what keeps this off Listmonk's shared default sender. `external`
+ *  (Listmonk v5+ `subscriber_mode`) sends to an address with no record,
+ *  which is every new address's confirmation mail. */
+async function sendTransactional(
+  env: Env,
+  params: { to: string; subject: string; html: string; external?: boolean },
+): Promise<void> {
   await listmonkFetch(env, "/api/tx", {
     method: "POST",
     body: JSON.stringify({
       subscriber_email: params.to,
+      ...(params.external ? { subscriber_mode: "external" } : {}),
       template_id: Number(env.LISTMONK_TX_TEMPLATE_ID),
       from_email: env.LISTMONK_FROM,
       data: { subject: params.subject, body: params.html },
@@ -621,8 +658,9 @@ async function sendTransactional(env: Env, params: { to: string; subject: string
 // ─────────────────────────────────────────────────────────────────────
 // Cleanup of never-confirmed subscribers (same rule as the starter's prune.ts)
 //
-// Deleted only when all hold: on no list (the form creates the
-// subscriber there; only the confirm click adds one), status `enabled`
+// Deleted only when all hold: on no list (the form created the
+// subscriber there before November 2026; it now creates none before the
+// confirm click, which creates it on the list), status `enabled`
 // (a blocklisted or disabled one must stay to keep its block), and
 // Listmonk created it more than 30 days ago. Nothing on a subscriber
 // says which form made it, so this covers the whole shared instance;

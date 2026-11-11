@@ -21,7 +21,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ensureSubscriber, sendTransactional } from "../packages/server/src/services/newsletter/listmonk.js";
+import { findSubscriber, sendTransactional } from "../packages/server/src/services/newsletter/listmonk.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WELCOME_HTML_PATH = path.resolve(here, "..", "emails", "welcome.html");
@@ -44,13 +44,17 @@ async function main(): Promise<void> {
   console.info(`[newsletter:welcome] to:        ${to}`);
   console.info(`[newsletter:welcome] template:  emails/welcome.html (${raw.length} bytes)`);
   console.info(`[newsletter:welcome] site:      ${siteName} · ${siteUrl}`);
-  console.info(`[newsletter:welcome] making sure the subscriber exists…`);
-  await ensureSubscriber(to);
+  // An address with no Listmonk record gets the mail in tx `external`
+  // mode. Creating a record on no list instead would leave one the
+  // project's API user can never change (see `signupState`).
+  const external = !(await findSubscriber(to));
+  if (external) console.info(`[newsletter:welcome] no subscriber record: sending in external mode`);
   console.info(`[newsletter:welcome] sending /api/tx…`);
   await sendTransactional({
     to,
     subject: `Welcome to ${siteName}`,
     html,
+    external,
   });
   console.info(`[newsletter:welcome] queued — check ${to} (SES rejections show in Listmonk's log).`);
 }

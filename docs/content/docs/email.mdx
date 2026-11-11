@@ -162,7 +162,9 @@ One Listmonk serves every project. If every project held the same token, a leak 
 | List role `<project>` | `list:get` + `list:manage` on the `<project>` and `<project>-test` lists |
 | API user `<project>` | both roles |
 
-The role needs `subscribers:get_all`, not `subscribers:get`. The signup form creates each subscriber on no list until the confirm click (see [Double opt-in](#double-opt-in)). With `subscribers:get` alone, Listmonk limits subscriber queries to the user's own lists. The confirm step then cannot find the address, and creating it again fails with a 409. The cost: the token can read every subscriber on the instance. Listmonk also cannot limit a user to its own templates or senders.
+The role needs `subscribers:get_all`, not `subscribers:get`. An address can already exist on the shared instance outside the project's lists, for example on another project's list. With `subscribers:get` alone, Listmonk limits subscriber queries to the user's own lists. The confirm step then cannot find the address, and creating it again fails with a 409. The cost: the token can read every subscriber on the instance. Listmonk also cannot limit a user to its own templates or senders.
+
+Reading every subscriber is not changing every subscriber. Without a blanket `lists:manage_all`, `subscribers:manage` lets the project's user change or delete only a subscriber that is already on one of the project's lists. For any other subscriber, Listmonk answers 403 `Permission denied: subscriber: <id>`. That is why the signup form writes nothing to Listmonk, and the confirm click creates the subscriber on the list (see [Double opt-in](#double-opt-in)). An address that exists only outside the project's lists cannot be confirmed with the project's token.
 
 The project token cannot read or change Listmonk's settings: `GET /api/settings` answers 403.
 
@@ -223,8 +225,10 @@ Without `--transactional-only`, the existing newsletter permissions and list req
 
 The starter's signup form runs its own double opt-in: it emails an HMAC-signed confirmation link through Listmonk's `/api/tx`. Listmonk list membership follows this order:
 
-1. **Form submit.** The server makes sure the address exists as a Listmonk subscriber, on **no** list. `/api/tx` needs only that. An address Listmonk already knows is left as it is: it may be on another project's list, or `unsubscribed` from this one.
-2. **Confirm click.** The server adds the list with `PUT /api/subscribers/lists`, `action: "add"`, `status: "confirmed"`. A subscriber deleted in the meantime is created again with `preconfirm_subscriptions: true`.
+1. **Form submit.** The server looks the address up and writes nothing to Listmonk. A new address gets the confirmation email with `subscriber_mode: "external"`, which needs no subscriber. An address Listmonk already knows is left as it is: it may be on another project's list, or `unsubscribed` from this one. A disabled or blocklisted address gets no email, and the form answers as if one went out.
+2. **Confirm click.** A new address is created on the list with `POST /api/subscribers` and `preconfirm_subscriptions: true`. An address Listmonk already knows gets the list with `PUT /api/subscribers/lists`, `action: "add"`, `status: "confirmed"`. A disabled or blocklisted subscriber is refused.
+
+Until 2026-11-11 the form created a new address as a subscriber on no list. The project's own API user may not change a subscriber that holds none of its lists, so every confirm click failed with a 403 (see [One API user per project](#one-api-user-per-project)). Such a leftover subscriber cannot be confirmed with the project's token. Delete it as an admin, and the person can sign up again.
 
 The lists are `optin: double`, so a campaign reaches `confirmed` members only. Two Listmonk behaviours make the order matter:
 
@@ -325,7 +329,7 @@ The scaffold gives a static project no newsletter, because it has no server to r
 
 The starter deletes a subscriber that never confirmed 30 days after Listmonk created it. It deletes a subscriber only when all of these are true:
 
-- It is on no list. The signup form creates the subscriber on no list, and only the confirm click adds one. Account emails use `subscriber_mode: "external"` and create no subscriber. A subscriber who unsubscribed keeps an `unsubscribed` membership, so it is not on "no list".
+- It is on no list. Until 2026-11-11 the signup form created each new subscriber on no list. It now creates none before the confirm click, which creates it on the list. Account emails use `subscriber_mode: "external"` and create no subscriber. A subscriber who unsubscribed keeps an `unsubscribed` membership, so it is not on "no list".
 - Its status is `enabled`. A blocklisted or disabled subscriber stays, because deleting it removes the block.
 - Listmonk created it more than 30 days ago. Sending the form again does not restart this clock.
 

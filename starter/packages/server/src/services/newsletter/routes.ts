@@ -3,7 +3,7 @@
  * from `app.ts`. Strip the call (and this file) to disable.
  *
  *   POST /api/newsletter/subscribe   — rate-limited; mints confirm token + emails it
- *   GET  /api/newsletter/confirm     — verifies token + adds the address to the list
+ *   GET  /api/newsletter/confirm     — verifies token + puts the address on the list
  *   GET  /api/newsletter/download    — verifies a lead-magnet token + redirects to the file
  *
  * Registering the routes also schedules the daily cleanup of
@@ -16,16 +16,17 @@
 
 import type { Express, Request, Response } from "express";
 import { createNewsletterClientIp } from "./client-ip.js";
+import type { SignupState } from "./listmonk.js";
 import { getMagnet, type Magnet, magnetDownloadUrl, sendMagnetEmail } from "./magnets.js";
 import { scheduleUnconfirmedCleanup } from "./prune.js";
 import {
   checkDeliveryCooldown,
   checkRateLimit,
   confirmSubscription,
-  isAlreadySubscribed,
   mintConfirmToken,
   normalizeEmail,
   sendConfirmationEmail,
+  signupState,
   verifyConfirmToken,
   verifyDownloadToken,
 } from "./subscribe.js";
@@ -130,13 +131,33 @@ export function registerNewsletterRoutes(app: Express): void {
       }
     }
 
+    let state: SignupState;
+    try {
+      state = await signupState(email);
+    } catch (err) {
+      log("error", "subscribe", "lookup_failed", { ip, message: (err as Error).message });
+      res.status(502).json({
+        error: "send_failed",
+        message: "Could not send confirmation email. Please try again.",
+      });
+      return;
+    }
+
+    // A disabled or blocklisted address gets no mail. The form answers
+    // as if a confirmation went out.
+    if (state === "suppressed") {
+      log("info", "subscribe", "suppressed", { ip });
+      res.json({ ok: true });
+      return;
+    }
+
     // Short-circuit confirmed members — no point sending another
     // confirmation email or re-issuing a token that does nothing. The
     // form uses `alreadySubscribed` to swap the success message. A
     // confirmed member who asks for a download gets it straight away:
     // the address is already proven, and the form stays the way to get
     // a fresh link once an old one expires.
-    if (await isAlreadySubscribed(email)) {
+    if (state === "confirmed") {
       log("info", "subscribe", "already_subscribed", { ip });
       if (magnet) {
         // Sent within the last 15 minutes: say so, send nothing new.
@@ -173,7 +194,12 @@ export function registerNewsletterRoutes(app: Express): void {
     const confirmUrl = `${api}/api/newsletter/confirm?token=${encodeURIComponent(token)}`;
 
     try {
-      await sendConfirmationEmail({ to: email, confirmUrl, siteName: siteName() });
+      await sendConfirmationEmail({
+        to: email,
+        confirmUrl,
+        siteName: siteName(),
+        newAddress: state === "new",
+      });
     } catch (err) {
       log("error", "subscribe", "send_confirmation_failed", {
         ip,

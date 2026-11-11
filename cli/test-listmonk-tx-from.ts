@@ -11,8 +11,9 @@
  *     retrofit and the transform leaves it alone.
  *  2. **The pre-fix shape is patched**, and the patched file is imported and
  *     run against a stubbed `fetch`: the body Listmonk would receive is what
- *     is asserted, not the text of the file. `subscriber_mode` never lands
- *     in it — the newsletter creates its subscriber first.
+ *     is asserted, not the text of the file. The retrofit adds no
+ *     `subscriber_mode`: the newsletter picks it per send (`external`
+ *     only for a new address's confirmation).
  *  3. **Idempotence.** `update` runs this on every invocation. A second pass
  *     must report nothing written.
  *  4. **Scope.** Only `/api/tx` bodies count. The campaign body in the same
@@ -147,7 +148,8 @@ await expect("from_email lands right after subscriber_email, same indent", () =>
   assert.ok(lines[recipient + 1]?.startsWith("      // "), "the why-comment follows the recipient");
   assert.equal(lines[recipient + 3], `      ${TX_FROM_PROPERTY}`);
   assert.equal(lines.length, PRE_FIX_NEWSLETTER.split("\n").length + 3);
-  assert.doesNotMatch(result.source, /subscriber_mode/);
+  const modes = (source: string) => source.match(/subscriber_mode/g)?.length ?? 0;
+  assert.equal(modes(result.source), modes(PRE_FIX_NEWSLETTER), "the retrofit adds no subscriber_mode");
 });
 
 await expect("the patched sender puts LISTMONK_FROM on the wire, in default mode", async () => {

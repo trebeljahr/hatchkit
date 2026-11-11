@@ -2,9 +2,9 @@
 /**
  * Single-shot transactional smoke test for the Listmonk + SES wiring.
  * Sends one /api/tx email through the project's transactional template
- * to LISTMONK_TEST_RECIPIENT (or the address passed positionally),
- * making sure the subscriber exists first so /api/tx accepts the send.
- * It adds no list membership.
+ * to LISTMONK_TEST_RECIPIENT (or the address passed positionally). An
+ * address with no subscriber record gets it in tx `external` mode. It
+ * writes nothing to Listmonk.
  *
  * Usage:
  *
@@ -18,7 +18,7 @@
  * to confirm the SES identity, SMTP relay, and tx template all work
  * end-to-end before wiring real product flows.
  */
-import { ensureSubscriber, sendTransactional } from "../packages/server/src/services/newsletter/listmonk.js";
+import { findSubscriber, sendTransactional } from "../packages/server/src/services/newsletter/listmonk.js";
 
 function getFlag(name: string): string | undefined {
   const idx = process.argv.indexOf(`--${name}`);
@@ -60,10 +60,13 @@ async function main(): Promise<void> {
   console.info(`[newsletter:test-tx] to:        ${to}`);
   console.info(`[newsletter:test-tx] subject:   ${subject}`);
   console.info(`[newsletter:test-tx] template:  LISTMONK_TX_TEMPLATE_ID=${process.env.LISTMONK_TX_TEMPLATE_ID ?? "(unset)"}`);
-  console.info(`[newsletter:test-tx] making sure the subscriber exists…`);
-  await ensureSubscriber(to);
+  // An address with no Listmonk record gets the mail in tx `external`
+  // mode. Creating a record on no list instead would leave one the
+  // project's API user can never change (see `signupState`).
+  const external = !(await findSubscriber(to));
+  if (external) console.info(`[newsletter:test-tx] no subscriber record: sending in external mode`);
   console.info(`[newsletter:test-tx] sending /api/tx…`);
-  await sendTransactional({ to, subject, html });
+  await sendTransactional({ to, subject, html, external });
   console.info(
     `[newsletter:test-tx] queued — check ${to}. /api/tx returns before SMTP runs, so an SES rejection\n` +
       "                    (e.g. sandbox: `Email address is not verified`) shows only in Listmonk's log\n" +

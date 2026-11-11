@@ -11,12 +11,33 @@
  *     live and test lists, and on no other list;
  *   · API user `<project>` holding both roles.
  *
- * Why `subscribers:get_all` and not `subscribers:get`: the starter's
- * newsletter creates a subscriber on NO list until the confirm click.
- * With only `subscribers:get`, Listmonk (v6.0.0 `filterListQueryByPerm`,
- * cmd/subscribers.go) limits subscriber queries to the user's lists, so
- * the confirm step cannot find the address, creates it again and gets a
- * 409. The cost: the token can read every subscriber on the instance.
+ * Why `subscribers:get_all` and not `subscribers:get`: an address may
+ * already exist on the shared instance outside this project's lists (on
+ * another project's list, or left on no list by the newsletter flow
+ * before November 2026). With only `subscribers:get`, Listmonk (v6.0.0
+ * `filterListQueryByPerm`, cmd/subscribers.go) limits subscriber queries
+ * to the user's lists, so the confirm step cannot find the address,
+ * creates it again and gets a 409. The cleanup of never-confirmed
+ * subscribers lists the whole instance for the same reason. The cost:
+ * the token can read every subscriber on the instance.
+ *
+ * Reading is not changing. `subscribers:manage` passes Listmonk's
+ * `hasSubPerm` (cmd/subscribers.go) only for subscribers that already
+ * hold one of the user's lists, unless the role has a blanket
+ * `lists:manage_all`, which a project user must not get. Every
+ * `PUT /api/subscribers/lists`, `PATCH`/`PUT /api/subscribers/:id`,
+ * blocklist and `DELETE` call runs that check, and refuses a subscriber
+ * on none of the project's lists with 403 "Permission denied:
+ * subscriber: <id>" (`has-subscriber-list` is false for a subscriber on
+ * no list). That includes the never-confirmed cleanup's `DELETE`
+ * (starter prune.ts, the newsletter Worker's cron), whose subscribers are
+ * on no list by definition. `POST /api/subscribers` checks only the lists
+ * it names. So the starter's newsletter writes nothing at signup (the
+ * confirmation goes out in tx `external` mode) and the confirm click
+ * creates the subscriber on the list. Until 2026-11-11 the signup created
+ * a subscriber on no list, and every confirm click answered 403. An
+ * address that exists only outside the project's lists still cannot be
+ * confirmed by the project's user; only an admin can change it.
  *
  * Listmonk returns an API user's token once, in the `POST /api/users`
  * response, and has no endpoint that regenerates it. `PUT /api/users/:id`

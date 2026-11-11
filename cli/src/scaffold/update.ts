@@ -440,8 +440,8 @@ export async function runUpdate(
   // Listmonk used its global app.from_email — on a shared instance another
   // project's sender — for every double-opt-in confirmation. Delivery
   // still succeeds, so nothing flags it. No flag, same rationale as above.
-  // Never adds `subscriber_mode`: the newsletter creates its subscriber
-  // first, so the default mode is right there.
+  // Never adds `subscriber_mode`: the newsletter picks it per send
+  // (`external` only for a new address's confirmation).
   const txFrom = retrofitListmonkTxFrom(new FeatureLedger(projectDir, dryRun));
   if (txFrom.action === "written" || txFrom.action === "would-write") {
     console.log(

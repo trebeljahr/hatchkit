@@ -1,7 +1,11 @@
 /**
  * Newsletter double opt-in against a stubbed Listmonk.
  *
- * The subscribe form must not touch list membership. On a single-opt-in
+ * The subscribe form must write nothing to Listmonk. A new address has no
+ * record until the confirm click creates it on the list: the project's API
+ * user may change only subscribers already on one of its lists
+ * (`hasSubPerm`), so a record on no list could never be confirmed. The
+ * fake answers that the same way, 403. On a single-opt-in
  * list Listmonk sends campaigns to every member not `unsubscribed`,
  * `unconfirmed` included, so an early membership mails an address that
  * never confirmed. On a double-opt-in list, an `unconfirmed` membership
@@ -57,7 +61,7 @@ type FakeSubscriber = {
   uuid: string;
   email: string;
   name: string;
-  status: "enabled" | "blocklisted";
+  status: "enabled" | "disabled" | "blocklisted";
   lists: Membership[];
   attribs?: Record<string, unknown>;
   created_at?: string;
@@ -65,6 +69,10 @@ type FakeSubscriber = {
 type Write = { call: string; body: any };
 
 const realFetch = globalThis.fetch;
+
+/** The lists the project's API user holds: the list `resolveListId` reads
+ *  and the test list one production test names. */
+const PROJECT_LISTS = [LIST_ID, 99];
 
 /** In-memory Listmonk: just the endpoints the newsletter code uses.
  *  `failTx` makes `/api/tx` answer 500 for the sends it matches;
@@ -127,7 +135,16 @@ function fakeListmonk(
         return json(true);
       }
       case "PUT /api/subscribers/lists": {
-        for (const sub of subscribers.filter((s) => body.ids.includes(s.id))) {
+        // Listmonk's `hasSubPerm`: without a blanket list permission, the
+        // API user may change only subscribers on one of its own lists.
+        const targets = subscribers.filter((s) => body.ids.includes(s.id));
+        const denied = targets.find((s) => !s.lists.some((l) => PROJECT_LISTS.includes(l.id)));
+        if (denied) {
+          return new Response(JSON.stringify({ message: `Permission denied: subscriber: ${denied.id}` }), {
+            status: 403,
+          });
+        }
+        for (const sub of targets) {
           for (const listId of body.target_list_ids as number[]) {
             sub.lists = sub.lists.filter((l) => l.id !== listId);
             sub.lists.push({ id: listId, subscription_status: body.status });
@@ -137,6 +154,11 @@ function fakeListmonk(
       }
       case "POST /api/tx":
         if (opts.failTx?.(body)) return new Response("smtp messenger down", { status: 500 });
+        // Default mode looks the recipient up; only `external` sends to
+        // an address with no record.
+        if (body.subscriber_mode !== "external" && !subscribers.some((s) => s.email === body.subscriber_email)) {
+          return new Response(JSON.stringify({ message: "subscriber not found" }), { status: 400 });
+        }
         return json(true);
       default:
         return new Response("not found", { status: 404 });
@@ -201,15 +223,15 @@ function existing(email: string, lists: Membership[]): FakeSubscriber {
 }
 
 describe("POST /api/newsletter/subscribe", () => {
-  test("creates a new address on no list, then sends the confirmation", async () => {
+  test("writes nothing for a new address and sends the confirmation in external mode", async () => {
     const lm = fakeListmonk();
 
     const res = await subscribe("new@example.com");
 
     assert.equal(res.status, 200);
-    assert.deepEqual(lm.calls(), ["POST /api/subscribers", "POST /api/tx"]);
-    assert.deepEqual(lm.writes[0]!.body.lists, []);
-    assert.equal(lm.membership("new@example.com"), undefined);
+    assert.deepEqual(lm.calls(), ["POST /api/tx"]);
+    assert.equal(lm.txs()[0].subscriber_mode, "external");
+    assert.equal(lm.subscribers.length, 0);
   });
 
   test("leaves a known address off the list, even one that unsubscribed", async () => {
@@ -221,7 +243,23 @@ describe("POST /api/newsletter/subscribe", () => {
 
     assert.equal(res.status, 200);
     assert.deepEqual(lm.calls(), ["POST /api/tx"]);
+    // A known record: default mode.
+    assert.equal(lm.txs()[0].subscriber_mode, undefined);
     assert.equal(lm.membership("old@example.com"), "unsubscribed");
+  });
+
+  test("sends nothing to a disabled or blocklisted address, and answers like a send", async () => {
+    const lm = fakeListmonk([
+      { ...existing("off@example.com", []), status: "disabled" },
+      { ...existing("block@example.com", []), id: 43, status: "blocklisted" },
+    ]);
+
+    for (const email of ["off@example.com", "block@example.com"]) {
+      const res = await subscribe(email);
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { ok: true });
+    }
+    assert.deepEqual(lm.calls(), []);
   });
 
   test("sends nothing to an address that is already confirmed", async () => {
@@ -245,8 +283,8 @@ describe("POST /api/newsletter/subscribe", () => {
     // `app.from_email`, another project's sender on a shared instance.
     assert.equal(tx?.body.from_email, FROM);
     assert.equal(tx?.body.subscriber_email, "new@example.com");
-    // Default mode: the recipient is a subscriber by now (ensureSubscriber).
-    assert.equal(tx?.body.subscriber_mode, undefined);
+    // A new address has no record yet: external mode.
+    assert.equal(tx?.body.subscriber_mode, "external");
   });
 
   test("falls back to LISTMONK_FROM_EMAIL when LISTMONK_FROM is unset", async () => {
@@ -263,7 +301,9 @@ describe("POST /api/newsletter/subscribe", () => {
 
 describe("GET /api/newsletter/confirm", () => {
   test("adds an existing subscriber to the list as confirmed", async () => {
-    const lm = fakeListmonk([existing("reader@example.com", [])]);
+    const lm = fakeListmonk([
+      existing("reader@example.com", [{ id: LIST_ID, subscription_status: "unsubscribed" }]),
+    ]);
 
     const res = await confirm("reader@example.com");
 
@@ -279,7 +319,7 @@ describe("GET /api/newsletter/confirm", () => {
     assert.equal(lm.membership("reader@example.com"), "confirmed");
   });
 
-  test("recreates a subscriber that went missing, preconfirmed on the list", async () => {
+  test("creates a new address on the list, preconfirmed", async () => {
     const lm = fakeListmonk();
 
     const res = await confirm("gone@example.com");
@@ -289,6 +329,29 @@ describe("GET /api/newsletter/confirm", () => {
     assert.deepEqual(lm.writes[0]!.body.lists, [LIST_ID]);
     assert.equal(lm.writes[0]!.body.preconfirm_subscriptions, true);
     assert.equal(lm.membership("gone@example.com"), "confirmed");
+  });
+
+  test("refuses a disabled or blocklisted subscriber", async () => {
+    const lm = fakeListmonk([
+      { ...existing("block@example.com", [{ id: LIST_ID, subscription_status: "unsubscribed" }]), status: "blocklisted" },
+    ]);
+
+    const { result: res } = await captureErrors(() => confirm("block@example.com"));
+
+    assert.equal(res.headers.get("location"), `${base}/sub/error?reason=list_add_failed`);
+    assert.deepEqual(lm.calls(), []);
+    assert.equal(lm.membership("block@example.com"), "unsubscribed");
+  });
+
+  test("a record on none of the project's lists fails visibly (Listmonk 403)", async () => {
+    // Left on no list by the signup flow before November 2026.
+    const lm = fakeListmonk([existing("stray@example.com", [])]);
+
+    const { result: res, errors } = await captureErrors(() => confirm("stray@example.com"));
+
+    assert.equal(res.headers.get("location"), `${base}/sub/error?reason=list_add_failed`);
+    assert.equal(lm.membership("stray@example.com"), undefined);
+    assert.match(errors.join("\n"), /Permission denied: subscriber: 42/);
   });
 });
 
@@ -313,7 +376,7 @@ describe("confirm link and redirects with the client and the API on different ho
   });
 
   test("the confirm route redirects to the client origin", async () => {
-    fakeListmonk([existing("reader@example.com", [])]);
+    fakeListmonk();
 
     const res = await withEnv({ NEWSLETTER_SITE_URL: SITE, BETTER_AUTH_URL: API }, () =>
       confirm("reader@example.com"),
@@ -335,18 +398,19 @@ describe("confirm link and redirects with the client and the API on different ho
   });
 });
 
-test("subscribe then confirm: the membership appears only on the click", async () => {
+test("subscribe then confirm: the record and its membership appear only on the click", async () => {
   const lm = fakeListmonk();
 
   await subscribe("a+b@example.com");
-  assert.equal(lm.membership("a+b@example.com"), undefined);
+  assert.equal(lm.subscribers.length, 0);
 
-  await confirm("a+b@example.com");
+  assert.equal((await confirm("a+b@example.com")).headers.get("location"), `${base}/sub/confirmed`);
   assert.equal(lm.membership("a+b@example.com"), "confirmed");
-  // One subscriber row: the confirm click found the plus-address the form
-  // created instead of trying to create it again (a 409 on real Listmonk).
+  // A second click finds the plus-address the first one created instead
+  // of trying to create it again (a 409 on real Listmonk): one row.
+  assert.equal((await confirm("a+b@example.com")).headers.get("location"), `${base}/sub/confirmed`);
   assert.equal(lm.subscribers.length, 1);
-  assert.deepEqual(lm.calls(), ["POST /api/subscribers", "POST /api/tx", "PUT /api/subscribers/lists"]);
+  assert.deepEqual(lm.calls(), ["POST /api/tx", "POST /api/subscribers", "PUT /api/subscribers/lists"]);
   // No write ever asks Listmonk for an `unconfirmed` membership or skips
   // `preconfirm_subscriptions`, the two ways to trigger its own opt-in email.
   for (const { body } of lm.writes) {
@@ -529,11 +593,9 @@ describe("lead magnets", () => {
     const res = await post({ email: "fan@example.com", magnet: "wallpapers", source: "home-hero" });
     assert.equal(res.status, 200);
 
-    // The new subscriber is on no list and carries no record of the
-    // signup: no attribs, so no page, site or magnet.
-    const created = lm.writes.find((w) => w.call === "POST /api/subscribers")!.body;
-    assert.deepEqual(created.lists, []);
-    assert.equal("attribs" in created, false);
+    // The form writes nothing: the confirmation goes out in external mode.
+    assert.deepEqual(lm.calls(), ["POST /api/tx"]);
+    assert.equal(lm.txs()[0].subscriber_mode, "external");
 
     // The confirm link carries the magnet key, never a URL. A `source`
     // field in the post is ignored.
@@ -545,12 +607,17 @@ describe("lead magnets", () => {
     assert.equal(confirmed.status, 303);
     assert.equal(confirmed.headers.get("location"), `${base}/sub/confirmed?delivery=sent`);
     assert.equal(lm.membership("fan@example.com"), "confirmed");
+    // The click creates the subscriber on the list, with no record of the
+    // signup: no attribs, so no page, site or magnet.
+    const created = lm.writes.find((w) => w.call === "POST /api/subscribers")!.body;
+    assert.deepEqual(created.lists, [LIST_ID]);
     for (const { body } of lm.writes) assert.equal(body && "attribs" in body, false);
 
     // Second email: the download, from the project's sender.
     const delivery = lm.txs()[1];
     assert.equal(lm.txs().length, 2);
     assert.equal(delivery.subscriber_email, "fan@example.com");
+    assert.equal(delivery.subscriber_mode, undefined);
     assert.equal(delivery.from_email, FROM);
     assert.match(delivery.data.subject, /Wallpaper pack/);
     const downloadUrl = new URL(linkIn(delivery));
@@ -619,7 +686,7 @@ describe("lead magnets", () => {
   });
 
   test("a failed delivery still confirms, and is logged as an error", async () => {
-    const lm = fakeListmonk([existing("reader@example.com", [])], { failTx: () => true });
+    const lm = fakeListmonk([], { failTx: () => true });
     const token = encodeURIComponent(mintConfirmToken("reader@example.com", { magnet: "wallpapers" }));
 
     const { result: res, errors } = await captureErrors(() =>

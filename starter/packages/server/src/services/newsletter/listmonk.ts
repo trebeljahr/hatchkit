@@ -4,8 +4,9 @@
  * Talks to a self-hosted Listmonk instance (delivering via Amazon SES
  * SMTP) over its REST API:
  *
- *   - Subscribers + list memberships live in Listmonk. An address
- *     joins the list only once it confirms (see `confirmSubscription`).
+ *   - Subscribers + list memberships live in Listmonk. An address gets
+ *     a record, on the list, only once it confirms (see `signupState`
+ *     and `confirmSubscription`).
  *   - Transactional sends (double-opt-in confirmation, welcome issue)
  *     go through `POST /api/tx` against a pre-defined passthrough
  *     template.
@@ -148,22 +149,14 @@ export async function findSubscriber(email: string): Promise<ListmonkSubscriber 
   return res.data.results.find((sub) => sub.email.toLowerCase() === normalized) ?? null;
 }
 
-/** True when `email` is a confirmed member of the env-resolved list. */
-export async function isConfirmedOnList(email: string): Promise<boolean> {
-  const listId = resolveListId();
-  const sub = await findSubscriber(email);
-  if (!sub) return false;
-  const entry = sub.lists?.find((l) => l.id === listId);
-  return entry?.subscription_status === "confirmed";
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Double opt-in and list membership
 //
 // An address goes on the list only after the HMAC link in our
-// confirmation email is clicked, and then as `confirmed`. Until then
-// it exists as a subscriber with no lists, which is all `/api/tx`
-// needs to deliver the confirmation email.
+// confirmation email is clicked, and then as `confirmed`. Until then a
+// new address has no Listmonk record at all: its confirmation email
+// goes out in tx `external` mode, and the click creates the record on
+// the list. See `signupState` for why there is never a record on no list.
 //
 // Hatchkit creates the lists `optin: double`, so campaigns reach
 // `confirmed` members only. Adding the membership late is what makes
@@ -205,24 +198,45 @@ async function createSubscriber(email: string, listIds: number[]): Promise<Listm
   return created.data;
 }
 
-/** Make sure `email` exists as a Listmonk subscriber, without adding it
- *  to any list. Call this before sending the confirmation email.
+export type SignupState = "new" | "known" | "confirmed" | "suppressed";
+
+/** Where `email` stands before the confirmation email goes out:
  *
- *  An existing subscriber is returned untouched. It may belong to
- *  other projects' lists on a shared instance, or be `unsubscribed`
- *  from ours, and submitting the form again must not put it on our
- *  list before the confirm click. */
-export async function ensureSubscriber(email: string): Promise<ListmonkSubscriber> {
-  return (await findSubscriber(email)) ?? (await createSubscriber(email, []));
+ *   - `new`: Listmonk has no record of it;
+ *   - `confirmed`: a confirmed member of the env-resolved list;
+ *   - `suppressed`: disabled or blocklisted, so send nothing;
+ *   - `known`: a record exists but is not a confirmed member here
+ *     (unsubscribed from this list, on another project's lists, or left
+ *     on no list by the signup flow before November 2026).
+ *
+ *  Signup writes nothing. A new address gets its record only when the
+ *  confirm link is clicked (`confirmSubscription` creates it on the
+ *  list). Listmonk lets a project's API user change only subscribers
+ *  already on one of its lists (`hasSubPerm` in cmd/subscribers.go), so
+ *  a record created on no list could never be confirmed: the click's
+ *  `PUT /api/subscribers/lists` answered 403 "Permission denied:
+ *  subscriber" for every new address (2026-11-11). The confirmation goes
+ *  out in tx `external` mode, which needs no record. */
+export async function signupState(email: string): Promise<SignupState> {
+  const existing = await findSubscriber(email);
+  if (!existing) return "new";
+  if (existing.status !== "enabled") return "suppressed";
+  const entry = existing.lists?.find((l) => l.id === resolveListId());
+  return entry?.subscription_status === "confirmed" ? "confirmed" : "known";
 }
 
-/** Add `email` to the env-resolved list as `confirmed`. Only the
- *  confirm route calls this, after the token has proven the reader owns
- *  the address (and `newsletter:verify`, for your own inbox). Idempotent:
- *  an existing membership, whatever its status, becomes `confirmed`.
- *  A subscriber that has gone missing since the token was issued is
- *  recreated on the list. The `PUT /api/subscribers/lists` path sends
- *  no Listmonk opt-in email.
+/** Add `email` to the env-resolved list as `confirmed`, creating its
+ *  record on the list when it has none, which is every new address.
+ *  Only the confirm route calls this, after the token has proven the
+ *  reader owns the address (and `newsletter:verify`, for your own
+ *  inbox). Idempotent: an existing membership, whatever its status,
+ *  becomes `confirmed`. A disabled or blocklisted subscriber is refused.
+ *  The `PUT /api/subscribers/lists` path sends no Listmonk opt-in email.
+ *
+ *  A record none of this project's lists hold (left on no list by the
+ *  signup flow before November 2026, or only on another project's lists)
+ *  cannot be changed by the project's API user: Listmonk answers 403
+ *  "Permission denied: subscriber". Only an admin can add or delete it.
  *
  *  `alreadyConfirmed` is true when the membership was `confirmed` before
  *  this call: the link was clicked before, or a mail scanner opened it. */
@@ -232,6 +246,9 @@ export async function confirmSubscription(email: string): Promise<{ alreadyConfi
   if (!existing) {
     await createSubscriber(email, [listId]);
     return { alreadyConfirmed: false };
+  }
+  if (existing.status !== "enabled") {
+    throw new Error("Subscriber is suppressed; subscription cannot be confirmed.");
   }
   const alreadyConfirmed =
     existing.lists?.find((l) => l.id === listId)?.subscription_status === "confirmed";
@@ -283,6 +300,9 @@ export type SendTransactionalParams = {
   to: string;
   subject: string;
   html: string;
+  /** The recipient has no Listmonk record (tx `subscriber_mode:
+   *  "external"`): a new address's confirmation email. */
+  external?: boolean;
 };
 
 /** Send a one-off transactional email through `/api/tx`. Uses the
@@ -290,8 +310,9 @@ export type SendTransactionalParams = {
  *  (LISTMONK_TX_TEMPLATE_ID); the template consumes
  *  `{{ .Tx.Data.subject }}` + `{{ .Tx.Data.body | Safe }}`. Listmonk
  *  parses a tx body with Go `html/template`, so `Safe` is what lets
- *  `html` through unescaped. The recipient must exist as a subscriber —
- *  call `ensureSubscriber` first.
+ *  `html` through unescaped. The recipient must exist as a subscriber,
+ *  unless `external` (Listmonk v5+ `subscriber_mode`), which the
+ *  confirmation email to a new address uses: see `signupState`.
  *
  *  `from_email` is set on every send. Without it Listmonk uses its
  *  global `app.from_email`, which on a shared instance belongs to
@@ -308,6 +329,7 @@ export async function sendTransactional(params: SendTransactionalParams): Promis
     method: "POST",
     body: JSON.stringify({
       subscriber_email: params.to.toLowerCase(),
+      ...(params.external ? { subscriber_mode: "external" } : {}),
       template_id: templateId,
       from_email: process.env.LISTMONK_FROM || process.env.LISTMONK_FROM_EMAIL,
       data: { subject: params.subject, body: params.html },

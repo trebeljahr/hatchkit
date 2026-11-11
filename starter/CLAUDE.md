@@ -49,12 +49,17 @@ Hatchkit auto-subscribes your default forwarding email onto
 `LISTMONK_TEST_RECIPIENT`, so the smoke scripts work end-to-end on a
 fresh provision with no extra setup.
 
-The signup form runs its own double opt-in. It creates the Listmonk
-subscriber on no list (`ensureSubscriber`); only the confirm route adds
-the list, as `confirmed` (`confirmSubscription`). Keep that order. The
-lists are `optin: double`, and a membership written as `unconfirmed`
-makes Listmonk send its own opt-in email next to ours. On a
-single-opt-in list it would get every campaign without a confirm click.
+The signup form runs its own double opt-in. It writes nothing to
+Listmonk (`signupState` only looks the address up) and mails a new
+address in tx `external` mode; only the confirm route creates the
+subscriber, on the list, as `confirmed` (`confirmSubscription`). Keep
+that order. Never create a subscriber on no list: the project's API user
+may change only subscribers already on one of its lists (Listmonk
+`hasSubPerm`), so such a record can never be confirmed (403 "Permission
+denied: subscriber"). The lists are `optin: double`, and a membership
+written as `unconfirmed` makes Listmonk send its own opt-in email next to
+ours. On a single-opt-in list it would get every campaign without a
+confirm click.
 A confirmation email that never arrives is usually the SES sandbox:
 `/api/tx` returns 200 before SMTP runs, and the rejection shows only in
 Listmonk → Settings → Logs.

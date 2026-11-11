@@ -355,7 +355,7 @@ export function singleOptinHint(lists: ListmonkList[]): string[] {
   const names = lists.map((l) => `${l.name} (id ${l.id})`).join(", ");
   return [
     `Switch ${names} to double opt-in, in this order:`,
-    "1. Deploy the app with the confirm-only subscribe code: the form creates the subscriber on no list, and only the confirm link adds it, as `confirmed` (starter `ensureSubscriber` + `confirmSubscription`).",
+    "1. Deploy the app with the confirm-only subscribe code: the form writes nothing to Listmonk, and only the confirm link creates the subscriber on the list, as `confirmed` (starter `signupState` + `confirmSubscription`).",
     "   Code that still adds an `unconfirmed` member first makes Listmonk send its own opt-in email next to the app's once the list is double.",
     "2. Then Listmonk → Lists → edit → Opt-in: Double. Campaigns then reach `confirmed` members only.",
   ];

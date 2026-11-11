@@ -4,9 +4,10 @@
  *
  * A subscriber is deleted only when ALL of these hold:
  *
- *   - it is on no list at all. The signup form creates the subscriber
- *     there, and only the confirm click adds one (see "Double opt-in and
- *     list membership" in listmonk.ts). Account emails send with
+ *   - it is on no list at all. The signup form created each new
+ *     subscriber there until November 2026; it now creates none before
+ *     the confirm click, which creates it on the list (see "Double opt-in
+ *     and list membership" in listmonk.ts). Account emails send with
  *     `subscriber_mode: "external"` (services/email.ts) and create no
  *     subscriber. An address that unsubscribed keeps its membership as
  *     `unsubscribed`, so it is not on "no list";

@@ -13,9 +13,10 @@
  *
  * The fix is one property, read from the same env names the account-email
  * transport uses. `subscriber_mode` is deliberately NOT added here: the
- * newsletter creates the subscriber first (`ensureSubscriber`), so the
- * default mode is correct. That fix belongs to `services/email.ts` only
- * (see listmonk-tx-mode.ts).
+ * newsletter picks it per send (`external` only for a new address's
+ * confirmation, see `signupState` in the starter), and a blanket mode
+ * would be wrong for its mail to existing subscribers. The blanket fix
+ * belongs to `services/email.ts` only (see listmonk-tx-mode.ts).
  */
 
 import type { FeatureLedger, FileAction } from "../features/contract.js";

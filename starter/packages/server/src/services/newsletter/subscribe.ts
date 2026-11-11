@@ -3,15 +3,17 @@
  *
  * The flow:
  *   1. Form POSTs to /api/newsletter/subscribe (handled in routes.ts).
- *   2. Server makes sure the address exists as a Listmonk subscriber
- *      on no list, mints an HMAC-signed token, and emails it via
- *      Listmonk's transactional template.
+ *   2. Server looks the address up (`signupState`), mints an
+ *      HMAC-signed token, and emails it via Listmonk's transactional
+ *      template. It writes nothing to Listmonk: a new address's email
+ *      goes out in tx `external` mode.
  *   3. User clicks the link, which GETs /api/newsletter/confirm. The
- *      handler verifies the token, adds the address to the list as
- *      `confirmed`, and redirects to /sub/confirmed.
+ *      handler verifies the token, creates the subscriber on the list
+ *      as `confirmed` (or adds the list to an existing record), and
+ *      redirects to /sub/confirmed.
  *
- * Nothing before step 3 touches list membership. See "Double opt-in
- * and list membership" in listmonk.ts for why.
+ * Nothing before step 3 writes to Listmonk. See "Double opt-in and
+ * list membership" and `signupState` in listmonk.ts for why.
  *
  * Tokens are stateless — no DB row, no Redis key. Validity is encoded
  * in the payload (`x` = expiry) and protected by `NEWSLETTER_TOKEN_SECRET`
@@ -26,10 +28,9 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
-  ensureSubscriber,
-  isConfirmedOnList,
   confirmSubscription as listmonkConfirm,
   sendTransactional,
+  signupState,
 } from "./listmonk.js";
 
 // 21 days is the sweet spot: long enough that an email sitting in a
@@ -156,19 +157,6 @@ export function normalizeEmail(raw: unknown): string | null {
   return trimmed;
 }
 
-/** True when the address is already a confirmed member of the
- *  env-resolved list. Used by the subscribe route to short-circuit
- *  and skip the confirmation send for repeat signups. */
-export async function isAlreadySubscribed(email: string): Promise<boolean> {
-  try {
-    return await isConfirmedOnList(email);
-  } catch {
-    // Listmonk hiccup → fall through to normal send path rather than
-    // 500ing the public form.
-    return false;
-  }
-}
-
 export type SendConfirmationEmailParams = {
   to: string;
   /** Fully-qualified confirmation URL the recipient should click. */
@@ -176,6 +164,9 @@ export type SendConfirmationEmailParams = {
   /** Display name of the site/newsletter — shown in the email body
    *  and the call-to-action. Falls back to "this newsletter". */
   siteName?: string;
+  /** Listmonk has no record of the address (`signupState` → `new`), so
+   *  the email goes out in tx `external` mode. */
+  newAddress?: boolean;
 };
 
 /** Render + send the double-opt-in confirmation email. Customise the
@@ -183,15 +174,15 @@ export type SendConfirmationEmailParams = {
  *  intentionally plain so projects can adapt it without dragging in
  *  react-email or a templating dependency. */
 export async function sendConfirmationEmail(params: SendConfirmationEmailParams): Promise<void> {
-  // The recipient must exist as a Listmonk subscriber before /api/tx
-  // accepts the send. It stays off the list until the link is clicked
-  // (see "Double opt-in and list membership" in listmonk.ts).
-  await ensureSubscriber(params.to);
+  // Nothing is written to Listmonk here. A new address has no record
+  // until the click creates it on the list (see `signupState` in
+  // listmonk.ts), so its confirmation goes out in `external` mode.
   const siteName = params.siteName ?? "this newsletter";
   await sendTransactional({
     to: params.to,
     subject: `Confirm your subscription · ${siteName}`,
     html: renderConfirmationHtml({ confirmUrl: params.confirmUrl, siteName }),
+    ...(params.newAddress ? { external: true } : {}),
   });
 }
 
@@ -222,8 +213,8 @@ function renderConfirmationHtml(args: { confirmUrl: string; siteName: string }):
 </html>`;
 }
 
-/** Thin re-export so route code can stay close to its previous shape. */
-export { listmonkConfirm as confirmSubscription };
+/** Thin re-exports so route code can stay close to its previous shape. */
+export { listmonkConfirm as confirmSubscription, signupState };
 
 // Process-local fixed window: five requests per minute, with bounded storage.
 // Workers and restarts have separate budgets; fleet-wide limits need a shared store.

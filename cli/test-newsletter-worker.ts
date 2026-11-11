@@ -5,10 +5,14 @@
  *
  * Pinned here:
  *
- *   1. Signup with a magnet: the subscriber is created on no list with no
- *      attribs, the confirm link carries the magnet key, the click adds
- *      the list and mails a download link, and that link streams the R2
- *      object.
+ *   1. Signup with a magnet: the form writes nothing to Listmonk and mails
+ *      the confirm link in tx `external` mode; the link carries the magnet
+ *      key, the click creates the subscriber on the list with no attribs
+ *      and mails a download link, and that link streams the R2 object.
+ *      The fake refuses list changes on a record none of the project's
+ *      lists hold (Listmonk's `hasSubPerm`), so a record on no list could
+ *      never be confirmed. Disabled and blocklisted addresses get no mail
+ *      and are refused by the confirm click.
  *   2. Unknown magnets are refused; a confirmed member gets the download
  *      straight from the form; a second confirm click sends nothing.
  *   3. A failed delivery still confirms and logs `delivery_failed`.
@@ -64,6 +68,9 @@ type FakeSubscriber = {
 };
 type Write = { call: string; url: URL; body: any };
 
+/** The lists the project's API user holds. */
+const PROJECT_LISTS = [LIST_ID];
+
 /** In-memory Listmonk behind globalThis.fetch. */
 function fakeListmonk(seed: FakeSubscriber[] = [], opts: { failTx?: boolean } = {}) {
   const subscribers = [...seed];
@@ -100,7 +107,16 @@ function fakeListmonk(seed: FakeSubscriber[] = [], opts: { failTx?: boolean } = 
         return json(sub);
       }
       case "PUT /api/subscribers/lists": {
-        for (const sub of subscribers.filter((s) => body.ids.includes(s.id))) {
+        // Listmonk's `hasSubPerm`: the API user may change only subscribers
+        // already on one of its own lists.
+        const targets = subscribers.filter((s) => body.ids.includes(s.id));
+        const denied = targets.find((s) => !s.lists.some((l) => PROJECT_LISTS.includes(l.id)));
+        if (denied) {
+          return new Response(JSON.stringify({ message: `Permission denied: subscriber: ${denied.id}` }), {
+            status: 403,
+          });
+        }
+        for (const sub of targets) {
           sub.lists = sub.lists.filter((l) => !body.target_list_ids.includes(l.id));
           for (const id of body.target_list_ids) sub.lists.push({ id, subscription_status: body.status });
         }
@@ -114,7 +130,13 @@ function fakeListmonk(seed: FakeSubscriber[] = [], opts: { failTx?: boolean } = 
         return json(true);
       }
       case "POST /api/tx":
-        return opts.failTx ? new Response("smtp down", { status: 500 }) : json(true);
+        if (opts.failTx) return new Response("smtp down", { status: 500 });
+        // Default mode looks the recipient up; only `external` sends to an
+        // address with no record.
+        if (body.subscriber_mode !== "external" && !subscribers.some((s) => s.email === body.subscriber_email)) {
+          return new Response(JSON.stringify({ message: "subscriber not found" }), { status: 400 });
+        }
+        return json(true);
       default:
         return new Response("not found", { status: 404 });
     }
@@ -203,9 +225,8 @@ await test("token → delivery: confirm mails a link that streams the R2 object"
     const res = await post({ email: "Fan@Example.com", magnet: "wallpapers", source: "home-hero" });
     assert.equal(location(res), `${SITE}/sub/check-email`);
 
-    const created = lm.writes.find((w) => w.call === "POST /api/subscribers")?.body;
-    assert.deepEqual(created.lists, []);
-    assert.equal("attribs" in created, false);
+    assert.deepEqual(lm.calls(), ["POST /api/tx"]);
+    assert.equal(lm.txs()[0].subscriber_mode, "external");
 
     const confirmUrl = linkIn(lm.txs()[0]);
     const token = new URL(confirmUrl).searchParams.get("token") ?? "";
@@ -218,8 +239,14 @@ await test("token → delivery: confirm mails a link that streams the R2 object"
     const confirmed = await get(confirmUrl);
     assert.equal(location(confirmed), `${SITE}/sub/confirmed?delivery=sent`);
     assert.equal(lm.membership("fan@example.com"), "confirmed");
+    const created = lm.writes.find((w) => w.call === "POST /api/subscribers")?.body;
+    assert.deepEqual(created.lists, [LIST_ID]);
+    assert.equal(created.preconfirm_subscriptions, true);
+    assert.equal("attribs" in created, false);
+    assert.equal(lm.calls().includes("PUT /api/subscribers/lists"), false);
 
     const delivery = lm.txs()[1];
+    assert.equal(delivery.subscriber_mode, undefined);
     assert.equal(delivery.from_email, env.LISTMONK_FROM);
     assert.match(delivery.data.subject, /Wallpaper pack/);
     const download = await get(linkIn(delivery));
@@ -269,9 +296,7 @@ await test("a confirmed member gets the download from the form; a second click s
 });
 
 await test("a failed delivery still confirms and logs delivery_failed", async () => {
-  const lm = fakeListmonk([{ id: 7, email: "r@example.com", name: "r@example.com", status: "enabled", lists: [] }], {
-    failTx: true,
-  });
+  const lm = fakeListmonk([], { failTx: true });
   const token = await mintConfirmToken(SECRET, "r@example.com", { magnet: "wallpapers" });
   const { result: res, errors } = await quietly(() =>
     get(`${SITE}/api/newsletter/confirm?token=${encodeURIComponent(token)}`),
@@ -281,6 +306,63 @@ await test("a failed delivery still confirms and logs delivery_failed", async ()
   const line = errors.map((e) => JSON.parse(e)).find((e) => e.event === "delivery_failed");
   assert.equal(line?.scope, "newsletter.delivery");
   assert.equal(line?.magnet, "wallpapers");
+});
+
+await test("a known record is mailed in default mode; an unsubscribed member can confirm again", async () => {
+  const lm = fakeListmonk([
+    {
+      id: 42,
+      email: "old@example.com",
+      name: "old@example.com",
+      status: "enabled",
+      lists: [{ id: LIST_ID, subscription_status: "unsubscribed" }],
+    },
+  ]);
+  await quietly(async () => {
+    const res = await post({ email: "old@example.com" });
+    assert.equal(location(res), `${SITE}/sub/check-email`);
+    assert.deepEqual(lm.calls(), ["POST /api/tx"]);
+    assert.equal(lm.txs()[0].subscriber_mode, undefined);
+    assert.equal(lm.membership("old@example.com"), "unsubscribed");
+
+    assert.equal(location(await get(linkIn(lm.txs()[0]))), `${SITE}/sub/confirmed`);
+    assert.equal(lm.membership("old@example.com"), "confirmed");
+  });
+});
+
+await test("disabled and blocklisted addresses get no mail and cannot be confirmed", async () => {
+  const lm = fakeListmonk([
+    { id: 5, email: "off@example.com", name: "off@example.com", status: "disabled", lists: [] },
+    {
+      id: 6,
+      email: "block@example.com",
+      name: "block@example.com",
+      status: "blocklisted",
+      lists: [{ id: LIST_ID, subscription_status: "unsubscribed" }],
+    },
+  ]);
+  await quietly(async () => {
+    for (const email of ["off@example.com", "block@example.com"]) {
+      assert.equal(location(await post({ email })), `${SITE}/sub/check-email`);
+    }
+    assert.deepEqual(lm.calls(), []);
+    const token = await mintConfirmToken(SECRET, "block@example.com");
+    const res = await get(`${SITE}/api/newsletter/confirm?token=${encodeURIComponent(token)}`);
+    assert.equal(location(res), `${SITE}/sub/error?reason=list_add_failed`);
+    assert.deepEqual(lm.calls(), []);
+  });
+});
+
+await test("a record on none of the project's lists fails visibly (Listmonk 403)", async () => {
+  // Left on no list by the signup flow before November 2026.
+  const lm = fakeListmonk([{ id: 7, email: "stray@example.com", name: "stray@example.com", status: "enabled", lists: [] }]);
+  const token = await mintConfirmToken(SECRET, "stray@example.com");
+  const { result: res, errors } = await quietly(() =>
+    get(`${SITE}/api/newsletter/confirm?token=${encodeURIComponent(token)}`),
+  );
+  assert.equal(location(res), `${SITE}/sub/error?reason=list_add_failed`);
+  assert.equal(lm.membership("stray@example.com"), undefined);
+  assert.match(errors.join("\n"), /Permission denied: subscriber: 7/);
 });
 
 await test("download tokens expire and do not swap with confirm tokens", async () => {

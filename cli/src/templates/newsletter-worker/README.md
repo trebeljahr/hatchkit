@@ -11,8 +11,8 @@ the site's repo as `workers/newsletter/` and fill in `wrangler.jsonc`.
 
 | Route | Does |
 | --- | --- |
-| `POST /api/newsletter/subscribe` | Form post (`email`, optional `magnet`). Creates the subscriber on no list, mails the signed link, 303 → `/sub/check-email` |
-| `GET /api/newsletter/confirm?token=…` | Verifies the token, adds the list as `confirmed`, mails the download link when the signup asked for a magnet, 303 → `/sub/confirmed` (`?delivery=sent` or `?delivery=failed`) |
+| `POST /api/newsletter/subscribe` | Form post (`email`, optional `magnet`). Writes nothing to Listmonk, mails the signed link (tx `external` mode for a new address), 303 → `/sub/check-email` |
+| `GET /api/newsletter/confirm?token=…` | Verifies the token, creates the subscriber on the list as `confirmed` (or adds the list to an existing record), mails the download link when the signup asked for a magnet, 303 → `/sub/confirmed` (`?delivery=sent` or `?delivery=failed`) |
 | `GET /api/newsletter/download?token=…` | Verifies the download token, streams the R2 object or redirects to the magnet's URL |
 | cron, daily | Deletes subscribers on no list, 30 days after Listmonk created them |
 
