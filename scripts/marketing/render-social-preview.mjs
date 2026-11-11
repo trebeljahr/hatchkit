@@ -52,11 +52,14 @@ if (reviewDir && !round) throw new Error("--review-dir needs --round, so the she
 if (ogOnly && round) throw new Error("--og and --round do not go together");
 const variants = ogOnly ? [] : round ? ROUNDS[round] : Object.values(ROUNDS).flat();
 
-// og:image cards: [output, page in SOCIAL_DIR, query, override CSS].
-//   og-wordmark.png  the live card, a3-2. The 640 px card moves down 16 px and
-//     only its background stretches 16 px past the top and bottom, so every
-//     margin around the wordmark, pill and nodes stays as designed.
+// og:image cards: [output, page in SOCIAL_DIR, query, override CSS, page script].
+//   og-wordmark.png  a3-2 with a larger egg mark and wordmark and a larger line,
+//     broken after "starting". The 640 px card moves down 16 px and only its
+//     background stretches 16 px past the top and bottom. The pill moves down
+//     to y 368 and the wires stay flat for longer before they fan out, so they
+//     rise only past the two text lines.
 //   og-clean.png     og-clean.html: a3-2 without the wordmark and the line.
+const OG_PILL_Y = 368;
 const OG_CARDS = [
   [
     "og-wordmark.png",
@@ -66,7 +69,22 @@ const OG_CARDS = [
      body { background: #0b0d12; }
      .card { top: 16px; overflow: visible !important; clip-path: inset(-16px 0); }
      .hatch, .glow { top: -16px !important; bottom: -16px !important; }
-     .topline { top: -16px !important; }`,
+     .topline { top: -16px !important; }
+     .a3 .brand { gap: 20px !important; }
+     .a3 .brand svg { width: 104px !important; height: 104px !important; }
+     .a3 .brand span { font-size: 84px !important; letter-spacing: -2.4px !important; }
+     .a3 .line { top: 184px !important; font-size: 34px !important; line-height: 1.25; color: #c3cad8 !important; }`,
+    (pillY) => {
+      document.querySelector(".a3 .line").innerHTML = "Automates the drudgery of starting<br>a new project";
+      document.querySelector(".a3 .cmd").style.top = `${pillY - 36}px`;
+      // Every wire keeps its end at its node; it starts at the lowered pill.
+      const fx = 382;
+      const toX = 776;
+      for (const p of document.querySelectorAll("svg.wires path")) {
+        const y = Number(p.getAttribute("d").trim().split(/[ ,]+/).at(-1));
+        p.setAttribute("d", `M${fx} ${pillY} C ${fx + 250} ${pillY}, ${toX - 90} ${y}, ${toX} ${y}`);
+      }
+    },
   ],
   ["og-clean.png", "og-clean.html", "", ""],
 ];
@@ -101,11 +119,12 @@ try {
     console.log(`wrote ${out} (${kb} KB)`);
   }
 
-  for (const [name, file, query, css] of round ? [] : OG_CARDS) {
+  for (const [name, file, query, css, script] of round ? [] : OG_CARDS) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 672 }, deviceScaleFactor: 2 });
     const url = pathToFileURL(join(SOCIAL_DIR, file)).href + (query ? `?${query}` : "");
     await page.goto(url, { waitUntil: "networkidle" });
     if (css) await page.addStyleTag({ content: css });
+    if (script) await page.evaluate(script, OG_PILL_Y);
     await page.evaluate(() => document.fonts.ready);
     await page.evaluate(() => Promise.all([...document.images].map((i) => i.decode().catch(() => {}))));
     const out = join(SOCIAL_DIR, name);

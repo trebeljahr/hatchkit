@@ -21,7 +21,7 @@ Brand: the docs site's palettes (dark: near-black `#0b0d12` with indigo `#818cf8
 | [`social-preview/social-preview-a3-2.png`](social-preview/social-preview-a3-2.png) | Round 3 candidate A3-2, dark. A3-1 plus one line under the wordmark: "Automates the drudgery of starting a new project". | 1280×640 | `pnpm marketing:social` | 2026-11-07 |
 | [`social-preview/social-preview-a3-3.png`](social-preview/social-preview-a3-3.png) | Round 3 candidate A3-3, light. A3-2 in the light palette. | 1280×640 | `pnpm marketing:social` | 2026-11-07 |
 | [`social-preview/template.html`](social-preview/template.html) | Source for every card: round 2 `?v=a`, `b`, `c`, `d`; round 3 `?v=a3-1`, `a3-2`, `a3-3`. | 1280×640 | hand-written | 2026-11-07 |
-| [`social-preview/og-wordmark.png`](social-preview/og-wordmark.png) | og:image. The live card A3-2 laid out at 1.91:1: the card's background runs 16 px further at the top and bottom, every margin stays. | 1200×630 | `pnpm marketing:social --og` | 2026-11-11 |
+| [`social-preview/og-wordmark.png`](social-preview/og-wordmark.png) | og:image. Card A3-2 laid out at 1.91:1 with a larger egg mark and wordmark and a larger line, broken after "starting". The pill sits lower and the wires fan out later, so they clear the text. | 1200×630 | `pnpm marketing:social --og` | 2026-11-12 |
 | [`social-preview/og-clean.png`](social-preview/og-clean.png) | og:image without text. A3-2's `hatchkit create` pill and nine nodes, no wordmark or line, the glow behind the pill. | 1200×630 | `pnpm marketing:social --og` | 2026-11-11 |
 | [`social-preview/og-clean.html`](social-preview/og-clean.html) | Source for `og-clean.png`. | 1280×672 | hand-written | 2026-11-11 |
 
@@ -68,4 +68,4 @@ Every name on the cards is a command, provider or env key in this repo. The plac
 
 What the cards leave out: provider tokens are entered once, at `hatchkit setup`, and a project with the Stripe feature asks for its Stripe keys during `create`. A provider that is not configured becomes a deferred step with its follow-up command.
 
-The live GitHub social preview is `social-preview-a3-2.png` (uploaded 2026-11-07).
+The live GitHub social preview is `social-preview-a3-2.png` (uploaded 2026-11-07). The cards here were re-rendered on 2026-11-12 with the egg mark in place of the earlier hatched-square logo; the uploaded copy still shows the old logo until it is uploaded again.
