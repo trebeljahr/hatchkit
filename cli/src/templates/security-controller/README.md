@@ -116,11 +116,9 @@ After missed days it is scaled by the days since the last good read.
   hours if it never had one) it mails **Not checked** once.
 - `GET /status` (bearer `READER_KEY`) shows the last state under `storage`.
 
-## Not included: app-reported limits
+## App storage
 
-Apps that report their own quota (for example an endpoint that returns
-`storage: {usedBytes, limitBytes}`) are not polled. The ones seen so far
-return that block from an endpoint whose token can also read the app's
-records. Holding such a token here would break the boundary above. An app
-that wants this needs an endpoint and a token scope that return only the
-counts.
+Apps store their data in the same account's R2, KV and D1, so this watch
+already sees abnormal growth in any of them. It does not poll app endpoints
+for their own quotas: an app enforces those itself, and a token for such an
+endpoint often reads the app's records too.
