@@ -22,6 +22,8 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ### Fixed
 
+- The `passkeys` option adds `@better-auth/passkey` in the same version range as the project's `better-auth`. It added `^1.7.0` to projects on better-auth 1.6, and every passkey call in the client failed to typecheck.
+
 - Adding `auth-account-security` with email verification to a new project no longer leaves two `emailVerification` keys in `auth.ts`. The starter's own block stayed next to the generated one, and the server failed to typecheck (TS1117).
 
 - `hatchkit update` no longer mounts `<PlausibleScript />` in a layout that already mounts its own Plausible component (for example one that redacts paths). The second tracker counted every visit twice and sent the unredacted URL.

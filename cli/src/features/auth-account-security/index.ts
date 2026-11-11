@@ -14,6 +14,8 @@
  *     rather than forced.
  */
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { FeatureLedger } from "../contract.js";
 import {
   APPLE_LOGIN_EXTRA,
@@ -599,8 +601,9 @@ export async function applyAuthAccountSecurity(
     });
   }
   for (const pkgDir of new Set(plan.deps.map((dep) => dep.pkgDir))) {
+    const range = betterAuthPluginRange(readPackageJsonText(opts.projectDir, pkgDir));
     const dependencies = Object.fromEntries(
-      plan.deps.filter((dep) => dep.pkgDir === pkgDir).map((dep) => [dep.name, "^1.7.0"]),
+      plan.deps.filter((dep) => dep.pkgDir === pkgDir).map((dep) => [dep.name, range]),
     );
     ledger.mergePackageJson(`${pkgDir}/package.json`, { dependencies });
   }
@@ -673,4 +676,28 @@ export async function applyAuthAccountSecurity(
 
   audit.ok = true;
   return audit;
+}
+
+/** The package's own better-auth range, which its better-auth plugins must
+ *  match: `@better-auth/passkey` 1.7 against better-auth 1.6 installs, then
+ *  fails to typecheck on every client call (`authClient.passkey` missing).
+ *  Falls back to the plugin's first published line when better-auth is not
+ *  a direct dependency. */
+export function betterAuthPluginRange(packageJsonText: string | null): string {
+  if (!packageJsonText) return "^1.7.0";
+  try {
+    const pkg = JSON.parse(packageJsonText) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const spec = pkg.dependencies?.["better-auth"] ?? pkg.devDependencies?.["better-auth"];
+    return spec && /^[~^]?\d+\.\d+\.\d+/.test(spec) ? spec : "^1.7.0";
+  } catch {
+    return "^1.7.0";
+  }
+}
+
+function readPackageJsonText(projectDir: string, pkgDir: string): string | null {
+  const path = join(projectDir, pkgDir, "package.json");
+  return existsSync(path) ? readFileSync(path, "utf8") : null;
 }

@@ -605,6 +605,14 @@ await expect("the starter's auth.ts ends with exactly one emailVerification bloc
   assert.doesNotMatch(result.source, /async sendVerificationEmail\(/);
 });
 
+await expect("better-auth plugins follow the package's own better-auth range", async () => {
+  const { betterAuthPluginRange } = await import("./src/features/auth-account-security/index.js");
+  assert.equal(betterAuthPluginRange(JSON.stringify({ dependencies: { "better-auth": "~1.6.33" } })), "~1.6.33");
+  assert.equal(betterAuthPluginRange(JSON.stringify({ dependencies: {} })), "^1.7.0");
+  assert.equal(betterAuthPluginRange(null), "^1.7.0");
+  assert.equal(betterAuthPluginRange("{ not json"), "^1.7.0");
+});
+
 // ── Result ────────────────────────────────────────────────────────────
 if (failures.length > 0) {
   console.error(`\n${failures.length} failure(s):`);
