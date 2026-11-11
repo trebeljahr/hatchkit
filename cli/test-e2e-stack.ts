@@ -28,6 +28,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const {
@@ -57,13 +58,11 @@ function assert(cond: unknown, msg: string): void {
   console.error(`  ✗ ${msg}`);
 }
 
-// Under node_modules/.cache, not the OS temp dir: the fake `docker` and the
-// stubs have to be executable, and a hardened host mounts /tmp noexec.
-const SCRATCH = join(CLI, "node_modules/.cache/test-e2e-stack");
-mkdirSync(SCRATCH, { recursive: true });
+// The fake `docker` and the stubs must be executable. On a host whose /tmp
+// is noexec, scripts/test.mjs points TMPDIR at a directory that is.
 const temps: string[] = [];
 function temp(prefix: string): string {
-  const d = mkdtempSync(join(SCRATCH, prefix));
+  const d = mkdtempSync(join(tmpdir(), prefix));
   temps.push(d);
   return d;
 }
@@ -309,6 +308,23 @@ try {
 
     const ciTeardown = runTeardown(m, { E2E_RUN_ID: "run-ci", CI: "1" });
     assert(ciTeardown.status === 0 && calls(m.state).length === 0, "in CI the teardown never calls Docker");
+  }
+
+  // ── nothing else in the suite names a port ──────────────────────────
+  // A spec that falls back to the starter's old API port (5006) passes in the
+  // starter and fails in every scaffold, whose API runs on its own port.
+  console.log("\n── e2e files read their ports from e2e/infra.ts ─────────────");
+  {
+    const FIXED = /\b(?:5006|3001|27018|6380|9002|5433)\b/;
+    const offenders = readdirSync(join(STARTER, "e2e"), { withFileTypes: true })
+      .filter((e) => e.isFile() && /\.(?:ts|sh|mjs)$/.test(e.name) && e.name !== "infra.ts")
+      .filter((e) => FIXED.test(readFileSync(join(STARTER, "e2e", e.name), "utf-8")))
+      .map((e) => e.name);
+    assert(offenders.length === 0, `no e2e file outside infra.ts names a fixed port (found: ${offenders.join(", ") || "none"})`);
+    assert(
+      FIXED.test(readFileSync(join(STARTER, "playwright.config.ts"), "utf-8")) === false,
+      "playwright.config.ts names no fixed port",
+    );
   }
 
   // ── the scaffold's half: infra.ts + workflow ports ───────────────────

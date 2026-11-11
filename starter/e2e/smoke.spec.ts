@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { E2E_PORTS } from "./infra";
 
 test.describe("Smoke tests", () => {
   test("landing page loads", async ({ page }) => {
@@ -17,7 +18,8 @@ test.describe("Smoke tests", () => {
   });
 
   test("health endpoint returns ok", async ({ request }) => {
-    const serverUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:5006";
+    // The API under test, on this project's own port (e2e/infra.ts).
+    const serverUrl = process.env.NEXT_PUBLIC_API_URL ?? `http://127.0.0.1:${E2E_PORTS.server}`;
     const response = await request.get(`${serverUrl}/api/health`);
     expect(response.ok()).toBe(true);
     const body = await response.json();

@@ -29,6 +29,16 @@ sys.path.insert(0, str(HERE / 'src/templates/update-watch'))
 sys.path.insert(0, str(HERE / 'src/templates/backups'))
 from hatchkit_mail import text_of
 uw = __import__('update-watch')
+# The module's defaults are the production host's own files. On a host that
+# has them (a hardened box running update-watch), a test would read the real
+# review file (root-only there, so the scan dies with PermissionError) and a
+# renewal would write the real record. Each test that wants one passes its own
+# path; everything else sees a host with none of them, as on a laptop.
+_HOST_STATE = tempfile.mkdtemp(prefix='update-watch-host-')
+__import__('atexit').register(__import__('shutil').rmtree, _HOST_STATE, True)
+uw.IMAGE_ASSESSMENTS = os.path.join(_HOST_STATE, 'image-assessments.json')
+uw.RENEWAL_RECORD = os.path.join(_HOST_STATE, 'review-renewal.json')
+uw.BACKUP_CONFIG = os.path.join(_HOST_STATE, 'backup-config.json')
 
 SERVICES = json.loads((HERE / 'src/templates/update-watch/update-watch-services.json').read_text())
 CLOUDFLARE = json.loads((HERE / 'src/templates/update-watch/update-watch-cloudflare.json').read_text())
