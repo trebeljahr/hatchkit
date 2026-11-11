@@ -300,6 +300,33 @@ running image. The PHP goes to `php` on stdin, never into the container's /tmp,
 where host-integrity would report it. Anything else is refused and listed under
 Needs you.
 
+## Security overlays (Uptime Kuma)
+
+A Debian security fix can sit unshipped for weeks when upstream does not rebuild
+the running tag. `service-patches.py overlay --target <kuma target> --packages
+libbrotli1,chromium [--dry-run]` closes that gap on the host:
+
+1. Pulls the running upstream tag and pins its registry digest.
+2. Builds `localhost/hatchkit-overlay/uptime-kuma:<tag>-hk<n>` with a Dockerfile
+   on stdin (no build context): `FROM <tag>@<digest>`, `apt-get install
+   --only-upgrade` of exactly the named packages, back to the image's own user.
+   The `localhost/` registry host means no pull, by hatchkit or Coolify, can
+   fetch an image of that name from Docker Hub.
+3. Reads the package versions in the base and in the overlay with no network.
+   Packages that did not move are reported; none moving stops the run.
+4. Swaps it in through the normal Kuma canary, data snapshot and rollback.
+   `--dry-run` stops after step 3 and deletes the image.
+
+The state file keeps the overlay record (base digest, package versions). While
+the compose names the overlay, `run` takes the next upstream image only when it
+carries every overlay package at the same or a newer version (compared with the
+host's `dpkg --compare-versions`): a newer patch release, or a rebuild of the
+base tag under a new digest. A release that still lacks a fix is a `wait` with
+the missing packages in the reason. Once upstream lands, the overlay image is
+deleted and the record moves to `overlayRetired`. A compose that names an
+overlay the state does not know is an error, never a patch. The image scanner
+reads the overlay's own image ID, so fixed findings clear on the next scan.
+
 Opt-in: installed by `hatchkit host updates install`, never enabled by it. The
 operator writes `/etc/hatchkit-security/service-patches.json` (start from
 `service-patches.example.json`) and runs

@@ -341,6 +341,134 @@ class PostgresSwap(unittest.TestCase):
         self.assertEqual(restores, [])
 
 
+OVERLAY_REF = 'localhost/hatchkit-overlay/uptime-kuma:2.5.9-rootless-hk1'
+BASE_DIGEST = 'sha256:' + 'c' * 64
+OVERLAY = {'ref': OVERLAY_REF, 'n': 1, 'base': 'louislam/uptime-kuma:2.5.9-rootless@' + BASE_DIGEST,
+           'baseTag': '2.5.9-rootless', 'packages': {'libbrotli1': '1.0.9-2+deb12u1', 'chromium': '156.0'}}
+
+
+def string_ge(a, b):  # fixture versions are chosen so plain string order is Debian order
+    return a >= b
+
+
+class Overlay(unittest.TestCase):
+    def compose(self, folder, ref):
+        path = Path(folder) / 'docker-compose.yml'
+        path.write_text("services:\n  uptime-kuma:\n    image: '%s'\n" % ref)
+        return {'name': 'uptime-kuma', 'kind': 'kuma', 'compose': str(path)}
+
+    def plan(self, tags, have, state=None, ref=OVERLAY_REF):
+        with tempfile.TemporaryDirectory() as folder, patch.object(sp, 'version_ge', string_ge):
+            target = self.compose(folder, ref)
+            asked = []
+            versions = lambda r: asked.append(r) or have
+            plan = sp.plan_target(target, {'overlay': OVERLAY} if state is None else state, {}, NOW.replace(hour=14),
+                                  CONFIG, fetch=lambda url: {'results': tags}, versions=versions)
+            return plan, asked
+
+    def test_an_overlay_counts_as_the_upstream_tag_it_was_built_on(self):
+        text = "services:\n  uptime-kuma:\n    image: '%s'\n" % OVERLAY_REF
+        self.assertEqual(sp.kuma_version(text), (2, 5, 9))
+        new, old = sp.replace_image(text, 'kuma', 'louislam/uptime-kuma:2.5.10-rootless')
+        self.assertEqual(old, OVERLAY_REF)
+        self.assertIn("'louislam/uptime-kuma:2.5.10-rootless'", new)
+
+    def test_the_overlay_is_never_pulled_from_a_registry(self):
+        calls = []
+        with patch.object(sp, 'run', side_effect=lambda args, **k: calls.append(args) or NS(returncode=0, stdout='sha256:local\n', stderr='')):
+            self.assertEqual(sp.pull(OVERLAY_REF), 'sha256:local')
+        self.assertFalse([c for c in calls if c[:2] == ['docker', 'pull']])
+        self.assertTrue(OVERLAY_REF.startswith('localhost/'), 'a registry host, never a Docker Hub namespace')
+
+    def test_the_dockerfile_only_upgrades_the_named_packages_and_restores_the_user(self):
+        text = sp.overlay_dockerfile(OVERLAY['base'], 'node', ['chromium', 'libbrotli1'])
+        lines = text.splitlines()
+        self.assertEqual(lines[0], 'FROM ' + OVERLAY['base'])
+        self.assertIn('--only-upgrade --no-install-recommends chromium libbrotli1', text)
+        self.assertEqual(lines[-1], 'USER node')
+        self.assertNotIn('upgrade -y', text.replace('--only-upgrade', ''), 'no blanket dist-upgrade')
+
+    def test_no_newer_upstream_image_keeps_the_overlay(self):
+        plan, asked = self.plan([tag('2.5.9-rootless', digest=BASE_DIGEST)], {})
+        self.assertEqual((plan['action'], plan['overlay']), ('none', OVERLAY_REF))
+        self.assertEqual(asked, [], 'nothing to pull when upstream has nothing new')
+
+    def test_a_patch_release_that_still_lacks_a_fix_keeps_the_overlay(self):
+        tags = [tag('2.5.9-rootless', digest=BASE_DIGEST), tag('2.5.10-rootless')]
+        plan, asked = self.plan(tags, {'libbrotli1': '1.0.9-2+deb12u1', 'chromium': '155.0'})
+        self.assertEqual(plan['action'], 'wait')
+        self.assertIn('chromium 156.0', plan['reason'])
+        self.assertEqual(asked, ['louislam/uptime-kuma:2.5.10-rootless'])
+
+    def test_the_first_upstream_image_with_every_fix_replaces_the_overlay(self):
+        tags = [tag('2.5.9-rootless', digest=BASE_DIGEST), tag('2.5.10-rootless')]
+        plan, _ = self.plan(tags, {'libbrotli1': '1.0.9-2+deb12u1', 'chromium': '157.0'})
+        self.assertEqual((plan['action'], plan['ref']), ('patch', 'louislam/uptime-kuma:2.5.10-rootless'))
+
+    def test_a_rebuild_of_the_base_tag_with_the_fixes_also_replaces_it(self):
+        tags = [tag('2.5.9-rootless', digest='sha256:' + 'd' * 64)]
+        plan, asked = self.plan(tags, {'libbrotli1': '1.0.9-2+deb12u1', 'chromium': '156.0'})
+        self.assertEqual((plan['action'], plan['ref'], plan.get('rebuild')),
+                         ('patch', 'louislam/uptime-kuma:2.5.9-rootless', 'sha256:' + 'd' * 64))
+
+    def test_a_paused_overlay_target_stays_put(self):
+        tags = [tag('2.5.10-rootless')]
+        plan, asked = self.plan(tags, {}, state={'overlay': OVERLAY, 'paused': True})
+        self.assertEqual((plan['action'], asked), ('paused', []))
+
+    def test_an_overlay_without_its_state_record_is_an_error_not_a_patch(self):
+        with self.assertRaises(sp.PatchError):
+            self.plan([tag('2.5.10-rootless')], {}, state={})
+
+    def test_build_records_only_packages_that_really_moved(self):
+        built = []
+        def fake(args, **kwargs):
+            out = ''
+            if args[:3] == ['docker', 'image', 'inspect'] and '{{json .RepoDigests}}' in args:
+                out = json.dumps(['louislam/uptime-kuma@' + BASE_DIGEST])
+            elif args[:3] == ['docker', 'image', 'inspect'] and '{{.Config.User}}' in args:
+                out = 'node\n'
+            elif args[:3] == ['docker', 'image', 'inspect']:
+                out = 'sha256:x\n'
+            elif args[:2] == ['docker', 'run']:
+                image = args[args.index('dpkg-query') + 1]
+                rows = {'libbrotli1': '1.0.9-2+b6', 'chromium': '155.0'} if '@' in image else \
+                       {'libbrotli1': '1.0.9-2+deb12u1', 'chromium': '155.0'}
+                out = ''.join('%s:amd64\t%s\n' % kv for kv in rows.items())
+            elif args[:2] == ['docker', 'build']:
+                built.append((args, kwargs['input']))
+            return NS(returncode=0, stdout=out, stderr='')
+        with tempfile.TemporaryDirectory() as folder, patch.object(sp, 'run', side_effect=fake), \
+                patch.object(sp, 'version_ge', string_ge):
+            target = self.compose(folder, 'louislam/uptime-kuma:2.5.9-rootless')
+            overlay = sp.build_overlay(target, ['libbrotli1', 'chromium'], {}, lambda m: None)
+        self.assertEqual(overlay['ref'], OVERLAY_REF)
+        self.assertEqual(overlay['base'], 'louislam/uptime-kuma:2.5.9-rootless@' + BASE_DIGEST)
+        self.assertEqual(overlay['packages'], {'libbrotli1': '1.0.9-2+deb12u1'})
+        self.assertEqual(overlay['unchanged'], ['chromium'])
+        self.assertEqual(built[0][0][-1], '-', 'Dockerfile over stdin, no build context')
+        self.assertTrue(built[0][1].startswith('FROM louislam/uptime-kuma:2.5.9-rootless@' + BASE_DIGEST))
+
+    def test_landing_upstream_retires_the_overlay_and_deletes_its_image(self):
+        record, removed = {'overlay': dict(OVERLAY)}, []
+        with patch.object(sp, 'run', side_effect=lambda args, **k: removed.append(args)):
+            sp.retire_overlay(record, {'ref': OVERLAY_REF})
+            self.assertIn('overlay', record, 'landing the overlay itself retires nothing')
+            sp.retire_overlay(record, {'ref': 'louislam/uptime-kuma:2.5.10-rootless'})
+        self.assertNotIn('overlay', record)
+        self.assertEqual(record['overlayRetired']['retiredBy'], 'louislam/uptime-kuma:2.5.10-rootless')
+        self.assertEqual(removed, [['docker', 'image', 'rm', OVERLAY_REF]])
+
+    def test_coolify_sync_accepts_the_overlay_and_upstream_but_nothing_else(self):
+        import re
+        pattern = re.compile(sp.SYNC_PATTERNS['kuma'].strip('/').replace('\\/', '/'))
+        self.assertTrue(pattern.match(OVERLAY_REF))
+        self.assertTrue(pattern.match('louislam/uptime-kuma:2.5.10-rootless'))
+        self.assertFalse(pattern.match('hatchkit-overlay/uptime-kuma:2.5.9-rootless-hk1'), 'Docker Hub namespace')
+        self.assertFalse(pattern.match('louislam/uptime-kuma:2.5.10'))
+        self.assertEqual(sp.SYNC_PREFIXES['kuma'], ['louislam/uptime-kuma:', 'localhost/hatchkit-overlay/uptime-kuma:'])
+
+
 class State(unittest.TestCase):
     def test_failures_pause_but_a_passing_operator_test_does_not(self):
         state = {}

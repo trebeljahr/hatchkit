@@ -43,6 +43,16 @@ What `run` does, once an hour:
      The daily digest lists landed patches under Fixed automatically and failures
      under Needs you.
 
+`overlay --target <kuma target> --packages <a,b> [--dry-run]`: when a Debian
+security fix is out but upstream has not rebuilt the running Kuma tag, build a
+local image FROM the pinned upstream digest that only upgrades the named
+packages, verify they really moved, and swap it in through the same canary and
+rollback as a patch. The image is named `localhost/hatchkit-overlay/...` so no
+pull can ever fetch it from a registry. While an overlay runs, `run` leaves it
+for the first upstream image (a newer patch, or a rebuild of the same tag) that
+carries each overlay package at the same or a newer version, and then deletes
+the local image. An upstream release that still lacks a fix keeps the overlay.
+
 `sync-coolify` (Coolify hosts only, part of `run` when configured): Coolify keeps
 its own copy of the proxy compose and of each service compose and rewrites the
 host file from it on a proxy restart or redeploy. When a host file differs from
@@ -50,8 +60,9 @@ Coolify's copy by exactly the image line and the container runs that image, the
 copy is updated (with its change hashes) so a Coolify restart keeps the patch.
 Anything else is refused and reported.
 
-Run modes: `run`, `plan` (read-only), `status`, `clear <target>`,
-`sync-coolify [--apply]`, and for operator tests
+Run modes: `run`, `plan` (read-only, except that with an overlay in place it
+pulls the upstream candidate to read its package versions), `status`,
+`clear <target>`, `overlay`, `sync-coolify [--apply]`, and for operator tests
 `run --target <t> --to <tag> [--force-rollback]`.
 """
 import argparse
@@ -89,11 +100,16 @@ KINDS = {
     'traefik': {'repository': 'library/traefik', 'image': 'traefik', 'watch': 'traefik',
                 'tag': r'v(\d+)\.(\d+)\.(\d+)', 'line': r'traefik[:@]'},
     'kuma': {'repository': 'louislam/uptime-kuma', 'image': 'louislam/uptime-kuma', 'watch': 'uptime-kuma',
-             'tag': r'(\d+)\.(\d+)\.(\d+)-rootless', 'line': r'louislam/uptime-kuma:'},
+             'tag': r'(\d+)\.(\d+)\.(\d+)-rootless', 'line': r'(louislam|localhost/hatchkit-overlay)/uptime-kuma:'},
     # major.minor-alpine only: '18-alpine' floats and 'alpine3.24' pins a base we would never leave.
     'postgres': {'repository': 'library/postgres', 'image': 'postgres', 'watch': None,
                  'tag': r'(\d+)\.(\d+)-alpine', 'line': r'postgres[:@]'},
 }
+# Local security overlays. `localhost/` makes the name a registry host no pull
+# can resolve to Docker Hub, so nobody else's image can ever arrive under it.
+OVERLAY_REPOS = {'kuma': 'localhost/hatchkit-overlay/uptime-kuma'}
+OVERLAY_TAG = re.compile(r'(?P<base>.+)-hk(?P<n>\d+)')
+OVERLAY_PACKAGE = re.compile(r'[a-z0-9][a-z0-9+.-]+')
 POSTGRES_REF = re.compile(r'postgres:(?P<tag>\d+\.\d+-alpine)@(?P<digest>sha256:[0-9a-f]{64})')
 BAD_STATUS = ('000', '502', '503', '504')
 IMAGE_LINE = re.compile(r'^(?P<indent>[ \t]+)image:[ \t]*(?P<q>[\'"]?)(?P<ref>[^\'"\s]+)(?P=q)[ \t]*$', re.M)
@@ -294,7 +310,16 @@ def hub_tags(kind, prefix, fetch=None):
     return tags
 
 
+def is_overlay(ref):
+    return any((ref or '').startswith(repo + ':') for repo in OVERLAY_REPOS.values())
+
+
 def pull(ref):
+    if is_overlay(ref):  # built here; there is no registry to ask
+        found = image_id(ref)
+        if not found:
+            raise PatchError('overlay image %s is not present on this host' % ref)
+        return found
     run(['docker', 'pull', '-q', ref], timeout=600, check=True)
     found = image_id(ref)
     if not found:
@@ -512,8 +537,18 @@ def kuma_counts(container):
     return [int(v) for v in values] if result.returncode == 0 and len(values) == 3 else None
 
 
+def kuma_ref(compose_text):
+    return image_line(compose_text, 'kuma').group('ref')
+
+
 def kuma_version(compose_text):
-    return tag_version('kuma', image_line(compose_text, 'kuma').group('ref').split(':', 1)[1])
+    """Version of the compose Kuma tag; an overlay counts as the upstream tag it was built on."""
+    ref = kuma_ref(compose_text)
+    tag = ref.split(':', 1)[1]
+    if is_overlay(ref):
+        match = OVERLAY_TAG.fullmatch(tag)
+        tag = match.group('base') if match else ''
+    return tag_version('kuma', tag)
 
 
 def volume_path(name):
@@ -641,6 +676,114 @@ def patch_kuma(target, new_ref, force_rollback, log):
     rollback_problem = 'data restore failed' if restore.returncode else None
     rollback_problem = rollback_problem or ('compose up failed' if up() else None) or verify(old_image)
     raise RolledBack(reason, rollback_problem, verified=problem is None)
+
+
+# ---------------------------------------------------------------- overlays
+
+def package_versions(ref, packages):
+    """{package: version} installed in an image, read with no network. Missing packages are left out."""
+    result = run(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'dpkg-query', ref,
+                  '-W', '-f', '${Package}\t${Version}\n'] + list(packages), timeout=120)
+    versions = {}
+    for line in result.stdout.splitlines():
+        name, _, version = line.partition('\t')
+        name = name.split(':', 1)[0]
+        if name in packages and version:
+            versions[name] = version
+    return versions
+
+
+def version_ge(a, b):
+    """Debian version order, by the host's own dpkg."""
+    return run(['dpkg', '--compare-versions', a, 'ge', b], timeout=15).returncode == 0
+
+
+def overlay_dockerfile(base_ref, user, packages):
+    """Only the named packages move; the image keeps its entrypoint, health check and user."""
+    labels = 'LABEL io.hatchkit.overlay.base="%s" io.hatchkit.overlay.packages="%s"' % (base_ref, ','.join(packages))
+    return '\n'.join([
+        'FROM ' + base_ref,
+        labels,
+        'USER root',
+        'RUN apt-get update \\',
+        ' && DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade --no-install-recommends '
+        + ' '.join(packages) + ' \\',
+        ' && apt-get clean && rm -rf /var/lib/apt/lists/*',
+        'USER ' + user, ''])
+
+
+def build_overlay(target, packages, record, log):
+    """Build the overlay image for a Kuma target. -> overlay record (not yet deployed)."""
+    if target['kind'] != 'kuma':
+        raise PatchError('overlays are only supported for kuma targets')
+    packages = sorted(set(p for p in packages if p))
+    if not packages or any(not OVERLAY_PACKAGE.fullmatch(p) for p in packages):
+        raise PatchError('--packages must name Debian packages')
+    ref = kuma_ref(Path(target['compose']).read_text())
+    previous = record.get('overlay') or {}
+    if is_overlay(ref):
+        if previous.get('ref') != ref:
+            raise PatchError('compose names overlay %s but the state has no record of it' % ref)
+        tag = previous['baseTag']
+        upstream = KINDS['kuma']['image'] + ':' + tag
+    else:
+        upstream, tag = ref, ref.split(':', 1)[1]
+    if not tag_version('kuma', tag):
+        raise PatchError('compose does not name a %s tag' % KINDS['kuma']['tag'])
+    pull(upstream)
+    digests = run(['docker', 'image', 'inspect', '-f', '{{json .RepoDigests}}', upstream], check=True).stdout
+    digest = next((d.split('@', 1)[1] for d in json.loads(digests) if d.split('@', 1)[0] == KINDS['kuma']['image']), None)
+    if not digest:
+        raise PatchError('no registry digest for ' + upstream)
+    base = upstream + '@' + digest
+    user = run(['docker', 'image', 'inspect', '-f', '{{.Config.User}}', base], check=True).stdout.strip()
+    if user not in ('node', '1000', '1000:1000'):
+        raise PatchError('base image does not run as node (User=%r)' % user)
+    before = package_versions(base, packages)
+    missing = [p for p in packages if p not in before]
+    if missing:
+        raise PatchError('not installed in %s: %s' % (upstream, ', '.join(missing)))
+    number = int(previous.get('n') or 0) + 1
+    overlay_ref = '%s:%s-hk%d' % (OVERLAY_REPOS['kuma'], tag, number)
+    log('building %s from %s' % (overlay_ref, base))
+    run(['docker', 'build', '--no-cache', '-t', overlay_ref, '-'], input=overlay_dockerfile(base, user, packages),
+        timeout=1800, check=True)
+    after = package_versions(overlay_ref, packages)
+    moved = {p: after[p] for p in packages if p in after and not version_ge(before[p], after[p])}
+    if not moved:
+        run(['docker', 'image', 'rm', overlay_ref])
+        raise PatchError('no newer version of %s is available; nothing to overlay' % ', '.join(packages))
+    return {'ref': overlay_ref, 'n': number, 'base': base, 'baseTag': tag, 'packages': moved,
+            'unchanged': sorted(set(packages) - set(moved)), 'from': {p: before[p] for p in moved},
+            'builtAt': iso(now_utc())}
+
+
+def plan_overlay_exit(target, record, current, tags, versions=None):
+    """With an overlay running: leave it for the first upstream image that carries every fix.
+
+    -> (candidate, action, reason). A newer patch release counts, and so does a
+    rebuild of the overlay's base tag (a new digest)."""
+    overlay = record['overlay']
+
+    def read(ref):
+        pull(ref)
+        return package_versions(ref, sorted(overlay['packages']))
+    versions = versions or read
+    candidate = pick_patch('kuma', current, tags)
+    if candidate is None:
+        base_digest = overlay['base'].split('@', 1)[1]
+        rebuilt = [t for t in tags if t['name'] == overlay['baseTag'] and t.get('digest') and t['digest'] != base_digest]
+        candidate = (current, rebuilt[0]) if rebuilt else None
+    if candidate is None:
+        return None, 'none', 'overlay %s in place; upstream has no newer image yet' % overlay['ref']
+    upstream = KINDS['kuma']['image'] + ':' + candidate[1]['name']
+    have = versions(upstream)
+    lacking = sorted(p for p, v in overlay['packages'].items() if p not in have or not version_ge(have[p], v))
+    if lacking:
+        return candidate, 'wait', 'upstream %s still lacks %s; keeping overlay %s' % (
+            candidate[1]['name'], ', '.join('%s %s' % (p, overlay['packages'][p]) for p in lacking), overlay['ref'])
+    return candidate, 'patch', 'upstream %s carries the overlay fixes (%s); leaving the overlay' % (
+        candidate[1]['name'], ', '.join(sorted(overlay['packages'])))
 
 
 # ---------------------------------------------------------------- Postgres
@@ -856,7 +999,7 @@ def new_ref_for(kind, version, tag):
     return ref
 
 
-def plan_target(target, state, ledger, now, config, forced_tag=None, fetch=None):
+def plan_target(target, state, ledger, now, config, forced_tag=None, fetch=None, versions=None):
     kind = target['kind']
     current = current_version(target)
     advisories = advisories_for(ledger, kind, current)
@@ -875,12 +1018,27 @@ def plan_target(target, state, ledger, now, config, forced_tag=None, fetch=None)
         candidate = pick_postgres(current, postgres_ref(Path(target['compose']).read_text())[1], tags)
     else:
         candidate = pick_patch(kind, current, tags)
-    action, reason, fixes = decide(kind, current, candidate, advisories, state, now, config,
-                                   forced=forced_tag)
+    overlay = None
+    if kind == 'kuma' and not forced_tag and is_overlay(kuma_ref(Path(target['compose']).read_text())):
+        overlay = (state or {}).get('overlay') or {}
+        if overlay.get('ref') != kuma_ref(Path(target['compose']).read_text()):
+            raise PatchError('compose names an overlay the state has no record of; rebuild it with `overlay`')
+    if overlay and (state or {}).get('paused'):
+        action, reason, fixes = 'paused', 'paused after a failed attempt; clear it after review', []
+    elif overlay:
+        # A plain patch release must not undo a fix the overlay carries, so it
+        # is taken only once it has every overlay package too.
+        candidate, action, reason = plan_overlay_exit(target, state, current, tags, versions)
+        fixes = []
+    else:
+        action, reason, fixes = decide(kind, current, candidate, advisories, state, now, config,
+                                       forced=forced_tag)
     plan = {'target': target['name'], 'kind': kind, 'current': fmt(current),
             'action': action, 'reason': reason, 'fixes': fixes,
             'advisories': [a['id'] for a in advisories],
             'unpatchable': sorted(a['id'] for a in advisories if not a['fixedIn'])}
+    if overlay:
+        plan['overlay'] = overlay['ref']
     if candidate:
         plan['candidate'] = fmt(candidate[0])
         if candidate[0] == current:
@@ -900,7 +1058,11 @@ $args = json_decode(getenv('HK_ARGS'), true);
 $apply = (bool) $args['apply'];
 function hk_line($text, $prefix) {
   preg_match_all('/^([ \t]+)image:[ \t]*([\'"]?)([^\'"\s]+)\2[ \t]*$/m', $text, $m, PREG_SET_ORDER);
-  $hits = array_values(array_filter($m, fn($x) => str_starts_with($x[3], $prefix)));
+  $prefixes = (array) $prefix;
+  $hits = array_values(array_filter($m, function ($x) use ($prefixes) {
+    foreach ($prefixes as $p) { if (str_starts_with($x[3], $p)) return true; }
+    return false;
+  }));
   return count($hits) === 1 ? $hits[0] : null;
 }
 function hk_remote($server, $cmd) { return trim((string) instant_remote_process([$cmd], $server, false)); }
@@ -1000,9 +1162,11 @@ foreach ($args['standalone'] ?? [] as $s) {
 echo json_encode($out), "\n";
 '''
 
-SYNC_PREFIXES = {'traefik': 'traefik', 'kuma': 'louislam/uptime-kuma:', 'postgres': 'postgres:'}
+SYNC_PREFIXES = {'traefik': 'traefik', 'kuma': ['louislam/uptime-kuma:', OVERLAY_REPOS['kuma'] + ':'],
+                 'postgres': 'postgres:'}
 SYNC_PATTERNS = {'traefik': '/^traefik(:v\\d+\\.\\d+\\.\\d+)?@sha256:[0-9a-f]{64}$/',
-                 'kuma': '/^louislam\\/uptime-kuma:\\d+\\.\\d+\\.\\d+-rootless$/',
+                 'kuma': ('/^(louislam\\/uptime-kuma:\\d+\\.\\d+\\.\\d+-rootless|'
+                          'localhost\\/hatchkit-overlay\\/uptime-kuma:\\d+\\.\\d+\\.\\d+-rootless-hk\\d+)$/'),
                  'postgres': '/^postgres:\\d+\\.\\d+-alpine@sha256:[0-9a-f]{64}$/'}
 
 
@@ -1077,14 +1241,68 @@ def after_landing(kind=None):
         run(['systemctl', 'start', '--no-block', unit])
 
 
+def retire_overlay(record, plan):
+    """An upstream image landed over an overlay: forget the overlay and delete its local image."""
+    overlay = record.get('overlay')
+    if not overlay or plan.get('ref') == overlay.get('ref'):
+        return
+    run(['docker', 'image', 'rm', overlay['ref']])
+    record['overlayRetired'] = dict(overlay, retiredAt=iso(now_utc()), retiredBy=plan.get('ref'))
+    record.pop('overlay', None)
+
+
+def overlay_mode(args, config, state, work):
+    targets = [t for t in config.get('targets') or [] if t.get('name') == args.target]
+    if not targets:
+        print(json.dumps({'ok': False, 'error': 'overlay needs --target naming a configured kuma target'}))
+        return 1
+    target = targets[0]
+    record = state.setdefault('targets', {}).setdefault(target['name'], {})
+    if record.get('paused'):
+        print(json.dumps({'ok': False, 'error': 'target is paused; clear it after review'}))
+        return 1
+
+    def log(message):
+        print('%s: %s' % (target['name'], message), flush=True)
+    try:
+        overlay = build_overlay(target, (args.packages or '').split(','), record, log)
+    except PatchError as error:
+        print(json.dumps({'ok': False, 'error': str(error)[:300]}))
+        return 1
+    log('overlay moves %s' % json.dumps(overlay['packages']))
+    if args.dry_run:
+        run(['docker', 'image', 'rm', overlay['ref']])
+        print(json.dumps({'ok': True, 'dryRun': True, 'overlay': overlay}, indent=2))
+        return 0
+    current = fmt(current_version(target))
+    plan = {'current': current, 'candidate': current, 'ref': overlay['ref'], 'fixes': [],
+            'reason': 'overlay: security upgrade of ' + ', '.join(sorted(overlay['packages']))}
+    attempt = attempt_target(target, plan, args.force_rollback, log)
+    attempt['overlay'] = overlay
+    record_attempt(state, target['name'], attempt)
+    if attempt['status'] == 'landed':
+        old = record.get('overlay')
+        if old and old['ref'] != overlay['ref']:
+            run(['docker', 'image', 'rm', old['ref']])
+        record['overlay'] = overlay
+        after_landing(target['kind'])
+    else:
+        run(['docker', 'image', 'rm', overlay['ref']])
+    save_state(work, state)
+    print(json.dumps({'ok': attempt['status'] == 'landed', 'attempt': attempt}, indent=2))
+    return 0 if attempt['status'] == 'landed' else 1
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('mode', choices=('run', 'plan', 'status', 'clear', 'sync-coolify'))
+    parser.add_argument('mode', choices=('run', 'plan', 'status', 'clear', 'sync-coolify', 'overlay'))
     parser.add_argument('name', nargs='?')
     parser.add_argument('--target')
     parser.add_argument('--to')
     parser.add_argument('--force-rollback', action='store_true')
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--packages', help='overlay: comma-separated Debian packages to upgrade')
+    parser.add_argument('--dry-run', action='store_true', help='overlay: build and verify, do not deploy')
     args = parser.parse_args(argv)
     work = WORK
     if args.mode == 'status':
@@ -1121,6 +1339,8 @@ def locked(args, work):
         results = sync_coolify(config.get('coolifySync') or {}, args.apply)
         print(json.dumps(results, indent=2))
         return 0
+    if args.mode == 'overlay':
+        return overlay_mode(args, config, state, work)
     now = now_utc()
     ledger = read_json(work / LEDGER_NAME, {})
     targets = [t for t in config.get('targets') or [] if t.get('kind') in KINDS]
@@ -1150,6 +1370,7 @@ def locked(args, work):
             record_attempt(state, target['name'], attempt)
             print(json.dumps({'attempt': attempt}), flush=True)
             if attempt['status'] == 'landed':
+                retire_overlay(record, plan)
                 after_landing(target['kind'])
             save_state(work, state)
     if args.mode == 'run' and config.get('coolifySync'):
