@@ -579,6 +579,122 @@ export async function runCloudflareToken(
 }
 
 // ---------------------------------------------------------------------------
+// Routes of a routed Worker site
+// ---------------------------------------------------------------------------
+
+/**
+ * `hatchkit cloudflare routes [--remove] [--dry-run]`: make (or delete) the
+ * Workers routes a routed Worker site's manifest names (`deploymentMode`
+ * and `clientHost` "cloudflare", `clientWorkers`; see routed-worker-site.ts).
+ * Until this, such routes were made by hand.
+ *
+ * Make: per zone, the preflight of each Worker must pass first (proxied
+ * records, nothing foreign on the hosts, every Worker deployed, hatchkit's
+ * HTTPS rule covering the hosts); then the missing routes are created in
+ * plan order, origin paths and specific routes before `<host>/*`, so a
+ * path never reaches the site Worker before its own route exists. Each
+ * route created is a ledger step `hatchkit destroy` undoes.
+ *
+ * Remove: only routes whose pattern and Worker match the plan, `<host>/*`
+ * first: the quickest way back to the origin.
+ *
+ * Redirect-only hosts and the HTTPS rule are `hatchkit cloudflare redirect`
+ * and `https`; this touches routes only.
+ */
+export async function runCloudflareRoutes(
+  cwd: string,
+  opts: { remove: boolean; dryRun: boolean },
+): Promise<boolean> {
+  const { diffEdge, preflightEdge, applyEdgeRoutes, removeEdgeRoutes } = await import(
+    "./client-host.js"
+  );
+  const { edgeRemovalOrder } = await import("./routing.js");
+  const {
+    edgeByWorker,
+    isRoutedWorkerSite,
+    redirectedSiteHosts,
+    resolveEdgeZones,
+    routedWorkerSiteEdge,
+  } = await import("./routed-worker-site.js");
+  const { getDnsConfig } = await import("../config.js");
+  const { appendLedgerStep } = await import("../utils/run-ledger.js");
+
+  const manifest = readManifest(cwd);
+  if (!manifest || !isRoutedWorkerSite(manifest)) {
+    throw new Error(
+      'Not a routed Worker site: .hatchkit.json needs deploymentMode and clientHost "cloudflare".',
+    );
+  }
+  const prov = await getCloudflareProvisioner();
+  if (!prov) throw new Error("No Cloudflare provisioner — run `hatchkit config add cloudflare`.");
+  const api = new CloudflareApi({ token: prov.token, accountId: prov.accountId });
+  const dns = await getDnsConfig().catch(() => null);
+  const dnsApi = dns?.apiToken ? new CloudflareApi({ token: dns.apiToken }) : undefined;
+
+  const edge = routedWorkerSiteEdge(manifest, cwd);
+  const zones = await resolveEdgeZones(api, prov.accountId, edge, redirectedSiteHosts(manifest));
+  let ok = true;
+  for (const zone of zones) {
+    if (zone.edge.routes.length === 0) continue;
+    const ctx = { ...zone.ctx, ...(dnsApi ? { dnsApi } : {}) };
+    console.log(chalk.bold(`\n  ${zone.ctx.zoneName}`));
+    if (opts.remove) {
+      const have = await api.listWorkerRoutes(zone.ctx.zoneId);
+      for (const route of edgeRemovalOrder(zone.edge)) {
+        const present = have.some(
+          (r) => r.pattern === route.pattern && (r.script || null) === route.script,
+        );
+        console.log(
+          chalk.dim(
+            `  · delete ${route.pattern} → ${route.script ?? "(no Worker)"}${present ? "" : " (absent)"}`,
+          ),
+        );
+      }
+      if (!opts.dryRun) {
+        await removeEdgeRoutes(ctx, zone.edge, {
+          onRoute: (route, outcome) => console.log(chalk.green(`  ✓ ${route.pattern}: ${outcome}`)),
+        });
+      }
+      continue;
+    }
+
+    const blocking = new Set<string>();
+    for (const part of edgeByWorker(zone.edge)) {
+      const pf = await preflightEdge(ctx, part);
+      for (const b of pf.blocking) blocking.add(b);
+      if (pf.httpsMissing.length > 0) {
+        blocking.add(
+          `hatchkit's HTTPS rule does not cover ${pf.httpsMissing.join(", ")}; run \`hatchkit cloudflare https add ${pf.httpsMissing.join(" ")}\` first.`,
+        );
+      }
+    }
+    const diff = diffEdge(zone.edge, await api.listWorkerRoutes(zone.ctx.zoneId));
+    const missing = new Set(diff.missing.map((r) => r.pattern));
+    for (const route of zone.edge.routes) {
+      console.log(
+        chalk.dim(
+          `  · ${missing.has(route.pattern) ? "create" : "keep  "} ${route.pattern} → ${route.script ?? "(no Worker)"}`,
+        ),
+      );
+    }
+    if (blocking.size > 0) {
+      for (const b of blocking) console.log(chalk.red(`  ✗ ${b}`));
+      ok = false;
+      continue;
+    }
+    if (opts.dryRun) continue;
+    await applyEdgeRoutes(ctx, zone.edge, {
+      ledger: {
+        record: (step: Parameters<RunLedger["record"]>[0]) => appendLedgerStep(manifest.name, step),
+      } as unknown as RunLedger,
+      onRoute: (route, outcome) => console.log(chalk.green(`  ✓ ${route.pattern}: ${outcome}`)),
+    });
+  }
+  if (opts.dryRun) console.log(chalk.dim("\n  --dry-run: nothing written."));
+  return ok;
+}
+
+// ---------------------------------------------------------------------------
 // HTTPS redirect hosts
 // ---------------------------------------------------------------------------
 

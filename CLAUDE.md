@@ -89,6 +89,10 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   CLOUDFLARE_* secrets; `--also-worker` gives a repo whose CI uploads
   several Workers one token on exactly those Workers (record under the
   first, `workers`/`workerIds`).
+  `hatchkit cloudflare routes [--remove] [--dry-run]` makes (or deletes,
+  `<host>/*` first) a routed Worker site's Workers routes from
+  `clientWorkers`, after a preflight per Worker; created routes are ledger
+  steps.
   `hatchkit cloudflare https add|remove <host…>` edits hatchkit's one
   HTTP→HTTPS redirect rule per zone (re-read after each write);
   `hatchkit cloudflare redirect add <host> <https-origin>` moves a

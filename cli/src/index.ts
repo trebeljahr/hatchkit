@@ -498,6 +498,18 @@ async function main(): Promise<void> {
         if (!ok) process.exitCode = 1;
         break;
       }
+      if (args[1] === "routes") {
+        const rest = args.slice(2);
+        const unknown = rest.filter((a) => a !== "--dry-run" && a !== "--remove");
+        if (unknown.length) throw new Error(`Unknown option ${unknown[0]}`);
+        const { runCloudflareRoutes } = await import("./deploy/cloudflare.js");
+        const ok = await runCloudflareRoutes(resolve("."), {
+          remove: rest.includes("--remove"),
+          dryRun: rest.includes("--dry-run"),
+        });
+        if (!ok) process.exitCode = 1;
+        break;
+      }
       if (args[1] === "redirect") {
         const action = args[2];
         const rest = args.slice(3);
@@ -5255,12 +5267,18 @@ function printHelp(topic?: HelpTopic): void {
     cd <project-dir> && hatchkit cloudflare
     cd <project-dir> && hatchkit cloudflare --undo [--dry-run] [--yes]
     cd <project-dir> && hatchkit cloudflare token [--worker <name>] [--also-worker <name>…] [--create-worker] [--rotate] [--dry-run]
+    cd <project-dir> && hatchkit cloudflare routes [--remove] [--dry-run]
     hatchkit cloudflare https add|remove <host…> [--dry-run]
     hatchkit cloudflare redirect add <host> <https-origin> [--status 301|308] [--dry-run]
     hatchkit cloudflare redirect remove <host> [--dry-run]
 
   ${chalk.bold("redirect")} sends a host that only redirects (a project that moved domains) to another
   origin from the zone, path and query kept, so its Coolify app can retire.
+
+  ${chalk.bold("routes")} makes the Workers routes a routed Worker site's .hatchkit.json names
+  (clientWorkers), specific routes before <host>/*, after a preflight per Worker
+  (proxied records, nothing foreign, each Worker deployed, the HTTPS rule in place).
+  --remove deletes them, <host>/* first: the way back to the origin.
 
   ${chalk.bold("https")} edits hatchkit's one HTTP→HTTPS redirect rule per zone (hosts a Worker serves;
   /.well-known/ excluded). It reads the rule back after each write and fails when a
