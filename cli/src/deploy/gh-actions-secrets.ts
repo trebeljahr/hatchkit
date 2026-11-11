@@ -76,6 +76,7 @@ import {
   classifyDeployTokenPolicies,
   maskId,
   mintWorkerDeployToken,
+  targetWorkerIds,
   withPropagationRetry,
   workerDeployTokenName,
 } from "./cloudflare-deploy-token.js";
@@ -387,6 +388,11 @@ export interface CloudflareDeploySecretsInput {
   repoSlug: string;
   /** The Worker the repo deploys (`name` in wrangler.jsonc). */
   workerName: string;
+  /** Further Workers the same CI uploads with the same CLOUDFLARE_API_TOKEN
+   *  (an API Worker on more specific routes). The one token then names
+   *  exactly these Workers and `workerName`; the record stays under
+   *  `workerName`. */
+  alsoWorkers?: string[];
   /** Create the Worker (empty) when the account has none by that name.
    *  `hatchkit cloudflare` passes it for a new project; the migration of
    *  an existing repo does not, since its Worker must already exist. */
@@ -416,6 +422,11 @@ export interface CloudflareDeploySecretsResult {
   /** One line per step, for a dry run. */
   plan: string[];
   error?: string;
+}
+
+/** The same Worker ids, in any order. */
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id) => b.includes(id));
 }
 
 /** The two repo-level secrets `cloudflare/wrangler-action@v4` reads. */
@@ -495,7 +506,12 @@ export async function setCloudflareDeploySecrets(
     return result;
   }
   const accountId = prov.accountId;
-  const tokenName = workerDeployTokenName(input.workerName);
+  const alsoNames = input.alsoWorkers ?? [];
+  const allNames = [input.workerName, ...alsoNames];
+  if (new Set(allNames).size !== allNames.length) {
+    return { ...result, error: "Each Worker may be named once" };
+  }
+  const tokenName = workerDeployTokenName(allNames);
   result.tokenName = tokenName;
   try {
     // A failed metadata read must stop before creating resources or replacing secrets.
@@ -508,6 +524,23 @@ export async function setCloudflareDeploySecrets(
         ...result,
         error: "Worker token record belongs to another repo or account; review it before migration",
       };
+    }
+    // A Worker with a token of its own would keep it after this one
+    // replaces the repo's secret: revoke or rotate that first.
+    const ownRecord = alsoNames.find((name) => deps.records[name]);
+    if (ownRecord) {
+      return {
+        ...result,
+        error: `Worker ${ownRecord} has its own token record; review it before giving ${input.workerName}'s token both Workers`,
+      };
+    }
+    // Every further Worker first: none of them is created when one is missing.
+    const others: Array<{ id: string; name: string }> = [];
+    for (const name of alsoNames) {
+      const found = await api.getWorker(accountId, name);
+      if (found) others.push({ id: found.id, name });
+      else if (!input.createWorker) return { ...result, error: `Worker ${name} does not exist` };
+      else others.push({ id: "", name });
     }
     let worker = await api.getWorker(accountId, input.workerName);
     if (!worker && !input.createWorker)
@@ -522,6 +555,16 @@ export async function setCloudflareDeploySecrets(
       }
     }
     result.worker = { id: worker.id, created };
+    for (const other of others) {
+      if (other.id) continue;
+      if (input.dryRun) {
+        result.plan.push(`create empty Worker ${other.name}`);
+        other.id = "(new)";
+      } else {
+        other.id = (await api.createWorker(accountId, other.name)).id;
+      }
+    }
+    const wantIds = [worker.id, ...others.map((other) => other.id)];
     const current = secrets.find((secret) => secret.name === "CLOUDFLARE_API_TOKEN");
     const accountSecret = secrets.find((secret) => secret.name === "CLOUDFLARE_ACCOUNT_ID");
     const previous = record ? await api.getAccountToken(accountId, record.tokenId) : null;
@@ -529,6 +572,7 @@ export async function setCloudflareDeploySecrets(
       !input.rotate &&
       record &&
       record.workerId === worker.id &&
+      sameIds(targetWorkerIds(record), wantIds) &&
       record.secretUpdatedAt &&
       current?.updatedAt === record.secretUpdatedAt &&
       record.accountSecretUpdatedAt &&
@@ -546,7 +590,7 @@ export async function setCloudflareDeploySecrets(
     }
     if (input.dryRun) {
       result.plan.push(
-        `mint ${tokenName}: ${WORKER_TOKEN_GROUP} on Worker ${input.workerName}; read back policy and check access; stop on failure (no broader fallback)`,
+        `mint ${tokenName}: ${WORKER_TOKEN_GROUP} on ${allNames.length === 1 ? `Worker ${input.workerName}` : `exactly the Workers ${allNames.join(", ")}`}; read back policy and check access; stop on failure (no broader fallback)`,
         `set ${CLOUDFLARE_SECRET_NAMES.join(", ")} on ${input.repoSlug}`,
       );
       if (record)
@@ -564,7 +608,12 @@ export async function setCloudflareDeploySecrets(
       accountId,
       worker: input.workerName,
       workerId: worker.id,
-      check: (value) => deps.check(value, accountId, input.workerName),
+      ...(others.length > 0 ? { alsoWorkers: others } : {}),
+      check: async (value) => {
+        const refused: string[] = [];
+        for (const name of allNames) refused.push(...(await deps.check(value, accountId, name)));
+        return refused;
+      },
     });
     result.tokenId = maskId(minted.tokenId);
     result.scope = "worker";
@@ -608,6 +657,7 @@ export async function setCloudflareDeploySecrets(
     deps.saveRecord({
       worker: input.workerName,
       workerId: worker.id,
+      ...(others.length > 0 ? { workers: allNames, workerIds: wantIds } : {}),
       accountId,
       tokenId: minted.tokenId,
       tokenName,

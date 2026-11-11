@@ -430,6 +430,134 @@ try {
       globalThis.fetch = original;
     }
   });
+  await test("several Workers: one policy names exactly that set; subsets and supersets are broader", () => {
+    const apiId = "c".repeat(32);
+    const both = { accountId, workerId, workerIds: [workerId, apiId] };
+    const twoPolicy = [
+      {
+        effect: "allow",
+        permission_groups: [{ id: "editor", name: WORKER_TOKEN_GROUP }],
+        resources: {
+          [`com.cloudflare.api.account.${accountId}`]: {
+            [`com.cloudflare.edge.worker.script.${workerId}`]: "*",
+            [`com.cloudflare.edge.worker.script.${apiId}`]: "*",
+          },
+        },
+      },
+    ];
+    assert.deepEqual(
+      workerDeployTokenPolicy({ accountId, workerIds: [workerId, apiId], groupId: "editor" }),
+      twoPolicy.map((p) => ({ ...p, permission_groups: [{ id: "editor" }] })),
+    );
+    assert.equal(classifyDeployTokenPolicies(twoPolicy as never, both), "worker");
+    // The same token read against only one of its Workers names too much.
+    assert.equal(
+      classifyDeployTokenPolicies(twoPolicy as never, { accountId, workerId }),
+      "broader",
+    );
+    // A one-Worker token does not cover the set.
+    assert.equal(classifyDeployTokenPolicies(policy(), both), "broader");
+    assert.throws(() =>
+      workerDeployTokenPolicy({ accountId, workerIds: [workerId, workerId], groupId: "editor" }),
+    );
+    assert.throws(() => workerDeployTokenPolicy({ accountId, workerIds: [], groupId: "editor" }));
+  });
+  await test("several Workers: one token, checked against each, recorded under the first", async () => {
+    const apiId = "c".repeat(32);
+    const f = fixture();
+    const checked: string[] = [];
+    f.deps.api.getWorker = async (_a, name) =>
+      name === "site" ? { id: workerId, name } : { id: apiId, name };
+    f.deps.api.createAccountToken = async (args) => {
+      assert.deepEqual(
+        Object.keys(Object.values(args.policies[0].resources)[0]).sort(),
+        [
+          `com.cloudflare.edge.worker.script.${workerId}`,
+          `com.cloudflare.edge.worker.script.${apiId}`,
+        ].sort(),
+      );
+      assert.equal(args.name, "hatchkit-site+site-api-workers");
+      f.mutations.push("mint");
+      return { id: "new-token-id", value: secretValue };
+    };
+    f.deps.api.getAccountToken = async () => ({
+      id: "new-token-id",
+      name: "hatchkit-site+site-api-workers",
+      status: "active",
+      policies: [
+        {
+          effect: "allow",
+          permission_groups: [{ id: "editor", name: WORKER_TOKEN_GROUP }],
+          resources: {
+            [`com.cloudflare.api.account.${accountId}`]: {
+              [`com.cloudflare.edge.worker.script.${apiId}`]: "*",
+              [`com.cloudflare.edge.worker.script.${workerId}`]: "*",
+            },
+          },
+        },
+      ],
+    });
+    f.deps.check = async (_value, _account, worker) => {
+      checked.push(worker);
+      return [];
+    };
+    const r = await setCloudflareDeploySecrets({ ...input, alsoWorkers: ["site-api"] }, f.deps);
+    assert.equal(r.ok, true, r.error);
+    assert.deepEqual(checked, ["site", "site-api"]);
+    assert.equal(f.saved.length, 1);
+    assert.equal(f.saved[0].worker, "site");
+    assert.deepEqual(f.saved[0].workers, ["site", "site-api"]);
+    assert.deepEqual(f.saved[0].workerIds, [workerId, apiId]);
+    assert.ok(!JSON.stringify(f.saved).includes(secretValue));
+
+    // Read back as in sync with the record it wrote.
+    const again = fixture();
+    again.deps.api.getWorker = f.deps.api.getWorker;
+    again.deps.api.getAccountToken = f.deps.api.getAccountToken;
+    again.deps.records.site = { ...f.saved[0], tokenId: "new-token-id" };
+    again.deps.listSecrets = async () =>
+      ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"].map((name) => ({
+        name,
+        updatedAt: f.saved[0].secretUpdatedAt!,
+      }));
+    const sync = await setCloudflareDeploySecrets(
+      { ...input, alsoWorkers: ["site-api"] },
+      again.deps,
+    );
+    assert.equal(sync.inSync, true);
+    // The same record without its second Worker is not in sync.
+    const one = await setCloudflareDeploySecrets({ ...input, dryRun: true }, again.deps);
+    assert.equal(one.inSync, undefined);
+  });
+  await test("several Workers: refuse a further Worker with its own record, or one named twice", async () => {
+    const f = fixture();
+    f.deps.records["site-api"] = { ...record(), worker: "site-api" };
+    const r = await setCloudflareDeploySecrets({ ...input, alsoWorkers: ["site-api"] }, f.deps);
+    assert.equal(r.ok, false);
+    assert.match(r.error!, /own token record/);
+    const twice = await setCloudflareDeploySecrets(
+      { ...input, alsoWorkers: ["site"] },
+      fixture().deps,
+    );
+    assert.equal(twice.ok, false);
+    assert.deepEqual(f.mutations, []);
+  });
+  await test("several Workers: a missing further Worker stops before anything is created", async () => {
+    const f = fixture();
+    f.deps.api.getWorker = async (_a, name) => (name === "site" ? { id: workerId, name } : null);
+    const r = await setCloudflareDeploySecrets({ ...input, alsoWorkers: ["site-api"] }, f.deps);
+    assert.equal(r.ok, false);
+    assert.match(r.error!, /site-api does not exist/);
+    assert.deepEqual(f.mutations, []);
+    const plan = await setCloudflareDeploySecrets(
+      { ...input, alsoWorkers: ["site-api"], createWorker: true, dryRun: true },
+      f.deps,
+    );
+    assert.equal(plan.ok, true);
+    assert.ok(plan.plan.some((p) => p === "create empty Worker site-api"));
+    assert.ok(plan.plan.some((p) => p.includes("exactly the Workers site, site-api")));
+    assert.deepEqual(f.mutations, []);
+  });
   console.log(`${count} Cloudflare deploy-token regressions passed`);
 } finally {
   moduleGuard.deregister();

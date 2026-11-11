@@ -1558,6 +1558,11 @@ export interface CloudflareDeployTokenRecord {
   worker: string;
   /** The Worker's immutable id (tag) the token's policy names. */
   workerId: string;
+  /** A token for a repo that deploys several Workers: every Worker it names,
+   *  `worker` first, and their ids in the same order. The record is kept
+   *  under `worker`. Absent for a one-Worker token. */
+  workers?: string[];
+  workerIds?: string[];
   accountId: string;
   tokenId: string;
   tokenName: string;

@@ -84,8 +84,11 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
 - `hatchkit gh-pages`: configure GitHub Pages for the current repo.
 - `hatchkit cloudflare`: configure Cloudflare Workers Static Assets for the
   current repo (static sites; free, unmetered asset requests).
-  `hatchkit cloudflare token [--worker <name>] [--dry-run]` only mints the
-  repo's per-Worker deploy token and sets the two CLOUDFLARE_* secrets.
+  `hatchkit cloudflare token [--worker <name>] [--also-worker <name>…] [--dry-run]`
+  only mints the repo's per-Worker deploy token and sets the two
+  CLOUDFLARE_* secrets; `--also-worker` gives a repo whose CI uploads
+  several Workers one token on exactly those Workers (record under the
+  first, `workers`/`workerIds`).
   `hatchkit cloudflare https add|remove <host…>` edits hatchkit's one
   HTTP→HTTPS redirect rule per zone (re-read after each write);
   `hatchkit cloudflare redirect add <host> <https-origin>` moves a

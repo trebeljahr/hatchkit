@@ -5254,7 +5254,7 @@ function printHelp(topic?: HelpTopic): void {
   ${chalk.bold("Usage:")}
     cd <project-dir> && hatchkit cloudflare
     cd <project-dir> && hatchkit cloudflare --undo [--dry-run] [--yes]
-    cd <project-dir> && hatchkit cloudflare token [--worker <name>] [--create-worker] [--rotate] [--dry-run]
+    cd <project-dir> && hatchkit cloudflare token [--worker <name>] [--also-worker <name>…] [--create-worker] [--rotate] [--dry-run]
     hatchkit cloudflare https add|remove <host…> [--dry-run]
     hatchkit cloudflare redirect add <host> <https-origin> [--status 301|308] [--dry-run]
     hatchkit cloudflare redirect remove <host> [--dry-run]
@@ -5270,6 +5270,8 @@ function printHelp(topic?: HelpTopic): void {
   that Worker only) and sets CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID — nothing
   else. For a Coolify project whose client or docs deploy to a Worker. The Worker
   name defaults to wrangler.jsonc's; it must exist unless --create-worker.
+  --also-worker (repeatable) names a further Worker the same CI uploads, such as an
+  API Worker on more specific routes: the one token then names exactly those Workers.
 
   ${chalk.bold("Why:")}
     Workers Static Assets serves asset requests free and unmetered. Only

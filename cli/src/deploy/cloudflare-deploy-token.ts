@@ -42,6 +42,18 @@
  * Rotation revokes only the token id recorded for this repo and account,
  * after the replacement is published. A matching display name alone is
  * not proof of ownership. Unknown/orphaned tokens need operator review.
+ *
+ * ---------------------------------------------------------------------
+ * A repo that deploys several Workers
+ * ---------------------------------------------------------------------
+ *
+ * GitHub Actions reads one CLOUDFLARE_API_TOKEN per repo. A repo whose CI
+ * uploads several Workers (a site and its API Worker on more specific
+ * routes) gets one token whose one policy names exactly those Workers:
+ * the same role, each Worker's script resource under the account. The
+ * read-back accepts that exact set and nothing more. The record is kept
+ * under the first Worker (the one wrangler.jsonc names) and lists all of
+ * them (`workers`, `workerIds`).
  */
 
 import type { CfTokenPolicy } from "../utils/cloudflare-api.js";
@@ -53,7 +65,23 @@ export const ACCOUNT_FALLBACK_GROUP = "Workers Scripts Write";
 
 export type DeployTokenScope = "worker" | "account";
 
-export const workerDeployTokenName = (worker: string): string => `hatchkit-${worker}-worker`;
+/** `hatchkit-<worker>-worker`, or `hatchkit-<a>+<b>-workers` for a token
+ *  that names several Workers. */
+export const workerDeployTokenName = (workers: string | readonly string[]): string => {
+  const names = typeof workers === "string" ? [workers] : [...workers];
+  return names.length === 1 ? `hatchkit-${names[0]}-worker` : `hatchkit-${names.join("+")}-workers`;
+};
+
+/** The Workers a token is for: one, or the exact set a several-Worker token names. */
+export type DeployTokenTarget = {
+  accountId: string;
+  workerId: string;
+  /** Every Worker id the token names, `workerId` among them, when it names several. */
+  workerIds?: readonly string[];
+};
+
+export const targetWorkerIds = (target: DeployTokenTarget): string[] =>
+  target.workerIds && target.workerIds.length > 0 ? [...target.workerIds] : [target.workerId];
 
 /** The token-policy resource key of one Worker. */
 export const workerScriptResource = (workerId: string): string =>
@@ -61,19 +89,24 @@ export const workerScriptResource = (workerId: string): string =>
 
 const accountResource = (accountId: string): string => `com.cloudflare.api.account.${accountId}`;
 
-/** The only policy Hatchkit creates for Worker CI. */
-export function workerDeployTokenPolicy(params: {
-  accountId: string;
-  workerId: string;
-  groupId: string;
-}): Array<{
+/** The only policy Hatchkit creates for Worker CI: the Editor role on one
+ *  Worker, or on each of the named Workers and nothing else. */
+export function workerDeployTokenPolicy(
+  params: { accountId: string; groupId: string } & (
+    | { workerId: string; workerIds?: undefined }
+    | { workerIds: readonly string[]; workerId?: undefined }
+  ),
+): Array<{
   effect: "allow";
   permission_groups: Array<{ id: string }>;
   resources: Record<string, Record<string, "*">>;
 }> {
+  const ids = params.workerIds ? [...params.workerIds] : [params.workerId];
   if (
     !/^[0-9a-f]{32}$/i.test(params.accountId) ||
-    !/^[0-9a-f]{32}$/i.test(params.workerId) ||
+    ids.length === 0 ||
+    ids.some((id) => !/^[0-9a-f]{32}$/i.test(id ?? "")) ||
+    new Set(ids).size !== ids.length ||
     !params.groupId
   ) {
     throw new Error("Valid account and immutable Worker ids and an Editor role are required");
@@ -83,37 +116,37 @@ export function workerDeployTokenPolicy(params: {
       effect: "allow",
       permission_groups: [{ id: params.groupId }],
       resources: {
-        [accountResource(params.accountId)]: {
-          [workerScriptResource(params.workerId)]: "*",
-        },
+        [accountResource(params.accountId)]: Object.fromEntries(
+          ids.map((id) => [workerScriptResource(id), "*" as const]),
+        ),
       },
     },
   ];
 }
 
-/** The account wrapper is a namespace, not an account-wide grant. */
+/** The account wrapper is a namespace, not an account-wide grant. The
+ *  nested resources must be exactly the target's Workers. */
 function hasExactWorkerResource(
   resources: Record<string, unknown>,
-  target: { accountId: string; workerId: string },
+  target: DeployTokenTarget,
 ): boolean {
   const entries = Object.entries(resources);
   if (entries.length !== 1 || entries[0][0] !== accountResource(target.accountId)) return false;
   const workers = entries[0][1];
   if (!workers || typeof workers !== "object" || Array.isArray(workers)) return false;
   const nested = Object.entries(workers);
+  const want = new Set(targetWorkerIds(target).map(workerScriptResource));
   return (
-    nested.length === 1 &&
-    nested[0][0] === workerScriptResource(target.workerId) &&
-    nested[0][1] === "*"
+    nested.length === want.size && nested.every(([key, value]) => want.has(key) && value === "*")
   );
 }
 
 /** What a token's policies (as `GET …/tokens/{id}` returns them) reach:
- *  `worker` — only the named Worker; `account` — Workers Scripts Write on
+ *  `worker` — only the named Worker (or exactly the named Workers); `account` — Workers Scripts Write on
  *  the account and nothing else; `broader` — anything more. Pure. */
 export function classifyDeployTokenPolicies(
   policies: readonly CfTokenPolicy[],
-  target: { accountId: string; workerId: string },
+  target: DeployTokenTarget,
 ): DeployTokenScope | "broader" {
   if (policies.length !== 1) return "broader";
   const [policy] = policies;
@@ -198,10 +231,19 @@ export async function mintWorkerDeployToken(
     accountId: string;
     worker: string;
     workerId: string;
+    /** Further Workers the same token deploys (several-Worker repos). */
+    alsoWorkers?: ReadonlyArray<{ name: string; id: string }>;
     check: DeployTokenCheck;
   },
 ): Promise<MintedDeployToken> {
-  const tokenName = workerDeployTokenName(params.worker);
+  const also = params.alsoWorkers ?? [];
+  const names = [params.worker, ...also.map((w) => w.name)];
+  const target: DeployTokenTarget = {
+    accountId: params.accountId,
+    workerId: params.workerId,
+    ...(also.length > 0 ? { workerIds: [params.workerId, ...also.map((w) => w.id)] } : {}),
+  };
+  const tokenName = workerDeployTokenName(names);
   let groupId: string;
   try {
     [groupId] = await api.permissionGroupIds(params.accountId, [WORKER_TOKEN_GROUP]);
@@ -210,7 +252,7 @@ export async function mintWorkerDeployToken(
   }
   const policies = workerDeployTokenPolicy({
     accountId: params.accountId,
-    workerId: params.workerId,
+    workerIds: targetWorkerIds(target),
     groupId,
   });
   let created: { id: string; value: string };
@@ -222,7 +264,7 @@ export async function mintWorkerDeployToken(
     });
   } catch {
     throw new DeployTokenError(
-      `Per-Worker token creation failed for ${params.worker}; no broader fallback. If the response was lost, review ${tokenName} in the dashboard before retrying`,
+      `Per-Worker token creation failed for ${names.join(", ")}; no broader fallback. If the response was lost, review ${tokenName} in the dashboard before retrying`,
     );
   }
   try {
@@ -234,7 +276,7 @@ export async function mintWorkerDeployToken(
       policy?.effect !== "allow" ||
       policy.permission_groups.length !== 1 ||
       policy.permission_groups[0].id !== groupId ||
-      !hasExactWorkerResource(policy.resources, params)
+      !hasExactWorkerResource(policy.resources, target)
     ) {
       throw new Error("Cloudflare did not return the requested per-Worker Editor policy");
     }
@@ -255,7 +297,7 @@ export async function mintWorkerDeployToken(
       );
     }
     throw new DeployTokenError(
-      `Per-Worker token validation failed for ${params.worker}; candidate revoked. No account-wide fallback.`,
+      `Per-Worker token validation failed for ${names.join(", ")}; candidate revoked. No account-wide fallback.`,
     );
   }
 }

@@ -506,25 +506,31 @@ export async function runCloudflareUndo(cwd: string, opts: CloudflareUndoOptions
 
 export interface CloudflareTokenOptions {
   worker?: string;
+  /** Further Workers the same CI deploys (`--also-worker`, repeatable). */
+  alsoWorkers?: string[];
   createWorker: boolean;
   rotate: boolean;
   dryRun: boolean;
 }
 
 export function parseCloudflareTokenArgs(args: string[]): CloudflareTokenOptions {
-  const known = new Set(["--worker", "--create-worker", "--rotate", "--dry-run"]);
+  const known = new Set(["--worker", "--also-worker", "--create-worker", "--rotate", "--dry-run"]);
+  let worker: string | undefined;
+  const alsoWorkers: string[] = [];
   for (let i = 0; i < args.length; i++) {
     if (!known.has(args[i]))
       throw new Error(`Unknown argument ${args[i]} (see \`hatchkit help cloudflare\`).`);
-    if (args[i] === "--worker") {
+    if (args[i] === "--worker" || args[i] === "--also-worker") {
       if (!args[i + 1] || args[i + 1].startsWith("--"))
-        throw new Error("--worker takes a Worker name.");
+        throw new Error(`${args[i]} takes a Worker name.`);
+      if (args[i] === "--worker") worker = args[i + 1];
+      else alsoWorkers.push(args[i + 1]);
       i++;
     }
   }
-  const at = args.indexOf("--worker");
   return {
-    ...(at >= 0 ? { worker: args[at + 1] } : {}),
+    ...(worker ? { worker } : {}),
+    ...(alsoWorkers.length > 0 ? { alsoWorkers } : {}),
     createWorker: args.includes("--create-worker"),
     rotate: args.includes("--rotate"),
     dryRun: args.includes("--dry-run"),
@@ -550,10 +556,12 @@ export async function runCloudflareToken(
   }
   console.log(chalk.dim(`  Repo:    ${repo.fullName}`));
   console.log(chalk.dim(`  Worker:  ${workerName}`));
+  for (const also of opts.alsoWorkers ?? []) console.log(chalk.dim(`  Also:    ${also}`));
   const res = await setCloudflareDeploySecrets({
     projectDir: cwd,
     repoSlug: repo.fullName,
     workerName,
+    ...(opts.alsoWorkers?.length ? { alsoWorkers: opts.alsoWorkers } : {}),
     createWorker: opts.createWorker,
     rotate: opts.rotate,
     dryRun: opts.dryRun,

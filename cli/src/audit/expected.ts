@@ -211,8 +211,13 @@ export function buildLocalExpected(opts: BuildExpectedOptions): CloudflareExpect
   );
 
   for (const record of Object.values(getCloudflareDeployTokenRecords())) {
-    addToken(record.tokenId, "worker", `CI token of Worker ${record.worker} (${record.repo})`);
-    workers.add(record.worker);
+    const names = record.workers?.length ? record.workers : [record.worker];
+    addToken(
+      record.tokenId,
+      "worker",
+      `CI token of Worker${names.length > 1 ? "s" : ""} ${names.join(", ")} (${record.repo})`,
+    );
+    for (const name of names) workers.add(name);
   }
 
   for (const ledger of loadAllLedgers()) {

@@ -231,7 +231,7 @@ export function findCloudflareDeployTokenFindings(input: {
       },
     ];
   }
-  const name = `${workerDeployTokenName(input.worker)} (${maskId(record.tokenId)})`;
+  const name = `${record.tokenName || workerDeployTokenName(record.workers ?? input.worker)} (${maskId(record.tokenId)})`;
   if (!record.secretUpdatedAt || secret.updatedAt !== record.secretUpdatedAt) {
     return [
       {
