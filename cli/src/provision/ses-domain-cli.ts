@@ -42,7 +42,7 @@ export function sesDomainPlan(domain: string, region: string): string[] {
   const identity = sesSendingSubdomain(domain);
   const mailFrom = sesMailFromSubdomain(identity, "bounce");
   return [
-    `SES identity ${identity} in ${region} (DKIM, Easy DKIM 2048-bit)`,
+    `SES identity ${identity} in ${region} with Easy DKIM`,
     `3 DKIM CNAMEs <token>._domainkey.${identity} in Cloudflare`,
     `custom MAIL FROM ${mailFrom}: MX 10 ${sesMailFromMxTarget(region)} and TXT "${SES_MAIL_FROM_SPF}"`,
     "no Listmonk lists, templates, API user or SMTP relay",
