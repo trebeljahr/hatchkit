@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Renders the GitHub social preview candidates (1280x640 PNG) from
-// docs/marketing/social-preview/template.html, plus a labelled review sheet.
+// docs/marketing/social-preview/template.html, the two og:image cards
+// (1200x630 PNG), plus a labelled review sheet.
 //
 //   node scripts/marketing/render-social-preview.mjs [--round 2|3] [--review-dir <dir>]
+//   node scripts/marketing/render-social-preview.mjs --og
 //   (or: pnpm marketing:social)
 //
 // Writes social-preview-<id>.png next to the template for every variant, or
@@ -11,7 +13,14 @@
 // review-sheet.jpg with the cards side by side, labelled. Run
 // capture-screenshots.mjs first: round 2's variant C embeds its
 // create-secrets.png.
+//
+// Without --round it also writes the og:image cards, og-wordmark.png and
+// og-clean.png; --og writes only those two. They are laid out at 1280x672 CSS
+// px (the same 1.905:1 shape as 1200x630, so the 1280 px wide layouts hold),
+// shot at deviceScaleFactor 2 and downscaled to exactly 1200x630 with
+// ImageMagick (`magick`), which must be installed.
 
+import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -37,9 +46,45 @@ const arg = (name) => {
 };
 const round = arg("--round");
 const reviewDir = arg("--review-dir");
+const ogOnly = process.argv.includes("--og");
 if (round && !ROUNDS[round]) throw new Error(`--round must be one of ${Object.keys(ROUNDS).join(", ")}`);
 if (reviewDir && !round) throw new Error("--review-dir needs --round, so the sheet holds one round's cards");
-const variants = round ? ROUNDS[round] : Object.values(ROUNDS).flat();
+if (ogOnly && round) throw new Error("--og and --round do not go together");
+const variants = ogOnly ? [] : round ? ROUNDS[round] : Object.values(ROUNDS).flat();
+
+// og:image cards: [output, page in SOCIAL_DIR, query, override CSS].
+//   og-wordmark.png  the live card, a3-2. The 640 px card moves down 16 px and
+//     only its background stretches 16 px past the top and bottom, so every
+//     margin around the wordmark, pill and nodes stays as designed.
+//   og-clean.png     og-clean.html: a3-2 without the wordmark and the line.
+const OG_CARDS = [
+  [
+    "og-wordmark.png",
+    "template.html",
+    "v=a3-2",
+    `html, body { height: 672px !important; }
+     body { background: #0b0d12; }
+     .card { top: 16px; overflow: visible !important; clip-path: inset(-16px 0); }
+     .hatch, .glow { top: -16px !important; bottom: -16px !important; }
+     .topline { top: -16px !important; }`,
+  ],
+  ["og-clean.png", "og-clean.html", "", ""],
+];
+
+// Pipes a @2x screenshot through ImageMagick to exactly 1200x630. The date and
+// time chunks are left out so an unchanged card keeps its SHA-256.
+function downscaleOg(png, out) {
+  try {
+    execFileSync(
+      "magick",
+      ["png:-", "-resize", "1200x630!", "-define", "png:exclude-chunks=date,time", out],
+      { input: png },
+    );
+  } catch (err) {
+    if (err.code === "ENOENT") throw new Error("ImageMagick's `magick` is needed for the og:image cards (brew install imagemagick)");
+    throw err;
+  }
+}
 
 const browser = await launchChromium();
 try {
@@ -54,6 +99,19 @@ try {
     const kb = Math.round(statSync(out).size / 1024);
     if (kb > 1000) throw new Error(`${out} is ${kb} KB; GitHub wants under 1 MB`);
     console.log(`wrote ${out} (${kb} KB)`);
+  }
+
+  for (const [name, file, query, css] of round ? [] : OG_CARDS) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 672 }, deviceScaleFactor: 2 });
+    const url = pathToFileURL(join(SOCIAL_DIR, file)).href + (query ? `?${query}` : "");
+    await page.goto(url, { waitUntil: "networkidle" });
+    if (css) await page.addStyleTag({ content: css });
+    await page.evaluate(() => document.fonts.ready);
+    await page.evaluate(() => Promise.all([...document.images].map((i) => i.decode().catch(() => {}))));
+    const out = join(SOCIAL_DIR, name);
+    downscaleOg(await page.screenshot(), out);
+    await page.close();
+    console.log(`wrote ${out} (${Math.round(statSync(out).size / 1024)} KB)`);
   }
 
   if (reviewDir) {

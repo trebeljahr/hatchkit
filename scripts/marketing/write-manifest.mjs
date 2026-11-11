@@ -58,6 +58,14 @@ const META = {
     purpose: "GitHub social preview round 3, A3-3 (light): A3-2 in the light palette",
     madeBy: `${SOCIAL} --round 3`,
   },
+  "social-preview/og-wordmark.png": {
+    purpose: "og:image, 1200x630: the live card A3-2 (wordmark, line, pill and nine nodes) laid out at 1.91:1",
+    madeBy: `${SOCIAL} --og`,
+  },
+  "social-preview/og-clean.png": {
+    purpose: "og:image without text, 1200x630: A3-2's pill and nine nodes, no wordmark or line (og-clean.html)",
+    madeBy: `${SOCIAL} --og`,
+  },
 };
 
 const manifestPath = join(MARKETING_DIR, "manifest.json");

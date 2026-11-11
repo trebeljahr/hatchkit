@@ -43,6 +43,26 @@
       "modified": "2026-11-06"
     },
     {
+      "file": "social-preview/og-clean.png",
+      "purpose": "og:image without text, 1200x630: A3-2's pill and nine nodes, no wordmark or line (og-clean.html)",
+      "madeBy": "node scripts/marketing/render-social-preview.mjs --og",
+      "width": 1200,
+      "height": 630,
+      "bytes": 282076,
+      "sha256": "0b9b876ab5777da6652d65f0e0050052d73c05d9630bda7ad145ab6aac30009a",
+      "modified": "2026-11-11"
+    },
+    {
+      "file": "social-preview/og-wordmark.png",
+      "purpose": "og:image, 1200x630: the live card A3-2 (wordmark, line, pill and nine nodes) laid out at 1.91:1",
+      "madeBy": "node scripts/marketing/render-social-preview.mjs --og",
+      "width": 1200,
+      "height": 630,
+      "bytes": 245020,
+      "sha256": "942d66594862cde2803c6653e098f9417c129f21a3218d59aa8e6c958851f5d1",
+      "modified": "2026-11-11"
+    },
+    {
       "file": "social-preview/social-preview-a.png",
       "purpose": "GitHub social preview candidate A (dark): hatchkit create fanning out to the nine things it sets up",
       "madeBy": "node scripts/marketing/render-social-preview.mjs",

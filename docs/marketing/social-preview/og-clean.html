@@ -1,0 +1,71 @@
+<!doctype html>
+<!--
+  Text-free og:image card, 1280x672 CSS px, rendered @2x and downscaled to
+  1200x630 (og-clean.png) by scripts/marketing/render-social-preview.mjs.
+  template.html?v=a3-2 with the wordmark and the line removed: the 640 px a3
+  layout sits 16 px down, and the glow moves from the top left corner to
+  behind the pill. Background, pill, wires and nine nodes as in template.html
+  (A3_NODES).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hatchkit og:image, clean</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=block">
+<style>
+  :root {
+    --bg: #0b0d12; --surface: #161a24; --hatch: #151925;
+    --head: #ffffff; --muted: #9aa3b2; --accent-strong: #818cf8;
+    --border: rgba(255,255,255,.09); --glow: rgba(99,102,241,.32);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { width: 1280px; height: 672px; overflow: hidden; font-family: Inter, sans-serif; }
+  .card { position: relative; width: 1280px; height: 672px; overflow: hidden; background: var(--bg); }
+  .hatch { position: absolute; inset: 0; background-image: repeating-linear-gradient(45deg, var(--hatch) 0 1px, transparent 1px 34px); }
+  .glow { position: absolute; inset: 0; background: radial-gradient(ellipse 70% 65% at 17% 50%, var(--glow), transparent 70%); }
+  .topline { position: absolute; left: 0; top: 0; right: 0; height: 4px; background: var(--accent-strong); }
+  .layer { position: absolute; left: 0; top: 16px; width: 1280px; height: 640px; } /* the a3 layout, centred in 672 */
+  svg.wires { position: absolute; inset: 0; width: 1280px; height: 640px; }
+  svg.wires g { stroke: rgba(129,140,248,.55); }
+  .cmd { position: absolute; width: 318px; height: 72px; border-radius: 16px;
+    display: flex; align-items: center; justify-content: center; background: var(--accent-strong); color: #0b0d12;
+    font: 700 27px "JetBrains Mono", monospace; font-variant-ligatures: none;
+    box-shadow: 0 0 0 7px rgba(129,140,248,.16), 0 18px 50px rgba(99,102,241,.35); }
+  .node { position: absolute; height: 50px; display: flex; align-items: center;
+    justify-content: space-between; padding: 0 20px; border-radius: 12px; background: var(--surface);
+    border: 1px solid var(--border); white-space: nowrap; }
+  .node b { font-size: 24px; font-weight: 700; letter-spacing: -0.3px; color: var(--head); }
+  .node span { font-size: 21px; font-weight: 500; color: var(--muted); }
+  .node.key { border-color: rgba(129,140,248,.55); background: #1a1f33; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="hatch"></div>
+  <div class="glow"></div>
+  <div class="topline"></div>
+  <div class="layer" id="content"></div>
+</div>
+<script>
+  // Same nine pairs as A3_NODES in template.html.
+  const NODES = [
+    ["Repo", "GitHub"], ["DNS", "Cloudflare"], ["Server", "Hetzner"], ["App", "Coolify"],
+    ["Error tracking", "GlitchTip"], ["Analytics", "Plausible"], ["Email", "Listmonk + SES"],
+    ["Backups", "R2"], ["Secrets", "dotenvx", "key"],
+  ];
+  const pillX = 64, pillW = 318, toX = 776, nodeW = 440, topY = 64, pitch = 57.75, bend = 130;
+  const from = [pillX + pillW, 320];
+  const nodes = NODES.map(([what, who, cls], i) =>
+    `<div class="node ${cls ?? ""}" style="left:${toX}px;width:${nodeW}px;top:${topY + i * pitch}px"><b>${what}</b><span>${who}</span></div>`).join("");
+  const wires = NODES.map((_, i) => {
+    const y = topY + i * pitch + 25;
+    return `<path d="M${from[0]} ${from[1]} C ${from[0] + bend} ${from[1]}, ${toX - bend} ${y}, ${toX} ${y}" />` +
+      `<circle cx="${toX}" cy="${y}" r="3.5" />`;
+  }).join("");
+  document.getElementById("content").innerHTML =
+    `<svg class="wires" viewBox="0 0 1280 640"><g fill="none" stroke-width="1.7">${wires}</g></svg>
+     <div class="cmd" style="left:${pillX}px;top:284px">hatchkit create</div>${nodes}`;
+</script>
+</body>
+</html>
