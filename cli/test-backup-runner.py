@@ -28,8 +28,11 @@ class BackupSafety(unittest.TestCase):
         self.assertEqual(args[0][:4], ['docker', 'exec', '-i', 'fixture'])
         self.assertNotIn(secret, json.dumps(args))
         self.assertNotIn('--password', json.dumps(args))
-        self.assertIn('umask 077', args[0][-1])
-        self.assertIn('trap', args[0][-1])
+        # The client reads the credential XML from the pipe; no file is written
+        # in the container (a /tmp file there trips host integrity).
+        self.assertIn('--config-file /dev/stdin', args[0][-1])
+        self.assertNotIn('mktemp', args[0][-1])
+        self.assertNotRegex(args[0][-1], r'>\s*["/$]')
         config = runner.ET.fromstring(kwargs['input'])
         self.assertEqual(config.findtext('password'), secret)
         self.assertEqual(config.findtext('user'), 'reviewer')

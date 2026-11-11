@@ -178,12 +178,15 @@ def docker_shell(container, script, output=None, timeout=1800):
 
 def clickhouse_query(container, query):
     # Keep runtime credentials out of shell and clickhouse-client argv. The
-    # original-host inspector supplies XML through stdin to a private file.
+    # original-host inspector supplies XML through stdin, and the client reads
+    # it straight from the pipe: no credential file is written, so nothing
+    # lands in the container's /tmp for host integrity to flag. `cat` gives
+    # the client a real pipe even where docker exec's stdin is a socket.
     env = dict(value.split('=', 1) for value in container['Config'].get('Env', []) if '=' in value)
     config = ET.Element('config')
     ET.SubElement(config, 'user').text = env.get('CLICKHOUSE_USER') or 'default'
     ET.SubElement(config, 'password').text = env.get('CLICKHOUSE_PASSWORD') or ''
-    script = 'umask 077; config="$(mktemp)"; trap \'rm -f "$config"\' EXIT HUP INT TERM; cat > "$config"; clickhouse-client --config-file "$config" --query ' + shell_quote(query)
+    script = 'cat | clickhouse-client --config-file /dev/stdin --query ' + shell_quote(query)
     return run(['docker', 'exec', '-i', container['Id'], 'sh', '-ec', script], input=ET.tostring(config))
 
 
