@@ -88,8 +88,8 @@
       "madeBy": "node scripts/marketing/render-social-preview.mjs --round 3",
       "width": 1280,
       "height": 640,
-      "bytes": 193385,
-      "sha256": "544c71d7527c29f066a273fb8750119a83315b04993355afeb514419ea6822da",
+      "bytes": 201308,
+      "sha256": "7970397aefa4763658d2e840092c4f85f38e52c4a9f1255182abbccd0bc720c8",
       "modified": "2026-11-11"
     },
     {
@@ -98,8 +98,8 @@
       "madeBy": "node scripts/marketing/render-social-preview.mjs --round 3",
       "width": 1280,
       "height": 640,
-      "bytes": 182852,
-      "sha256": "5aab378b21b73a5c5f4b3c9c9436c3b8cea8f7541dee0ab2677ff824480f7408",
+      "bytes": 192261,
+      "sha256": "197cf9b109b93298e93764a810496b8257711f9e1e6e25aaeac10af60cd14607",
       "modified": "2026-11-11"
     },
     {

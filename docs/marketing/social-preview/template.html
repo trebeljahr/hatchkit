@@ -144,6 +144,14 @@
     box-shadow: 0 0 0 7px rgba(79,70,229,.12), 0 18px 44px rgba(79,70,229,.28); }
   .a3.light .node { border-color: var(--border-strong); box-shadow: 0 4px 14px rgba(17,20,28,.05); }
   .a3.light .node.key { border-color: rgba(79,70,229,.45); background: #eef0ff; }
+  /* a3-2 and a3-3: a larger egg mark and wordmark, the line larger and broken
+     after "starting"; the pill sits lower (see variantA3) so the wires rise only
+     past the two text lines. */
+  .a3.big .brand { gap: 20px; }
+  .a3.big .brand svg { width: 104px; height: 104px; }
+  .a3.big .brand span { font-size: 84px; letter-spacing: -2.4px; }
+  .a3.big .line { top: 184px; font-size: 34px; line-height: 1.25; color: #c3cad8; }
+  .a3.light.big .line { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -267,20 +275,24 @@
     ["Backups", "R2"],
     ["Secrets", "dotenvx", "key"],
   ];
-  const A3_LINE = "Automates the drudgery of starting a new project";
+  const A3_LINE = "Automates the drudgery of starting<br>a new project";
+  // withLine (a3-2, a3-3): the pill moves down to y 368 and the wires stay flat
+  // for longer before they fan out. a3-1 keeps the original fan from y 320.
   function variantA3(withLine) {
-    const pitch = 57.75, top = 64, from = [382, 320], toX = 776;
+    const pitch = 57.75, top = 64, toX = 776;
+    const from = [382, withLine ? 368 : 320];
+    const [c1, c2] = withLine ? [250, 90] : [130, 130];
     const nodes = A3_NODES.map(([what, who, cls], i) =>
       `<div class="node ${cls ?? ""}" style="top:${top + i * pitch}px"><b>${what}</b><span>${who}</span></div>`).join("");
     const wires = A3_NODES.map((_, i) => {
       const y = top + i * pitch + 25;
-      return `<path d="M${from[0]} ${from[1]} C ${from[0] + 130} ${from[1]}, ${toX - 130} ${y}, ${toX} ${y}" />` +
+      return `<path d="M${from[0]} ${from[1]} C ${from[0] + c1} ${from[1]}, ${toX - c2} ${y}, ${toX} ${y}" />` +
         `<circle cx="${toX}" cy="${y}" r="3.5" />`;
     }).join("");
     return `<svg class="wires" viewBox="0 0 1280 640"><g fill="none" stroke-width="1.7">${wires}</g></svg>
       ${brand()}
       ${withLine ? `<div class="line">${A3_LINE}</div>` : ""}
-      <div class="cmd">hatchkit create</div>
+      <div class="cmd" style="top:${from[1] - 36}px">hatchkit create</div>
       ${nodes}`;
   }
 
@@ -290,6 +302,7 @@
   };
   const card = document.getElementById("card");
   card.classList.add(v.startsWith("a3") ? "a3" : v);
+  if (v === "a3-2" || v === "a3-3") card.classList.add("big");
   if (v === "b" || v === "d" || v === "a3-3") card.classList.add("light");
   document.getElementById("content").innerHTML = variants[v]();
 </script>
