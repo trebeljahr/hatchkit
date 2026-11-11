@@ -23,8 +23,8 @@
  */
 
 import chalk from "chalk";
-import { buildSpfRecord, parseSpfIncludes } from "../email/spf.js";
-import type { CloudflareApi } from "../utils/cloudflare-api.js";
+import { mergeSpfRecord, parseSpfIncludes } from "../email/spf.js";
+import { type CloudflareApi, unquoteTxtContent } from "../utils/cloudflare-api.js";
 
 export interface PublishDnsRecord {
   type: "TXT" | "MX" | "CNAME" | "A" | "AAAA";
@@ -167,11 +167,19 @@ export async function publishDnsRecordsToCloudflare(
     if (record.type === "TXT") {
       const isSpf = /v=spf1/i.test(record.value);
       if (isSpf) {
-        const { merged, sourceWasExisting } = await mergeSpf(opts.cf, zone.id, fqdn, record.value);
+        const { merged, sourceWasExisting, existingContent } = await mergeSpf(
+          opts.cf,
+          zone.id,
+          fqdn,
+          record.value,
+        );
+        // Edit the existing SPF row in place (matched by its current
+        // value): two SPF records at one name make receivers PermError.
         const res = await opts.cf.upsertRecord(zone.id, {
           type: "TXT",
           name: fqdn,
           content: merged,
+          matchContent: existingContent,
           dryRun: opts.dryRun,
         });
         tally(res);
@@ -254,21 +262,24 @@ export async function mergeSpf(
   zoneId: string,
   fqdn: string,
   providerSpf: string,
-): Promise<{ merged: string; sourceWasExisting: boolean }> {
+): Promise<{
+  merged: string;
+  sourceWasExisting: boolean;
+  /** The existing SPF record's content, when there is one: the value
+   *  the caller must match to update that record instead of adding one. */
+  existingContent?: string;
+}> {
   const existing = await cf.findRecordsByName(zoneId, fqdn, "TXT");
   const existingSpf = existing.find((r) => /^"?v=spf1/i.test(r.content));
   const providerIncludes = parseSpfIncludes(providerSpf);
   if (!existingSpf) {
     return { merged: providerSpf, sourceWasExisting: false };
   }
-  const existingIncludes = parseSpfIncludes(existingSpf.content);
-  const merged = Array.from(new Set([...existingIncludes, ...providerIncludes]));
-  const existingHasHardfail = /\s-all\b/i.test(existingSpf.content);
+  // Keep every mechanism the record already has (ip4/ip6/a/mx/…) and
+  // its `all` policy; only the provider's missing includes are added.
   return {
-    merged: buildSpfRecord({
-      includes: merged,
-      qualifier: existingHasHardfail ? "-all" : "~all",
-    }),
+    merged: mergeSpfRecord(unquoteTxtContent(existingSpf.content), providerIncludes),
     sourceWasExisting: true,
+    existingContent: existingSpf.content,
   };
 }

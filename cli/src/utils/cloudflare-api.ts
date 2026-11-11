@@ -520,6 +520,11 @@ export class CloudflareApi {
       ttl?: number;
       /** Required for MX. Ignored for other types. */
       priority?: number;
+      /** TXT/MX: find the record to edit by this value instead of
+       *  `content`. For an edit that changes the value, such as merging
+       *  an include into an existing SPF record: matching on the new
+       *  value finds nothing and would add a second record. */
+      matchContent?: string;
       /** Classify only — performs the read + comparison but never
        *  POSTs/PATCHes. `created`/`updated` report what a real run
        *  WOULD do; `id` is empty for would-create records. */
@@ -535,7 +540,7 @@ export class CloudflareApi {
       zoneId,
       params.name,
       params.type,
-      isMx || isTxt ? params.content : undefined,
+      isMx || isTxt ? (params.matchContent ?? params.content) : undefined,
     );
     // TXT goes out quoted; a bare row found above is PATCHed to the
     // quoted form, which carries the same value.

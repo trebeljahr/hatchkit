@@ -276,6 +276,65 @@ await expect("upsertRecord TXT: sibling with another value is left alone", async
   });
 });
 
+// ---------------------------------------------------------------------
+// SPF merge through the real client: the merged value must replace the
+// existing SPF row (same id), not sit next to it as a second SPF record.
+// ---------------------------------------------------------------------
+
+const EXISTING_SPF = '"v=spf1 ip4:192.0.2.1 include:_spf.mx.cloudflare.net -all"';
+const MERGED_SPF = '"v=spf1 ip4:192.0.2.1 include:_spf.mx.cloudflare.net include:amazonses.com -all"';
+
+function withZone(cf: CloudflareApi): CloudflareApi {
+  cf.resolveZoneForName = async () => ({ id: "zone", name: "example.com" }) as never;
+  return cf;
+}
+
+await expect("publish SPF into an existing SPF row edits that row in place", async () => {
+  await withFakeDnsApi([{ id: "spf-id", content: EXISTING_SPF }], async (cf, calls) => {
+    const res = await publishDnsRecordsToCloudflare(
+      [{ type: "TXT", name: "bounce.example.com", value: SPF }],
+      { cf: withZone(cf), domain: "example.com" },
+    );
+    assert.equal(calls.filter((c) => c.method === "POST").length, 0, "must not add a second SPF");
+    const patches = calls.filter((c) => c.method === "PATCH");
+    assert.equal(patches.length, 1);
+    assert.ok(patches[0].url.endsWith("/dns_records/spf-id"));
+    assert.equal(patches[0].body?.content, MERGED_SPF);
+    assert.deepEqual(res.createdRecords, []);
+    assert.deepEqual(res.mergedSpf, [{ name: "bounce.example.com" }]);
+  });
+});
+
+await expect("publish SPF dry run reports the in-place update and writes nothing", async () => {
+  await withFakeDnsApi([{ id: "spf-id", content: EXISTING_SPF }], async (cf, calls) => {
+    const res = await publishDnsRecordsToCloudflare(
+      [{ type: "TXT", name: "bounce.example.com", value: SPF }],
+      { cf: withZone(cf), domain: "example.com", dryRun: true },
+    );
+    assert.equal(calls.filter((c) => c.method !== "GET").length, 0);
+    assert.equal(res.updated, 1);
+    assert.equal(res.created, 0);
+  });
+});
+
+await expect("publish SPF that is already merged changes nothing", async () => {
+  await withFakeDnsApi([{ id: "spf-id", content: MERGED_SPF }], async (cf, calls) => {
+    const res = await publishDnsRecordsToCloudflare(
+      [{ type: "TXT", name: "bounce.example.com", value: SPF }],
+      { cf: withZone(cf), domain: "example.com" },
+    );
+    assert.equal(calls.filter((c) => c.method !== "GET").length, 0);
+    assert.equal(res.unchanged, 1);
+  });
+});
+
+await expect("mergeSpf keeps ip4/a/mx mechanisms of the existing record", async () => {
+  const cf = makeFakeCf([{ id: "r1", content: "v=spf1 ip4:192.0.2.1 a mx include:x.example ~all" }]);
+  const out = await mergeSpf(cf, "zone-1", "example.com", SPF);
+  assert.equal(out.merged, "v=spf1 ip4:192.0.2.1 a mx include:x.example include:amazonses.com ~all");
+  assert.equal(out.existingContent, "v=spf1 ip4:192.0.2.1 a mx include:x.example ~all");
+});
+
 if (failures.length > 0) {
   console.error(`\n${failures.length} failure(s):`);
   for (const f of failures) console.error(`  - ${f}`);
