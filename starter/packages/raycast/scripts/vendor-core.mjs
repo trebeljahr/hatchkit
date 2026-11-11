@@ -88,6 +88,17 @@ const SOURCES = ["core", "shared"].map((directory) => {
   return { specifier: JSON.parse(readFileSync(manifest, "utf-8")).name, dir };
 });
 
+/**
+ * The source file a relative specifier names. Core is NodeNext and spells
+ * `./ids.js`; shared is CommonJS and spells `./types` with no extension,
+ * because the web client's Turbopack compiles it from source and does not
+ * map `./x.js` onto `./x.ts` (see packages/shared/src/index.ts). Both
+ * spellings name the same `.ts` file.
+ */
+function sourceFileOf(dir, specifier) {
+  return join(dir, `${specifier.replace(/\.(js|ts)$/, "")}.ts`);
+}
+
 const VENDOR_DIR = join(PACKAGE_ROOT, "src", "vendor");
 const SRC_DIR = join(PACKAGE_ROOT, "src");
 const BARREL = "index.ts";
@@ -213,7 +224,7 @@ export function buildNameIndex() {
       // A barrel re-exporting another package's barrel (core does this for
       // shared). Its names are picked up when that package is walked.
       if (!target.startsWith(".")) continue;
-      const file = join(source.dir, target.replace(/\.js$/, ".ts"));
+      const file = sourceFileOf(source.dir, target);
       const seen = byBasename.get(basename(file));
       if (seen !== undefined && seen !== file) {
         throw new Error(
@@ -319,7 +330,7 @@ export function buildCopySet(used, index) {
 function resolveSpecifier(fromFile, imported, index) {
   const { specifier, names } = imported;
   if (specifier.startsWith(".")) {
-    const file = join(dirname(fromFile), specifier.replace(/\.js$/, ".ts"));
+    const file = sourceFileOf(dirname(fromFile), specifier);
     const typeOnly = names.every((n) => n.typeOnly);
     return [{ file, typeOnly }];
   }
