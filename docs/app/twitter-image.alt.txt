@@ -1,0 +1,1 @@
+hatchkit logo and the line Automates the drudgery of starting a new project, beside hatchkit create wired to nine services: repo, DNS, server, app, error tracking, analytics, email, backups and secrets

@@ -38,6 +38,12 @@ The scripts need Playwright, which is not a dependency of this repo. Install it 
 
 `HATCHKIT_CLI_ROOT` points the screenshots at another checkout's `cli/` (one with `node_modules`). `render-social-preview.mjs --og` renders only the two og:image cards; a run without `--round` renders them too. They are laid out at 1280×672 CSS px, shot at 2× and downscaled to exactly 1200×630 with ImageMagick, so `magick` must be installed (`brew install imagemagick`). `render-social-preview.mjs --round 3` renders only one round's cards. `--round <n> --review-dir <dir>` also copies that round's cards there as `social-preview-a.png`, `-b.png` and so on, with a labelled `review-sheet.jpg`.
 
+The docs site's link preview, `docs/app/opengraph-image.jpg` (and the identical `twitter-image.jpg`, each with an `.alt.txt`), is `og-wordmark.png` as JPEG:
+
+```bash
+magick docs/marketing/social-preview/og-wordmark.png -strip -interlace Plane -sampling-factor 4:4:4 -quality 88 docs/app/opengraph-image.jpg && cp docs/app/opengraph-image.jpg docs/app/twitter-image.jpg
+```
+
 ## How the screenshots are made
 
 `capture-screenshots.mjs` runs each command in a throwaway sandbox: `HATCHKIT_CONF_DIR` is a fresh temp dir, `HATCHKIT_KEYCHAIN_ACCESS=deny` and `HATCHKIT_LOCAL_DEV=0`. No stored credentials or projects are read, and nothing is written outside the temp dir. `create` runs with `--dry-run`. The one machine-dependent line is the GitHub check, which reads the local `gh` login.
