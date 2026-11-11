@@ -1206,6 +1206,7 @@ export const CLOUDFLARE_OPERATOR_GRANTS = [
   "Zone → Single Redirect → Edit             (HTTP→HTTPS rule for a client on Workers)",
   "Zone → Zone Settings → Edit               (Email Routing settings, edge hardening)",
   "Zone → Email Routing Rules → Edit         (forward rules, catch-all)",
+  "Zone → Cache Rules → Edit                 (edge cache for an R2 custom domain)",
 ] as const;
 
 /** The Cloudflare provisioner, resolved from the keychain. */

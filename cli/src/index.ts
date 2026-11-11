@@ -396,6 +396,10 @@ async function main(): Promise<void> {
     }
     case "provision": {
       const sub = args[1];
+      if (sub === "s3" && args[2] === "cache-rule") {
+        await handleProvisionS3CacheRule();
+        break;
+      }
       if (sub === "s3") {
         await handleProvisionS3();
         break;
@@ -1991,6 +1995,7 @@ async function handleProvisionS3(): Promise<void> {
     corsExtraOrigins: corsExtraOrigins.length > 0 ? corsExtraOrigins : undefined,
     corsAllowAll: corsAllowAll || undefined,
     skipCors: skipCors || undefined,
+    skipCacheRule: args.includes("--no-cache-rule") || undefined,
   });
 
   const provisionedManifest = readManifest(projectDir);
@@ -2052,6 +2057,78 @@ async function handleProvisionS3(): Promise<void> {
     );
   }
   console.log();
+}
+
+async function handleProvisionS3CacheRule(): Promise<void> {
+  // `hatchkit provision s3 cache-rule` — only the edge Cache Rule step of
+  // `provision s3`, for a project whose bucket and custom domain already
+  // exist. Touches nothing but hatchkit's own rule in the zone's
+  // http_request_cache_settings phase (and, with --purge, the host's
+  // cached files). See provision/r2-cache-rule.ts.
+  const projectDir = resolve(".");
+  const flag = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  const dryRun = args.includes("--dry-run");
+  const purge = args.includes("--purge");
+  const overrideBypass = args.includes("--override-bypass");
+  const { existingCustomHostname } = await import("./provision/s3-buckets.js");
+  const { applyR2CacheRule, CacheRuleConflictError } = await import("./provision/r2-cache-rule.js");
+  const manifest = readManifest(projectDir);
+  const host = flag("--public-hostname") ?? (manifest ? existingCustomHostname(manifest) : null);
+  if (!host) {
+    throw new Error(
+      "No custom domain recorded for the assets bucket (.hatchkit.json s3Buckets.assets.publicUrl). Pass --public-hostname <host>, or run `hatchkit provision s3` first.",
+    );
+  }
+  const { getDnsConfig } = await import("./config.js");
+  const { getCloudflareTokenValue } = await import("./utils/secrets.js");
+  const token = (await getDnsConfig())?.apiToken ?? (await getCloudflareTokenValue("r2"));
+  if (!token) {
+    throw new Error("Cloudflare token not configured. Run `hatchkit config add cloudflare` first.");
+  }
+  const { CloudflareApi } = await import("./utils/cloudflare-api.js");
+  console.log(chalk.bold(`\n  hatchkit provision s3 cache-rule${dryRun ? " --dry-run" : ""}`));
+  try {
+    const r = await applyR2CacheRule(new CloudflareApi({ token }), host, {
+      dryRun,
+      purge,
+      overrideBypass,
+    });
+    for (const c of r.conflicts) {
+      console.log(
+        chalk.yellow(
+          `  ! Bypass rule may match ${host}: ${c.description || "(no description)"}: ${c.expression}`,
+        ),
+      );
+    }
+    console.log(
+      `  ${r.action.startsWith("would") ? "·" : chalk.green("✓")} Cache Rule "hatchkit: cache ${host}" on ${r.zoneName}: ${r.action}`,
+    );
+    if (!r.statusCodeTtl) {
+      console.log(
+        chalk.yellow(
+          "  ! The zone refused status-code TTLs; error answers (404) follow Cloudflare's default TTLs.",
+        ),
+      );
+    }
+    if (r.purged) console.log(`  ${chalk.green("✓")} Purged cached files of ${host}`);
+    else if (purge && dryRun) console.log(`  · Would purge cached files of ${host}`);
+    if (!dryRun) {
+      console.log(
+        chalk.dim(
+          `  · Check with GET, not HEAD (HEAD stays DYNAMIC): curl -s -o /dev/null -D - https://${host}/<object>, twice; the second says cf-cache-status: HIT (allow ~1 min for the rule to reach the edge)`,
+        ),
+      );
+    }
+  } catch (err) {
+    if (err instanceof CacheRuleConflictError) {
+      console.error(chalk.red(`\n  ${err.message.split("\n").join("\n  ")}`));
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 
 async function handleDestroy(): Promise<void> {
@@ -4466,6 +4543,25 @@ function printProvisionUsage(): void {
     '  --cors-allow-all           Set CORS origins to ["*"] (mutually exclusive with --cors-origin)',
   );
   console.log("  --no-cors                  Skip the CORS reconcile step entirely");
+  console.log("  --no-cache-rule            Skip the edge Cache Rule for the custom domain");
+  console.log("\nUsage: hatchkit provision s3 cache-rule [flags]");
+  console.log(
+    'Only ensures the zone\'s Cache Rule "hatchkit: cache <host>" for the recorded custom domain',
+  );
+  console.log(
+    "(edge cache eligible, origin cache-control respected, 4xx/5xx never stored). Other rules stay untouched.\n",
+  );
+  console.log(
+    "  --public-hostname <host>   Host to cache (default: the manifest's assets publicUrl)",
+  );
+  console.log("  --dry-run                  Read the zone's Cache Rules and report; write nothing");
+  console.log("  --purge                    Purge the host's cached files after the rule");
+  console.log(
+    "  --override-bypass          Add the rule even when a bypass rule may match the host",
+  );
+  console.log(
+    "Needs Zone → Cache Rules → Edit (and Zone → Cache Purge → Purge for --purge) on the token.",
+  );
 }
 
 function printSigningUsage(): void {

@@ -201,6 +201,66 @@ export interface CfRuleset {
   rules?: CfRedirectRule[];
 }
 
+/** A rule in a zone's `http_request_cache_settings` phase (Cache
+ *  Rules). Only the fields hatchkit reads or writes; other rules in the
+ *  phase come back with whatever else Cloudflare stores and are never
+ *  written by hatchkit. */
+export interface CfCacheRule {
+  id?: string;
+  ref?: string;
+  description?: string;
+  expression: string;
+  action: "set_cache_settings";
+  enabled?: boolean;
+  action_parameters: {
+    cache?: boolean;
+    edge_ttl?: {
+      mode: "respect_origin" | "override_origin" | "bypass_by_default";
+      default?: number;
+      status_code_ttl?: Array<{
+        status_code?: number;
+        status_code_range?: { from?: number; to?: number };
+        value: number;
+      }>;
+    };
+    [key: string]: unknown;
+  };
+}
+
+export interface CfCacheRuleset {
+  id: string;
+  rules?: CfCacheRule[];
+}
+
+/** The grants the Cache Rules and purge calls need, as the token editor
+ *  spells them. Named in the error a 401/403 turns into. */
+export const CF_CACHE_RULES_GRANT = "Zone → Cache Rules → Edit";
+export const CF_CACHE_PURGE_GRANT = "Zone → Cache Purge → Purge";
+
+/** True for the answers Cloudflare gives a token without the grant:
+ *  HTTP 401/403, code 9109 ("Unauthorized to access requested
+ *  resource") or 10000 ("Authentication error"). */
+export function isCloudflareAuthError(err: unknown): boolean {
+  const status = (err as { status?: number }).status;
+  return (
+    status === 401 ||
+    status === 403 ||
+    /\b(9109|10000)\b|request is not authorized|Authentication error/i.test(
+      (err as Error).message ?? "",
+    )
+  );
+}
+
+function withGrantHint(err: unknown, grant: string): Error {
+  if (!isCloudflareAuthError(err)) return err as Error;
+  return Object.assign(
+    new Error(
+      `${(err as Error).message} — the Cloudflare token lacks ${grant}. Add it for this zone to hatchkit's Cloudflare operator token at https://dash.cloudflare.com/profile/api-tokens, then retry.`,
+    ),
+    { status: (err as { status?: number }).status, missingGrant: grant },
+  );
+}
+
 /** Outcome of probing one Cloudflare API-token permission. `ok` means
  *  the probe call succeeded; `detail` explains a failure in terms the
  *  user can act on. */
@@ -1703,6 +1763,74 @@ export class CloudflareApi {
     }
   }
 
+  // ── Cache Rules (http_request_cache_settings) ────────────────────────
+
+  /** The zone's Cache Rules entrypoint ruleset, or null when the zone
+   *  has never had one. Throws naming `CF_CACHE_RULES_GRANT` when the
+   *  token may not read it. */
+  async getCacheRuleset(zoneId: string): Promise<CfCacheRuleset | null> {
+    try {
+      return await this.request<CfCacheRuleset>(
+        "GET",
+        `/zones/${zoneId}/rulesets/phases/http_request_cache_settings/entrypoint`,
+      );
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) return null;
+      throw withGrantHint(err, CF_CACHE_RULES_GRANT);
+    }
+  }
+
+  /** Append `rule` to the zone's Cache Rules, creating the phase's
+   *  ruleset when the zone has none. Other rules stay untouched: the
+   *  POST adds one rule at the end, it never replaces the list. */
+  async addCacheRule(zoneId: string, rule: CfCacheRule): Promise<CfCacheRuleset> {
+    try {
+      const existing = await this.getCacheRuleset(zoneId);
+      if (!existing) {
+        return await this.request<CfCacheRuleset>(
+          "PUT",
+          `/zones/${zoneId}/rulesets/phases/http_request_cache_settings/entrypoint`,
+          { rules: [rule] },
+        );
+      }
+      return await this.request<CfCacheRuleset>(
+        "POST",
+        `/zones/${zoneId}/rulesets/${existing.id}/rules`,
+        rule,
+      );
+    } catch (err) {
+      throw withGrantHint(err, CF_CACHE_RULES_GRANT);
+    }
+  }
+
+  /** Replace one Cache Rule in place (same id, same position). */
+  async updateCacheRule(
+    zoneId: string,
+    rulesetId: string,
+    ruleId: string,
+    rule: CfCacheRule,
+  ): Promise<CfCacheRuleset> {
+    try {
+      return await this.request<CfCacheRuleset>(
+        "PATCH",
+        `/zones/${zoneId}/rulesets/${rulesetId}/rules/${ruleId}`,
+        rule,
+      );
+    } catch (err) {
+      throw withGrantHint(err, CF_CACHE_RULES_GRANT);
+    }
+  }
+
+  /** Purge every cached file of the given hostnames on a zone. Purge by
+   *  hostname is on every plan since 2025-04. */
+  async purgeCacheByHosts(zoneId: string, hosts: string[]): Promise<void> {
+    try {
+      await this.request<unknown>("POST", `/zones/${zoneId}/purge_cache`, { hosts });
+    } catch (err) {
+      throw withGrantHint(err, CF_CACHE_PURGE_GRANT);
+    }
+  }
+
   /** Probe the grants the Cloudflare PROVISIONER needs, each with the
    *  cheapest read-only call that the permission gates:
    *
@@ -1779,6 +1907,8 @@ export class CloudflareApi {
    *    Zone Settings:Edit            — GET /zones/{z}/email/routing (a Zone
    *                                    Settings read; the 2026-10-19 gap)
    *    Email Routing Rules:Edit      — GET /zones/{z}/email/routing/rules
+   *    Cache Rules:Edit              — GET /zones/{z}/rulesets/phases/
+   *                                    http_request_cache_settings/entrypoint
    *
    *  Read-only; a write grant is only proven by a live write. `zoneId`
    *  is optional; the zone probes are skipped without one. */
@@ -1811,6 +1941,17 @@ export class CloudflareApi {
     out.push(
       await this.probe("Zone → Email Routing Rules → Edit", () =>
         this.request<unknown>("GET", `/zones/${params.zoneId}/email/routing/rules?per_page=1`),
+      ),
+    );
+    // provision s3's edge Cache Rule (provision/r2-cache-rule.ts). 404 =
+    // no Cache Rules ruleset yet = readable. Cache Purge has no read to
+    // probe; a missing purge grant surfaces on `cache-rule --purge`.
+    out.push(
+      await this.probe(CF_CACHE_RULES_GRANT, () =>
+        this.request<unknown>(
+          "GET",
+          `/zones/${params.zoneId}/rulesets/phases/http_request_cache_settings/entrypoint`,
+        ),
       ),
     );
     return out;

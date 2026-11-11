@@ -115,6 +115,8 @@ Hatchkit keeps ONE Cloudflare operator token, in the local keychain only (`cloud
 | Zone | Single Redirect → Edit | HTTP→HTTPS rule for a client on Workers |
 | Zone | Zone Settings → Edit | Email Routing settings, edge hardening |
 | Zone | Email Routing Rules → Edit | Forward rules, catch-all |
+| Zone | Cache Rules → Edit | Edge cache for an R2 bucket's custom domain |
+| Zone | Cache Purge → Purge | `provision s3 cache-rule --purge` (no read probe) |
 
 Configure: `hatchkit config add cloudflare`. Setup runs one read probe per permission and saves the token only when all of them pass. `hatchkit doctor` runs the same probes in its "Cloudflare operator token" row.
 
@@ -140,6 +142,23 @@ Configure: `hatchkit config add s3`.
 `hatchkit provision s3` currently creates buckets only on R2. It defaults to
 `--provider r2` and rejects other providers. Hetzner and AWS configurations
 support storage integration; they do not enable this bucket provisioner.
+
+After it attaches the custom domain, `provision s3` adds a Cache Rule for that
+host: without one, an R2 custom domain answers every request from the bucket's
+one location (`cf-cache-status: DYNAMIC`). The rule makes the host eligible for
+the edge cache, keeps the objects' own `cache-control`, and never stores 4xx or
+5xx answers. For a bucket that already exists, run only this step from the
+project directory:
+
+```bash
+hatchkit provision s3 cache-rule --dry-run
+hatchkit provision s3 cache-rule
+```
+
+The command changes only its own rule (`hatchkit: cache <host>`). It stops when
+an enabled bypass rule in the zone may match the host. Check the result with a
+GET request; R2 custom domains answer HEAD requests with `DYNAMIC` even when
+the object is cached.
 
 ---
 

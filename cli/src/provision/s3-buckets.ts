@@ -105,6 +105,9 @@ export interface ProvisionS3Opts {
   /** Skip the CORS reconcile step entirely. Records `cors.skipped: true`
    *  in the manifest so re-runs respect the user's choice. */
   skipCors?: boolean;
+  /** Skip the edge Cache Rule for the custom domain
+   *  (provision/r2-cache-rule.ts). Default: ensure it. */
+  skipCacheRule?: boolean;
 }
 
 export interface ProvisionS3Result {
@@ -410,6 +413,7 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
           customSpinner.succeed(
             `Custom domain ${cd.existed ? "already attached" : "attached"} — ${publicUrl}`,
           );
+          if (!opts.skipCacheRule) await ensureCacheRuleStep(cfZone, zone.id, cd.domain);
         } catch (err) {
           customSpinner.warn(
             `Custom domain failed (${(err as Error).message.split("\n")[0]}) — falling back to r2.dev managed URL`,
@@ -831,6 +835,32 @@ export async function provisionS3ForProject(opts: ProvisionS3Opts): Promise<Prov
  *  `s3.foo.example.com` we look up `example.com`. Two-label
  *  apex stays as-is. This is the same shape the existing DNS code
  *  uses; see `cli/src/deploy/coolify-app.ts` for parallels. */
+/** Edge Cache Rule for the custom domain (see provision/r2-cache-rule.ts).
+ *  Never fails provisioning: the bucket works without it, only slower
+ *  far from the bucket. A missing grant or a bypass rule is printed with
+ *  the command that finishes the step later. */
+async function ensureCacheRuleStep(
+  api: CloudflareApi,
+  zoneId: string,
+  host: string,
+): Promise<void> {
+  const { ensureR2CacheRule } = await import("./r2-cache-rule.js");
+  const spinner = ora(`Ensuring edge Cache Rule for ${host}`).start();
+  try {
+    const r = await ensureR2CacheRule(api, zoneId, host);
+    spinner.succeed(
+      `Cache Rule ${r.action} — ${host} eligible for edge cache${r.statusCodeTtl ? "" : " (zone refused status-code TTLs: errors follow Cloudflare defaults)"}`,
+    );
+  } catch (err) {
+    spinner.warn(`Cache Rule not set: ${(err as Error).message}`);
+    console.log(
+      chalk.dim(
+        `  · Finish later from the project dir: hatchkit provision s3 cache-rule --dry-run`,
+      ),
+    );
+  }
+}
+
 function pickClosestZoneName(hostname: string): string {
   const parts = hostname.split(".");
   if (parts.length <= 2) return hostname;

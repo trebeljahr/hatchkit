@@ -504,7 +504,7 @@ await test("doctor passes the operator and says which slot answered", async () =
   store.set("providers.cloudflare", { status: "configured", accountId: ACCOUNT });
   const row = await checkCloudflareOperator({ makeApi: () => fakeDoctorApi() });
   assert.equal(row.status, "ok", row.detail);
-  assert.match(row.detail ?? "", /9\/9 read probes passed/);
+  assert.match(row.detail ?? "", /10\/10 read probes passed/);
   assert.match(row.detail ?? "", /from cloudflare:operator/);
 });
 

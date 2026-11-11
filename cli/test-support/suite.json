@@ -97,6 +97,7 @@
   "test-ses-smtp.ts",
   "test-ses-mail-from.ts",
   "test-cloudflare-dns-publish.ts",
+  "test-r2-cache-rule.ts",
   "test-listmonk-ses.ts",
   "test-listmonk-project-user.ts",
   "test-ses-feedback.ts",
