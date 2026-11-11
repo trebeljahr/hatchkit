@@ -101,14 +101,65 @@ class PackageExplainedChanges(unittest.TestCase):
         self.assertEqual(integrity.explain([('removed', 'f', 'f-----', '/usr/bin/x')])[1], 'a file was removed')
         self.assertIn('directory', integrity.explain([('changed', 'd', 'd = p.. mc', '/etc')])[1])
         self.assertEqual(integrity.explain([('changed', 'd', 'd = ... mc.. ..', '/etc')])[1], 'only directories changed')
-        with patch.object(integrity, 'owner_packages', return_value={'/etc/foreign': None}):
+        with patch.object(integrity, 'owner_packages', return_value={}):
             self.assertIn('no single owning package', integrity.explain([('changed', 'f', 'f = ', '/etc/foreign')])[1])
-        with patch.object(integrity, 'owner_packages', return_value={'/usr/bin/dig': 'bind9-dnsutils'}), \
+        with patch.object(integrity, 'owner_packages', return_value={'/usr/bin/dig': ('bind9-dnsutils', '/usr/bin/dig')}), \
              patch.object(integrity, 'package_matches', return_value=False):
             self.assertIn('does not match', integrity.explain([('changed', 'f', 'f = ', '/usr/bin/dig')])[1])
-        with patch.object(integrity, 'owner_packages', return_value={'/usr/bin/dig': 'bind9-dnsutils'}), \
+        with patch.object(integrity, 'owner_packages', return_value={'/usr/bin/dig': ('bind9-dnsutils', '/usr/bin/dig')}), \
              patch.object(integrity, 'package_matches', return_value=True):
             self.assertEqual(integrity.explain(integrity.report_entries(REPORT)[:2]), (['bind9-dnsutils'], None))
+
+    def test_usrmerge_alias_maps_only_through_a_real_top_level_symlink(self):
+        import os
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'usr' / 'lib').mkdir(parents=True)
+            (root / 'usr' / 'sbin').mkdir()
+            (root / 'sbin').mkdir()  # a real directory, not merged
+            os.symlink('usr/lib', root / 'lib')
+            alias = lambda p: integrity.usrmerge_alias(p, root=str(root))
+            self.assertEqual(alias('/usr/lib/systemd/system/x.service'), '/lib/systemd/system/x.service')
+            self.assertIsNone(alias('/usr/sbin/tool'))  # /sbin is not a symlink here
+            self.assertIsNone(alias('/usr/share/doc/x'))
+            self.assertIsNone(alias('/etc/x'))
+
+    def test_owner_packages_retries_the_merged_usr_path_once(self):
+        def fake_run(argv):
+            known = {'/usr/bin/tool': 'tool-pkg', '/lib/systemd/system/x.service': 'svc-pkg',
+                     '/lib/shared.so': 'a, b'}
+            out = ''.join(f'{known[p]}: {p}\n' for p in argv[2:] if p in known)
+            return subprocess.CompletedProcess(argv, 0, out, '')
+        alias = lambda p: '/' + p.split('/', 2)[2] if p.startswith('/usr/lib/') else None
+        with patch.object(integrity, 'run', side_effect=fake_run):
+            owners = integrity.owner_packages(
+                ['/usr/bin/tool', '/usr/lib/systemd/system/x.service', '/usr/lib/shared.so', '/usr/lib/foreign'], alias=alias)
+        self.assertEqual(owners, {'/usr/bin/tool': ('tool-pkg', '/usr/bin/tool'),
+                                  '/usr/lib/systemd/system/x.service': ('svc-pkg', '/lib/systemd/system/x.service')})
+
+    def test_package_matches_reads_the_deb_under_the_package_path(self):
+        import grp, os, pwd
+        with tempfile.TemporaryDirectory() as folder:
+            live = Path(folder) / 'unit.service'
+            live.write_bytes(b'unit')
+            live.chmod(0o644)
+            buffer = io.BytesIO()
+            with integrity.tarfile.open(fileobj=buffer, mode='w') as tar:
+                member = integrity.tarfile.TarInfo('./lib/systemd/system/unit.service')
+                member.size, member.mode = 4, 0o644
+                member.uname = pwd.getpwuid(os.getuid()).pw_name
+                member.gname = grp.getgrgid(os.getgid()).gr_name
+                tar.addfile(member, io.BytesIO(b'unit'))
+            def fake_run(argv, **kwargs):
+                if argv[0] == 'dpkg-query':
+                    return subprocess.CompletedProcess(argv, 0, '1.0', '')
+                (Path(kwargs['cwd']) / 'svc_1.0_amd64.deb').write_bytes(b'deb')
+                return subprocess.CompletedProcess(argv, 0, '', '')
+            popen = lambda *a, **k: contextlib.nullcontext(types.SimpleNamespace(stdout=io.BytesIO(buffer.getvalue())))
+            with tempfile.TemporaryDirectory() as scratch, \
+                 patch.object(integrity.subprocess, 'run', side_effect=fake_run), \
+                 patch.object(integrity.subprocess, 'Popen', side_effect=popen):
+                self.assertTrue(integrity.package_matches('svc', [(str(live), '/lib/systemd/system/unit.service')], Path(scratch)))
 
     def test_a_hatchkit_rewrite_is_accepted_only_with_its_recorded_hash(self):
         import hashlib
@@ -151,7 +202,7 @@ class PackageExplainedChanges(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as scratch, \
                      patch.object(integrity.subprocess, 'run', side_effect=fake_run), \
                      patch.object(integrity.subprocess, 'Popen', side_effect=popen):
-                    self.assertEqual(integrity.package_matches('pkg', [str(live)], Path(scratch)), expected)
+                    self.assertEqual(integrity.package_matches('pkg', [(str(live), str(live))], Path(scratch)), expected)
 
     def test_explained_diff_installs_the_candidate_baseline_without_mail(self):
         with tempfile.TemporaryDirectory() as folder:

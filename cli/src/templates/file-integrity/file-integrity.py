@@ -59,8 +59,28 @@ def run(args, timeout=120):
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
 
 
-def owner_packages(paths):
-    """path -> package for files with exactly one owner and no diversion."""
+# Merged /usr: packages may still ship /lib/... while AIDE reports the
+# canonical /usr/lib/... path. Map back only when the top-level name really
+# is the distro's symlink into /usr.
+USRMERGE_ALIASES = ('bin', 'sbin', 'lib', 'lib32', 'lib64', 'libx32')
+
+
+def usrmerge_alias(path, root='/'):
+    """/usr/lib/x -> /lib/x when /lib is a symlink to usr/lib; else None."""
+    parts = path.split('/', 3)
+    if len(parts) < 4 or parts[1] != 'usr' or parts[2] not in USRMERGE_ALIASES:
+        return None
+    top = os.path.join(root, parts[2])
+    try:
+        if not os.path.islink(top) or os.path.realpath(top) != os.path.realpath(os.path.join(root, 'usr', parts[2])):
+            return None
+    except OSError:
+        return None
+    return '/' + parts[2] + '/' + parts[3]
+
+
+def query_owners(paths):
+    """dpkg path -> package for paths with exactly one owner and no diversion."""
     owners = {}
     for chunk in range(0, len(paths), 100):
         result = run(['dpkg-query', '-S', *paths[chunk:chunk + 100]])
@@ -75,8 +95,29 @@ def owner_packages(paths):
     return owners
 
 
-def package_matches(package, paths, scratch):
-    """True when every path equals the file in the apt-verified .deb of the installed version."""
+def owner_packages(paths, alias=usrmerge_alias):
+    """path -> (package, path inside the package) for files with exactly one owner.
+
+    A path dpkg does not know is retried once under its merged-/usr alias;
+    the alias must then have exactly one owner too, and the canonical path
+    must not be owned by anything else.
+    """
+    direct = query_owners(paths)
+    owners = {p: (direct[p], p) for p in paths if p in direct}
+    retry = {p: alias(p) for p in paths if p not in direct}
+    retry = {p: a for p, a in retry.items() if a}
+    if retry:
+        aliased = query_owners(sorted(set(retry.values())))
+        for path, other in retry.items():
+            if other in aliased:
+                owners[path] = (aliased[other], other) if aliased[other] else (None, other)
+    return {p: o for p, o in owners.items() if o[0]}
+
+
+def package_matches(package, pairs, scratch):
+    """True when every (filesystem path, package path) equals the file in the apt-verified .deb of the installed version."""
+    paths = [deb_path for _, deb_path in pairs]
+    on_disk = dict((deb_path, fs_path) for fs_path, deb_path in pairs)
     version = run(['dpkg-query', '-W', '-f=${Version}', package]).stdout.strip()
     if not version:
         return False
@@ -96,10 +137,11 @@ def package_matches(package, paths, scratch):
                 if member.name in wanted:
                     data = archive.extractfile(member).read() if member.isreg() else None
                     members[member.name[1:]] = (member, data and hashlib.sha256(data).hexdigest())
-    for path in paths:
-        if path not in members:
+    for deb_path in paths:
+        if deb_path not in members:
             return False
-        member, digest = members[path]
+        member, digest = members[deb_path]
+        path = on_disk[deb_path]
         info = os.lstat(path)
         try:
             user, group = pwd.getpwuid(info.st_uid).pw_name, grp.getgrgid(info.st_gid).gr_name
@@ -150,12 +192,13 @@ def explain(entries):
     owners = owner_packages(files)
     by_package = {}
     for path in files:
-        if not owners.get(path):
+        if path not in owners:
             return None, 'a changed file has no single owning package'
-        by_package.setdefault(owners[path], []).append(path)
+        package, deb_path = owners[path]
+        by_package.setdefault(package, []).append((path, deb_path))
     with tempfile.TemporaryDirectory(prefix='hatchkit-aide-') as scratch:
-        for package, paths in sorted(by_package.items()):
-            if not package_matches(package, paths, Path(scratch)):
+        for package, pairs in sorted(by_package.items()):
+            if not package_matches(package, pairs, Path(scratch)):
                 return None, 'a changed file does not match its signed package'
     return sorted(by_package) + sorted(set(explained)), None
 
