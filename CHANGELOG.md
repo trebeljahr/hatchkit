@@ -22,6 +22,8 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ### Fixed
 
+- Adding `auth-account-security` with email verification to a new project no longer leaves two `emailVerification` keys in `auth.ts`. The starter's own block stayed next to the generated one, and the server failed to typecheck (TS1117).
+
 - `hatchkit update` no longer mounts `<PlausibleScript />` in a layout that already mounts its own Plausible component (for example one that redacts paths). The second tracker counted every visit twice and sent the unredacted URL.
 - A web client that imports a value (not only a type) from `@starter/shared` builds under Next 16 Turbopack again. The shared package's relative imports ended in `.js`, and Turbopack does not map `./x.js` to `./x.ts` ("Module not found: Can't resolve './x.js'"). The starter and the features that add re-exports to the shared barrel (`workspaces`, `extension`, `auth-account-security`, `token-client-auth`, `i18n`) now write extensionless imports. The package compiles to CommonJS, where that form is valid for tsc and for the server's import of `dist/`. In a project created earlier, drop `.js` from the relative imports in `packages/shared/src/`.
 - `hatchkit create --no-docs`, or "no" at the new docs site prompt, leaves out the starter's Docusaurus site. Before, every fullstack and split project shipped `docs-site/` and published it at `https://<domain>/docs/`, with a docs build in the client image and in CI. `--no-docs` removes the package, its workspace entry and the `dev:docs` scripts, so none of that wiring is written. Without the flag, the site ships as before.

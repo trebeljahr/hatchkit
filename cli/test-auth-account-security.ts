@@ -581,6 +581,30 @@ await expect("--auth-options parses a list, rejects unknown and empty values", a
   assert.ok("error" in parseAuthSecurityOptionList(" , "));
 });
 
+await expect("the starter's auth.ts ends with exactly one emailVerification block", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { rewriteServerAuth } = await import(
+    "./src/features/auth-account-security/server-rewriter.js"
+  );
+  const starter = readFileSync(
+    new URL("../starter/packages/server/src/auth/auth.ts", import.meta.url),
+    "utf8",
+  );
+  const result = rewriteServerAuth(starter, {
+    serverPlugins: [],
+    wantsTwoFactor: false,
+    wantsEmailVerification: true,
+    wantsAccountDeletion: false,
+    wantsEmailOtp: false,
+    wantsMagicLink: false,
+    wantsPasskeys: false,
+  });
+  const keys = result.source.match(/^\s*emailVerification:/gm) ?? [];
+  assert.equal(keys.length, 1, `emailVerification appears ${keys.length} times`);
+  assert.match(result.source, /emailVerification: emailVerificationOptions\(/);
+  assert.doesNotMatch(result.source, /async sendVerificationEmail\(/);
+});
+
 // ── Result ────────────────────────────────────────────────────────────
 if (failures.length > 0) {
   console.error(`\n${failures.length} failure(s):`);

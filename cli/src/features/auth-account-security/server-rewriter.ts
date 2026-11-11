@@ -178,6 +178,14 @@ async function deliverAuthMail(
   const blocks: string[] = [];
 
   if (options.wantsEmailVerification) {
+    // The starter has its own `emailVerification` block (with the callback
+    // removed above). Left in place, the one appended below makes a second
+    // key of the same name: TypeScript refuses the file (TS1117), and plain
+    // JavaScript would keep whichever came last without a word.
+    out = out.replace(
+      /\n(?:[ \t]*\/\/[^\n]*\n)*[ \t]*emailVerification:\s*\{[\s\S]*?\n {4}\},\n/,
+      "\n",
+    );
     blocks.push(`    emailVerification: emailVerificationOptions((url, mail) =>
       deliverAuthMail("Verification", url, mail),
       ${verificationPolicy},
