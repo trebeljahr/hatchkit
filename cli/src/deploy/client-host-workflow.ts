@@ -356,7 +356,9 @@ ${build}
         env:
           CI: "true"
         run: |
-          npx playwright install --with-deps chromium
+          # The runners' apt mirror is sometimes unreachable; their image
+          # already carries Chrome's system libraries.
+          npx playwright install --with-deps chromium || npx playwright install chromium
           pnpm test:e2e:export
 
       # A Worker version serves only its own files. Carry the last two

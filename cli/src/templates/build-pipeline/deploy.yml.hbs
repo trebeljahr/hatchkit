@@ -117,7 +117,9 @@ jobs:
           docker logs e2e-seaweedfs >&2
           exit 1
 
-      - run: npx playwright install --with-deps chromium
+      # The runners' apt mirror is sometimes unreachable. Their image already
+      # carries Chrome's system libraries, so fall back to the browser alone.
+      - run: npx playwright install --with-deps chromium || npx playwright install chromium
 
       - name: Run E2E tests
         run: npx playwright test
