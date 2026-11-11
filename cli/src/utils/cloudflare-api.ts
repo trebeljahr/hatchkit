@@ -47,6 +47,39 @@ export interface CfDnsRecord {
   meta?: { email_routing?: boolean; read_only?: boolean };
 }
 
+/** RFC 1035 caps one TXT character-string at 255 octets. */
+const TXT_CHUNK_MAX = 255;
+
+/** Wrap a TXT value in quotes the way Cloudflare's dashboard wants it.
+ *  Cloudflare stores unquoted TXT content as-is and serves the same
+ *  answer, but flags every such row with "The content field of TXT
+ *  records must be in quotation marks". Values longer than 255 octets
+ *  become several quoted strings, which resolvers join back into one.
+ *  Content that already starts with a quote is left alone. */
+export function quoteTxtContent(value: string): string {
+  if (value.startsWith('"')) return value;
+  const chunks: string[] = [];
+  for (let i = 0; i < value.length; i += TXT_CHUNK_MAX) {
+    chunks.push(value.slice(i, i + TXT_CHUNK_MAX));
+  }
+  if (chunks.length === 0) chunks.push("");
+  return chunks.map((c) => `"${c.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(" ");
+}
+
+/** The value a TXT record carries, whether Cloudflare holds it quoted
+ *  (`"a" "b"`) or bare (`ab`). Used to match records written before
+ *  hatchkit quoted TXT content against the values it writes now. */
+export function unquoteTxtContent(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('"')) return content;
+  const parts: string[] = [];
+  const re = /"((?:[^"\\]|\\.)*)"/g;
+  for (let m = re.exec(trimmed); m; m = re.exec(trimmed)) {
+    parts.push(m[1].replace(/\\(.)/g, "$1"));
+  }
+  return parts.join("");
+}
+
 /** A single record in Cloudflare's "recommended DNS for Email Routing"
  *  response (`GET /zones/{id}/email/routing/dns`). MX entries carry a
  *  priority; TXT entries don't. */
@@ -439,11 +472,18 @@ export class CloudflareApi {
     content?: string,
   ): Promise<CfDnsRecord | null> {
     const query = new URLSearchParams({ name, type });
-    if (content && (type === "TXT" || type === "MX")) query.set("content", content);
+    if (content && type === "MX") query.set("content", content);
     const data = await this.request<CfDnsRecord[]>(
       "GET",
       `/zones/${zoneId}/dns_records?${query.toString()}`,
     );
+    // TXT: match on the value, not the stored text, so a row written
+    // bare (`v=spf1 …`) and one written quoted (`"v=spf1 …"`) are the
+    // same record. Cloudflare's `content` filter compares the stored text.
+    if (content && type === "TXT") {
+      const want = unquoteTxtContent(content);
+      return data.find((r) => unquoteTxtContent(r.content) === want) ?? null;
+    }
     return data[0] ?? null;
   }
 
@@ -497,10 +537,13 @@ export class CloudflareApi {
       params.type,
       isMx || isTxt ? params.content : undefined,
     );
+    // TXT goes out quoted; a bare row found above is PATCHed to the
+    // quoted form, which carries the same value.
+    const content = isTxt ? quoteTxtContent(params.content) : params.content;
     const body: Record<string, unknown> = {
       type: params.type,
       name: params.name,
-      content: params.content,
+      content,
       ttl: params.ttl ?? 1,
     };
     // proxied only applies to A/AAAA/CNAME. MX/TXT have no proxy concept.
@@ -524,10 +567,7 @@ export class CloudflareApi {
       isMx || isTxt ? true : (existing.proxied ?? false) === (params.proxied ?? true);
     const prioritySame = isMx ? (existing.priority ?? null) === params.priority : true;
     const same =
-      existing.content === params.content &&
-      existing.type === params.type &&
-      proxiedSame &&
-      prioritySame;
+      existing.content === content && existing.type === params.type && proxiedSame && prioritySame;
     if (same) return { id: existing.id, created: false, updated: false };
     if (params.dryRun) return { id: existing.id, created: false, updated: true };
     const updated = await this.request<{ id: string }>(

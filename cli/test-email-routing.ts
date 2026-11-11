@@ -58,6 +58,7 @@ const {
   summarizeEmailRoutingProbe,
 } = await import("./src/email/routing-access.js");
 const { runEmailSetup } = await import("./src/email/setup.js");
+const { unquoteTxtContent } = await import("./src/utils/cloudflare-api.js");
 const { parseEmailFlags, recordEmailSetup, recordForwarding, runEmailForward } = await import(
   "./src/email/index.js"
 );
@@ -638,12 +639,15 @@ await expect("an existing SPF is merged into ONE record, not joined by a second"
   } finally {
     restore();
   }
-  const spf = state.records.filter((r) => r.type === "TXT" && /^v=spf1/.test(r.content));
-  assert.equal(spf.length, 1, `SPF rows: ${spf.map((r) => r.content).join(" | ")}`);
-  assert.match(spf[0].content, /include:amazonses\.com/);
-  assert.match(spf[0].content, /include:_spf\.mx\.cloudflare\.net/);
-  assert.match(spf[0].content, /ip4:192\.0\.2\.1 a mx/);
-  assert.match(spf[0].content, /-all$/);
+  const spf = state.records
+    .filter((r) => r.type === "TXT")
+    .map((r) => unquoteTxtContent(r.content))
+    .filter((v) => /^v=spf1/.test(v));
+  assert.equal(spf.length, 1, `SPF rows: ${spf.join(" | ")}`);
+  assert.match(spf[0], /include:amazonses\.com/);
+  assert.match(spf[0], /include:_spf\.mx\.cloudflare\.net/);
+  assert.match(spf[0], /ip4:192\.0\.2\.1 a mx/);
+  assert.match(spf[0], /-all$/);
   assert.equal(state.records.filter((r) => r.type === "MX").length, 3);
 });
 

@@ -25,7 +25,7 @@
  */
 import assert from "node:assert/strict";
 import { mergeSpf, publishDnsRecordsToCloudflare } from "./src/provision/cloudflare-dns-publish.js";
-import type { CloudflareApi } from "./src/utils/cloudflare-api.js";
+import { CloudflareApi, quoteTxtContent, unquoteTxtContent } from "./src/utils/cloudflare-api.js";
 
 interface FakeTxt {
   id: string;
@@ -163,6 +163,117 @@ await expect("dryRun option reaches every upsert (A + AAAA + CNAME)", async () =
   );
   assert.equal(calls.length, 3);
   for (const call of calls) assert.equal(call.dryRun, true);
+});
+
+// ---------------------------------------------------------------------
+// TXT quoting. Cloudflare flags bare TXT content in its dashboard, so
+// upsertRecord writes it quoted, and must still recognise rows written
+// bare before that, or a rerun would add a second SPF record.
+// ---------------------------------------------------------------------
+
+await expect("quoteTxtContent wraps, escapes and splits at 255", async () => {
+  assert.equal(quoteTxtContent("v=spf1 ~all"), '"v=spf1 ~all"');
+  assert.equal(quoteTxtContent('"already"'), '"already"');
+  assert.equal(quoteTxtContent('a"b\\c'), '"a\\"b\\\\c"');
+  const long = "k".repeat(300);
+  assert.equal(quoteTxtContent(long), `"${"k".repeat(255)}" "${"k".repeat(45)}"`);
+});
+
+await expect("unquoteTxtContent reverses quoteTxtContent", async () => {
+  for (const v of ["v=spf1 include:amazonses.com ~all", 'a"b\\c', "k".repeat(600), ""]) {
+    assert.equal(unquoteTxtContent(quoteTxtContent(v)), v);
+  }
+  assert.equal(unquoteTxtContent("bare value"), "bare value");
+});
+
+interface FetchCall {
+  method: string;
+  url: string;
+  body?: Record<string, unknown>;
+}
+
+async function withFakeDnsApi(
+  rows: Array<{ id: string; content: string }>,
+  fn: (cf: CloudflareApi, calls: FetchCall[]) => Promise<void>,
+): Promise<void> {
+  const calls: FetchCall[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+    const call: FetchCall = {
+      method: init?.method ?? "GET",
+      url: String(input),
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    };
+    calls.push(call);
+    const result =
+      call.method === "GET"
+        ? rows.map((r) => ({ ...r, name: "bounce.example.com", type: "TXT", proxied: false }))
+        : { id: call.method === "POST" ? "new-id" : "existing-id" };
+    return new Response(JSON.stringify({ success: true, errors: [], result }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    await fn(new CloudflareApi({ token: "test-token" }), calls);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+const SPF = "v=spf1 include:amazonses.com ~all";
+
+await expect("upsertRecord TXT: new record is written quoted", async () => {
+  await withFakeDnsApi([], async (cf, calls) => {
+    const res = await cf.upsertRecord("zone", {
+      type: "TXT",
+      name: "bounce.example.com",
+      content: SPF,
+    });
+    assert.equal(res.created, true);
+    const post = calls.find((c) => c.method === "POST");
+    assert.equal(post?.body?.content, `"${SPF}"`);
+    assert.ok(!calls[0].url.includes("content="), "TXT lookup must not filter on stored text");
+  });
+});
+
+await expect("upsertRecord TXT: bare legacy row is PATCHed to quoted, not duplicated", async () => {
+  await withFakeDnsApi([{ id: "existing-id", content: SPF }], async (cf, calls) => {
+    const res = await cf.upsertRecord("zone", {
+      type: "TXT",
+      name: "bounce.example.com",
+      content: SPF,
+    });
+    assert.deepEqual(res, { id: "existing-id", created: false, updated: true });
+    assert.equal(calls.filter((c) => c.method === "POST").length, 0);
+    const patch = calls.find((c) => c.method === "PATCH");
+    assert.ok(patch?.url.endsWith("/dns_records/existing-id"));
+    assert.equal(patch?.body?.content, `"${SPF}"`);
+  });
+});
+
+await expect("upsertRecord TXT: quoted row is unchanged", async () => {
+  await withFakeDnsApi([{ id: "existing-id", content: `"${SPF}"` }], async (cf, calls) => {
+    const res = await cf.upsertRecord("zone", {
+      type: "TXT",
+      name: "bounce.example.com",
+      content: SPF,
+    });
+    assert.deepEqual(res, { id: "existing-id", created: false, updated: false });
+    assert.equal(calls.length, 1);
+  });
+});
+
+await expect("upsertRecord TXT: sibling with another value is left alone", async () => {
+  await withFakeDnsApi([{ id: "dmarc-id", content: '"v=DMARC1; p=none"' }], async (cf, calls) => {
+    const res = await cf.upsertRecord("zone", {
+      type: "TXT",
+      name: "bounce.example.com",
+      content: SPF,
+    });
+    assert.equal(res.created, true);
+    assert.equal(calls.filter((c) => c.method === "PATCH").length, 0);
+  });
 });
 
 if (failures.length > 0) {
