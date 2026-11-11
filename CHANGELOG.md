@@ -8,6 +8,8 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ### Added
 
+- `hatchkit update --auth-options <list>` switches on parts of `auth-account-security` (for example `email-verification,passkeys`) without the interactive multiselect, so the feature can be added in a headless run.
+
 - `hatchkit ses domain [<project-dir>]` sets up the SES sending domain for a project that sends with direct SES and has no Listmonk: the identity `mail.<domain>`, its DKIM CNAMEs and the custom MAIL FROM rows in Cloudflare, recorded in the run ledger for `destroy`. `hatchkit add … listmonk-ses` runs the same steps first. Then `hatchkit ses isolate --activate`.
 - `SES_PROJECT_FROM_NAME` gives the starter's direct SES sender a display name (`"Example App" <noreply@mail.…>`).
 - The starter's direct SES transport sends attachments and a Reply-To address (`sendEmail({ …, replyTo, attachments })`), for calendar invites and similar files. The Listmonk transport refuses attachments instead of dropping them.

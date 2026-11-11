@@ -41,7 +41,8 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
 - `hatchkit create`: interactive scaffold/deploy flow.
 - `hatchkit update`: add supported features to an existing project
   (`workspaces`, `desktop`, `mobile`, `release`, `auth-account-security`,
-  `client-core`). `--features <list>` answers the picker, `--dry-run` reports
+  `client-core`). `--features <list>` answers the picker, `--auth-options
+  <list>` answers the account-security multiselect, `--dry-run` reports
   what would change without writing, `--json` prints the result. Never removes
   a feature. The list lives in `SUPPORTED_ADDITIONS`
   (`cli/src/scaffold/update.ts`) — read it rather than this line, which has

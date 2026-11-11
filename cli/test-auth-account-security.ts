@@ -569,6 +569,18 @@ await expect("a real run through a shared ledger reports no conflicts", async ()
   );
 });
 
+await expect("--auth-options parses a list, rejects unknown and empty values", async () => {
+  const { parseAuthSecurityOptionList } = await import(
+    "./src/features/auth-account-security/types.js"
+  );
+  assert.deepEqual(parseAuthSecurityOptionList(" passkeys, email-verification,passkeys "), {
+    options: ["passkeys", "email-verification"],
+  });
+  const unknown = parseAuthSecurityOptionList("passkeys,totp");
+  assert.ok("error" in unknown && unknown.error.includes("totp"));
+  assert.ok("error" in parseAuthSecurityOptionList(" , "));
+});
+
 // ── Result ────────────────────────────────────────────────────────────
 if (failures.length > 0) {
   console.error(`\n${failures.length} failure(s):`);

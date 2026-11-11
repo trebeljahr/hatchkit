@@ -4132,16 +4132,33 @@ async function handleUpdate(): Promise<void> {
     desiredFeatures = parts as Feature[];
   }
 
+  // `--auth-options` answers the account-security multiselect, which a
+  // headless run otherwise had no way to reach.
+  const authOptionsArg = flagValue("--auth-options");
+  let authSecurityOptions: string[] | undefined;
+  if (authOptionsArg !== undefined) {
+    const { parseAuthSecurityOptionList } = await import(
+      "./features/auth-account-security/types.js"
+    );
+    const parsed = parseAuthSecurityOptionList(authOptionsArg);
+    if ("error" in parsed) {
+      console.error(chalk.red(parsed.error));
+      process.exit(1);
+    }
+    authSecurityOptions = parsed.options;
+  }
+
   const yes = args.includes("--yes") || args.includes("-y");
   // Presets suppress the prompts. `--yes` on its own still needs a
   // feature set to act on, so it keeps the project's current one — a
   // no-op addition that still applies the unconditional retrofits.
   const presets =
-    desiredFeatures !== undefined || yes
+    desiredFeatures !== undefined || yes || authSecurityOptions !== undefined
       ? {
           ...(desiredFeatures !== undefined ? { desiredFeatures } : {}),
           confirmAddFeatures: true,
           ...(yes ? { enableLocalDev: false } : {}),
+          ...(authSecurityOptions !== undefined ? { authSecurityOptions } : {}),
         }
       : undefined;
 
@@ -5080,6 +5097,13 @@ function printHelp(topic?: HelpTopic): void {
     ${chalk.cyan("--features <list>")}  ${FEATURE_VALUES}
                        The feature set you want the project to have.
                        Comma-separated. Skips the interactive picker.
+    ${chalk.cyan("--auth-options <list>")}
+                       Parts of auth-account-security to switch on when it is
+                       added (two-factor, email-verification, credentials,
+                       google-oauth, apple-oauth, github-oauth, discord-oauth,
+                       generic-oauth, steam-openid, guest-accounts,
+                       username-sign-in, account-deletion, profile-pictures,
+                       email-otp, magic-link, passkeys). Skips its multiselect.
     ${chalk.cyan("--dry-run")}          Print what would be added and change nothing.
     ${chalk.cyan("--yes")}, ${chalk.cyan("-y")}          Don't prompt; accept the additions.
     ${chalk.cyan("--json")}             Print the result as JSON.

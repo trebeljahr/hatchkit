@@ -81,6 +81,34 @@ export const AUTH_SECURITY_OPTIONS: readonly AuthSecurityOption[] = [
   "passkeys",
 ] as const;
 
+/** Parse `hatchkit update --auth-options a,b,c`: the account-security parts
+ *  a headless run switches on, instead of the interactive multiselect.
+ *  Unknown names are an error that lists the valid ones; an empty list is
+ *  an error too, since `update` never removes and "none" would be a no-op
+ *  that looks like a choice. */
+export function parseAuthSecurityOptionList(
+  value: string,
+): { options: AuthSecurityOption[] } | { error: string } {
+  const parts = [
+    ...new Set(
+      value
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean),
+    ),
+  ];
+  if (parts.length === 0) {
+    return { error: `--auth-options needs at least one of: ${AUTH_SECURITY_OPTIONS.join(", ")}` };
+  }
+  const unknown = parts.filter((p) => !(AUTH_SECURITY_OPTIONS as readonly string[]).includes(p));
+  if (unknown.length > 0) {
+    return {
+      error: `Unknown --auth-options value(s): ${unknown.join(", ")}. Known: ${AUTH_SECURITY_OPTIONS.join(", ")}`,
+    };
+  }
+  return { options: parts as AuthSecurityOption[] };
+}
+
 /** Pre-ticked in the interactive multiselect, and the set a
  *  non-interactive `--auth-security` with no explicit list gets.
  *

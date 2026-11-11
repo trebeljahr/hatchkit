@@ -173,7 +173,10 @@ cd my-app
 hatchkit update --dry-run           # what would change
 hatchkit update                     # pick interactively
 hatchkit update --features desktop,mobile --yes
+hatchkit update --features auth-account-security --auth-options email-verification,passkeys --yes
 ```
+
+`--auth-options <list>` answers the account-security multiselect for a headless run. It names the parts to switch on when `auth-account-security` is added; parts already recorded in `.hatchkit.json` stay on. The values are listed on the [account security](./auth-account-security) page.
 
 Reads `.hatchkit.json`, then adds selected features. Supported additions are `workspaces`, `token-client-auth`, `desktop`, `mobile`, `release`, `auth-account-security`, `client-core`, `extension`, `server-migrations`, `scheduler`, `public-api`, `i18n`, `raycast`, and `mcp`. Removal is not supported because it could delete user code. Remove files manually and update the manifest.
 
