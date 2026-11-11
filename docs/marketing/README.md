@@ -74,4 +74,4 @@ Every name on the cards is a command, provider or env key in this repo. The plac
 
 What the cards leave out: provider tokens are entered once, at `hatchkit setup`, and a project with the Stripe feature asks for its Stripe keys during `create`. A provider that is not configured becomes a deferred step with its follow-up command.
 
-The live GitHub social preview is `social-preview-a3-2.png` (uploaded 2026-11-07). On 2026-11-11 it got the egg mark in place of the earlier hatched-square logo and the larger lockup and two-line text of the og:image card; the uploaded copy shows the old card until it is uploaded again.
+The live GitHub social preview is `social-preview-a3-2.png`, uploaded again on 2026-11-11 with the egg mark, the larger lockup and the two-line text of the og:image card (first uploaded 2026-11-07 with the earlier hatched-square logo).
