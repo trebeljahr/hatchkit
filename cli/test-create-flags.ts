@@ -665,6 +665,36 @@ await test("--dry-run resolves a full plan without a deploy", async () => {
 
 // ---------------------------------------------------------------------------
 
+await test("a --yes dry run shows the deploy and defaults the real run would use", async () => {
+  const { describeDeployNow } = await import("./src/prompts.js");
+  const presets = { name: "blog", domain: "blog.example.com" };
+  const dry = await collectProjectConfig({ presets, nonInteractive: true, dryRun: true });
+  const real = await collectProjectConfig({ presets, nonInteractive: true, dryRun: false });
+  // A dry run itself never deploys...
+  assert.equal(dry.runDeployment, false);
+  assert.equal(real.runDeployment, true);
+  // ...but its plan says the real run will, and the database default follows.
+  assert.equal(describeDeployNow(dry), "yes (skipped in this dry run)");
+  assert.equal(describeDeployNow(real), "yes");
+  assert.equal(dry.dbProvider, real.dbProvider);
+  assert.equal(dry.dbProvider, "coolify");
+
+  const noDeploy = await collectProjectConfig({
+    presets: { ...presets, runDeployment: false },
+    nonInteractive: true,
+    dryRun: true,
+  });
+  assert.equal(describeDeployNow(noDeploy), "no");
+  const scaffoldOnly = await collectProjectConfig({
+    presets: { ...presets, deploymentMode: "scaffold-only" },
+    nonInteractive: true,
+    dryRun: true,
+  });
+  assert.equal(describeDeployNow(scaffoldOnly), "no");
+});
+
+// ---------------------------------------------------------------------------
+
 {
   const { clearAllSecrets } = await import("./src/utils/secrets.js");
   await clearAllSecrets();

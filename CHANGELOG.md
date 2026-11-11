@@ -19,6 +19,8 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ### Fixed
 
+- `hatchkit create --yes --dry-run` now shows the plan the same flags carry out without `--dry-run`. It printed "Deploy now: no" for a run that deploys, and resolved the database to `external` where the real run picks `coolify`.
+
 - `hatchkit add <project> plausible` now sets the `NEXT_PUBLIC_PLAUSIBLE_DOMAIN` and `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL` repo variables, read back after the write. It wrote them only to the client's `.env.production`, which the client image build never sees, so no provisioned site rendered a tracker. A variable holding another value is kept and the command to replace it is printed; `--no-write` prints both commands. `create` and `adopt` do the same.
 - `hatchkit sync` points DNS at the server the project's apps run on. It used the first server Coolify listed, so on a Coolify with several servers it could repoint a project's records at another box. With several servers and no app to read, it now refuses and names `hatchkit dns publish --server`.
 - Postgres scaffolds build again: the generated `items.create` no longer passes a `status` the create schema does not have (TS2339 in the server build).

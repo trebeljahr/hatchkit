@@ -405,6 +405,10 @@ export interface ProjectConfig {
    *  triggers an actual deploy step (coolify / gh-pages / cloudflare),
    *  false when scaffold-only. New code should branch on `deploymentMode` directly. */
   runDeployment: boolean;
+  /** Dry run only: whether the same flags without `--dry-run` would deploy.
+   *  `runDeployment` is always false in a dry run, so the summary reads
+   *  this to show the plan the real run carries out. */
+  plannedDeployment?: boolean;
   /** Tailscale-served dev URL opt-in. When set, scaffold:
    *    · writes ~/.config/dev/projects/<slug>.caddy at the project's
    *      client dev port,
@@ -1567,13 +1571,19 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     ? (presets.githubRepoVisibility ?? "public")
     : undefined;
   const installDeps = scaffoldRepo ? (presets.installDeps ?? true) : false;
-  const runDeployment =
-    deploymentMode === "scaffold-only" || dryRun ? false : (presets.runDeployment ?? true);
+  // What a real run with these flags deploys. A dry run never deploys, but
+  // its plan must show the deploy and the defaults that follow from it, or
+  // the plan someone approves is not the run they get.
+  const plannedDeployment =
+    deploymentMode === "scaffold-only" ? false : (presets.runDeployment ?? true);
+  const runDeployment = dryRun ? false : plannedDeployment;
   const dbEngine: "mongodb" | "postgres" = presets.dbEngine ?? "mongodb";
   const dbProvider: "coolify" | "external" =
     surfaces === "static"
       ? "external"
-      : (presets.dbProvider ?? presets.mongodbProvider ?? (runDeployment ? "coolify" : "external"));
+      : (presets.dbProvider ??
+        presets.mongodbProvider ??
+        (plannedDeployment ? "coolify" : "external"));
 
   const envValues: Record<string, string> = { ...(presets.envValues ?? {}) };
   envValues.FRONTEND_URL ??= `https://${domain}`;
@@ -1631,6 +1641,7 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     topology: presets.topology ?? "single-origin",
     coolifyRuntime: presets.coolifyRuntime ?? DEFAULT_NEW_PROJECT_RUNTIME,
     runDeployment,
+    plannedDeployment: dryRun ? plannedDeployment : undefined,
     envValues,
     localDev,
     email,
@@ -2627,4 +2638,14 @@ export function mlPromptChoices(
       checked: c.mlServices.includes("custom-hf"),
     },
   ];
+}
+
+/** The summary's "Deploy now" value. A dry run shows what the real run
+ *  with the same flags would do, since that is the plan being reviewed. */
+export function describeDeployNow(
+  config: Pick<ProjectConfig, "dryRun" | "runDeployment" | "plannedDeployment">,
+): string {
+  if (!config.dryRun) return config.runDeployment ? "yes" : "no";
+  const planned = config.plannedDeployment ?? config.runDeployment;
+  return planned ? "yes (skipped in this dry run)" : "no";
 }

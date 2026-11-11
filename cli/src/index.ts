@@ -54,6 +54,7 @@ import {
   type GpuPlatform,
   type ProjectConfig,
   collectProjectConfig,
+  describeDeployNow,
   summarizeEmailForwarding,
   summarizeEmailIntent,
 } from "./prompts.js";
@@ -2906,7 +2907,10 @@ async function handleCreate(): Promise<void> {
     beforeReview: nonInteractive ? undefined : ensureRequiredProviders,
   });
   if (forceNoGithub) config.createGithubRepo = false;
-  if (forceNoDeploy) config.runDeployment = false;
+  if (forceNoDeploy) {
+    config.runDeployment = false;
+    config.plannedDeployment = false;
+  }
   if (forceNoInstall) config.installDeps = false;
   if (forceNoLocalDev) config.localDev = undefined;
 
@@ -2984,7 +2988,7 @@ async function handleCreate(): Promise<void> {
     `  GitHub:     ${config.createGithubRepo ? `${config.reuseGithubRepo ? "reuse existing repo" : "yes"} (${config.githubRepoVisibility ?? "public"})` : "no"}`,
   );
   console.log(`  Install:    ${config.installDeps ? "yes (pnpm install)" : "no"}`);
-  console.log(`  Deploy now: ${config.runDeployment ? "yes" : "no"}`);
+  console.log(`  Deploy now: ${describeDeployNow(config)}`);
 
   if (config.dryRun) {
     console.log(chalk.yellow("\n  [dry-run mode — no changes will be made]\n"));
