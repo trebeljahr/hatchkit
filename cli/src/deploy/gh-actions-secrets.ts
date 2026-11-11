@@ -96,6 +96,20 @@ export interface CoolifyDeployApp {
   role?: "client" | "server";
 }
 
+/** The deploy triggers for apps a routing plan names. The one app of a
+ *  single-app deployment (`compose`, or an image runtime's lone `app`)
+ *  carries no role in the secret names; every other app gets its own
+ *  `COOLIFY_<ROLE>_*` set. An image-runtime project routes its client and
+ *  server as two apps even under `single-origin`, so the topology alone
+ *  cannot say how many triggers there are; the plan can. */
+export function deployAppsFromRouted(
+  apps: ReadonlyArray<{ uuid: string; role: "compose" | "app" | "client" | "server" }>,
+): CoolifyDeployApp[] {
+  return apps.map((a) =>
+    a.role === "compose" || a.role === "app" ? { uuid: a.uuid } : { uuid: a.uuid, role: a.role },
+  );
+}
+
 export interface CoolifyDeploySecretsInput {
   /** Working directory that has `.git` + `gh` access. */
   projectDir: string;

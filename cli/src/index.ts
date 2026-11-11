@@ -3500,11 +3500,22 @@ async function handleCreate(): Promise<void> {
       if (repoUrl && config.scaffoldRepo) {
         try {
           const { findCoolifyAppsForProject } = await import("./deploy/coolify-app.js");
-          const { ghSecretExists, repoSlugFromRemote, setCoolifyDeploySecrets } = await import(
-            "./deploy/gh-actions-secrets.js"
-          );
+          const {
+            deployAppsFromRouted,
+            ghSecretExists,
+            repoSlugFromRemote,
+            setCoolifyDeploySecrets,
+          } = await import("./deploy/gh-actions-secrets.js");
           const slug = repoSlugFromRemote(repoUrl);
-          const apps = await findCoolifyAppsForProject(config.name, config.topology);
+          // The apps this run just created or reconciled, with their roles.
+          // Looking them up by name again went by topology alone and found
+          // only the server of an image-runtime `single-origin` project,
+          // which routes its client as a second app: the client then never
+          // received a deploy trigger and answered 503.
+          const apps =
+            coolifyApps.length > 0
+              ? deployAppsFromRouted(coolifyApps)
+              : await findCoolifyAppsForProject(config.name, config.topology);
           if (slug) {
             if (apps.length > 0) {
               await setCoolifyDeploySecrets({

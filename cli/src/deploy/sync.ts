@@ -140,6 +140,7 @@ import { type EnvChange, type EnvPushApp, pushProductionEnv } from "./env-push.j
 import {
   type CoolifyDeployApp,
   repoSlugFromRemote,
+  deployAppsFromRouted,
   setCoolifyDeploySecrets,
 } from "./gh-actions-secrets.js";
 import {
@@ -1058,18 +1059,12 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   // ── Pass 6: GitHub Actions deploy secrets, paired under `split` so
   //    CI can trigger BOTH apps. See deploy/gh-actions-secrets.ts.
   if (opts.secrets !== false && locations.size > 0) {
-    const deployApps: CoolifyDeployApp[] = routedApps
-      .map((routed) => {
+    const deployApps: CoolifyDeployApp[] = deployAppsFromRouted(
+      routedApps.flatMap((routed) => {
         const found = locations.get(routed.appName);
-        if (!found) return null;
-        return {
-          uuid: found.uuid,
-          // The one app of a single-app deployment (compose or image)
-          // carries no role in the secret names.
-          ...(routed.role === "compose" || routed.role === "app" ? {} : { role: routed.role }),
-        } as CoolifyDeployApp;
-      })
-      .filter((a): a is CoolifyDeployApp => a !== null);
+        return found ? [{ uuid: found.uuid, role: routed.role }] : [];
+      }),
+    );
     const slug = await detectRepoSlug(opts.projectDir);
     if (!slug) {
       if (!opts.json) {

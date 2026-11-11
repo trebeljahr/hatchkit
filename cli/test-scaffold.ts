@@ -4637,6 +4637,29 @@ console.log("\n── deploy secrets: split vs single-origin ──────�
   ]);
   checks.push(["names helper: empty in, empty out", coolifyDeploySecretNames([]).length === 0]);
 
+  // An image-runtime project routes client and server as two apps even
+  // under `single-origin`. create once looked the apps up by topology and
+  // wired only the server, so the client never got a deploy and served 503.
+  const { deployAppsFromRouted } = await import("./src/deploy/gh-actions-secrets.js");
+  const imageSingleOrigin = deployAppsFromRouted([
+    { uuid: "c", role: "client" },
+    { uuid: "s", role: "server" },
+  ]);
+  const imageNames = coolifyDeploySecretNames(imageSingleOrigin);
+  checks.push([
+    "routed image apps (single-origin) get a deploy trigger each",
+    imageNames.includes("COOLIFY_CLIENT_RESOURCE_UUID") &&
+      imageNames.includes("COOLIFY_SERVER_RESOURCE_UUID") &&
+      !imageNames.includes("COOLIFY_RESOURCE_UUID"),
+  ]);
+  checks.push([
+    "a lone compose or image app keeps the unprefixed trigger",
+    JSON.stringify(deployAppsFromRouted([{ uuid: "a", role: "compose" }])) ===
+      JSON.stringify([{ uuid: "a" }]) &&
+      JSON.stringify(deployAppsFromRouted([{ uuid: "a", role: "app" }])) ===
+        JSON.stringify([{ uuid: "a" }]),
+  ]);
+
   let ok = true;
   for (const [n, c] of checks) {
     console.log(`  ${c ? "✓" : "✗"} ${n}`);

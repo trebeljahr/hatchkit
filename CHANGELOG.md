@@ -19,6 +19,8 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ### Fixed
 
+- `hatchkit create` wires a deploy trigger for every Coolify app it creates. An image-runtime project routes its client and server as two apps under `single-origin` too, but create looked the apps up by topology and wired only the server: the first deploy then timed out and the client answered 503. `hatchkit sync` repairs a project created before this fix.
+
 - `hatchkit create --yes --dry-run` now shows the plan the same flags carry out without `--dry-run`. It printed "Deploy now: no" for a run that deploys, and resolved the database to `external` where the real run picks `coolify`.
 
 - `hatchkit add <project> plausible` now sets the `NEXT_PUBLIC_PLAUSIBLE_DOMAIN` and `NEXT_PUBLIC_PLAUSIBLE_SCRIPT_URL` repo variables, read back after the write. It wrote them only to the client's `.env.production`, which the client image build never sees, so no provisioned site rendered a tracker. A variable holding another value is kept and the command to replace it is printed; `--no-write` prints both commands. `create` and `adopt` do the same.
