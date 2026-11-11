@@ -36,6 +36,9 @@ export interface AuthSecurityFile {
 const CORE_FILES: readonly AuthSecurityFile[] = [
   { template: "client/safe-next.ts", target: "packages/client/src/lib/safe-next.ts" },
   { template: "client/shell.ts", target: "packages/client/src/lib/shell.ts" },
+  // How the components read `shell.ts` after hydration without setting
+  // state in an effect, which the starter's lint gate refuses.
+  { template: "client/use-mounted.ts", target: "packages/client/src/lib/use-mounted.ts" },
   {
     template: "client/session-revoked.ts",
     target: "packages/client/src/lib/session-revoked.ts",
@@ -213,6 +216,12 @@ const FILES_BY_OPTION: Record<AuthSecurityOption, readonly AuthSecurityFile[]> =
     {
       template: "client/settings-passkeys.tsx",
       target: "packages/client/src/components/settings/passkeys.tsx",
+    },
+    // The login page's half: without it a passkey could be registered but
+    // never used to sign in.
+    {
+      template: "client/passkey-sign-in.tsx",
+      target: "packages/client/src/components/auth/passkey-sign-in.tsx",
     },
   ],
 };

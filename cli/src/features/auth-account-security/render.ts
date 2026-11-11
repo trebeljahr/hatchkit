@@ -57,6 +57,13 @@ export type AuthSecurityTokens = {
   DELETION_USER_STEPS?: string;
   DELETION_MODEL_IMPORTS?: string;
   DELETION_MODEL_MAP?: string;
+  /** better-auth's tables the cascade reaches, as quoted plan names and as
+   *  `name: "model",` lines. From the selection too: a plugin's table exists
+   *  only while the plugin is registered, and the adapter throws
+   *  `Model "twoFactor" not found in schema` for one that is not, which
+   *  would make every deletion fail. */
+  DELETION_AUTH_COLLECTIONS?: string;
+  DELETION_AUTH_MODELS?: string;
   /** How `services/guest-upgrade.ts` moves a guest's rows: the import lines
    *  and the statements, rendered for the project's database (a Mongoose
    *  model, or a drizzle table in the Postgres overlay). */
@@ -81,6 +88,8 @@ const TOKEN_NAMES: Array<keyof AuthSecurityTokens> = [
   "DELETION_USER_STEPS",
   "DELETION_MODEL_IMPORTS",
   "DELETION_MODEL_MAP",
+  "DELETION_AUTH_COLLECTIONS",
+  "DELETION_AUTH_MODELS",
   "GUEST_MOVE_IMPORTS",
   "GUEST_MOVE_BODY",
   "ACCOUNTS_IMPORTS",

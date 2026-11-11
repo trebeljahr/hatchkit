@@ -9,6 +9,8 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 ### Added
 
 - `hatchkit update --auth-options <list>` switches on parts of `auth-account-security` (for example `email-verification,passkeys`) without the interactive multiselect, so the feature can be added in a headless run.
+- The `passkeys` option puts "Sign in with a passkey" on the login page. Before, a passkey could be added under Settings → Passkeys but not used to sign in. The button is hidden in a native or desktop shell, where a passkey cannot work.
+- The signup page of an `auth-account-security` project offers the sign-in methods that create an account on first use: Apple, Google, GitHub, Discord, generic OAuth, Steam and guest accounts, as selected. Before, they were on the login page only.
 
 - `hatchkit ses domain [<project-dir>]` sets up the SES sending domain for a project that sends with direct SES and has no Listmonk: the identity `mail.<domain>`, its DKIM CNAMEs and the custom MAIL FROM rows in Cloudflare, recorded in the run ledger for `destroy`. `hatchkit add … listmonk-ses` runs the same steps first. Then `hatchkit ses isolate --activate`.
 - `SES_PROJECT_FROM_NAME` gives the starter's direct SES sender a display name (`"Example App" <noreply@mail.…>`).
@@ -23,6 +25,10 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 ### Fixed
 
 - The `passkeys` option adds `@better-auth/passkey` in the same version range as the project's `better-auth`. It added `^1.7.0` to projects on better-auth 1.6, and every passkey call in the client failed to typecheck.
+- Signing up with `auth-account-security` honours `?next=`, as signing in does: the person goes to the page that sent them, not always to `/dashboard`. The links between the login and signup pages keep `next`, and Google, Apple, the other OAuth buttons, Steam, sign-in links and guest sign-in return to it too.
+- Deleting an account deletes its passkeys when the project uses `passkeys`. better-auth's `deleteUser` removes only the user, account and session rows, so the passkey rows stayed in the database.
+- Deleting an account works in an `account-deletion` project without `two-factor`. The cascade always deleted from the two-factor plugin's table, the adapter answered `Model "twoFactor" not found in schema`, and every deletion failed. In a project created earlier without two-factor, remove the `authTwoFactors` entries from `services/account-deletion/plan.ts` and `stores.ts`.
+- The `auth-account-security` client components pass the starter's `pnpm lint`. The Google button, the sign-in link form and Settings → Passkeys set state in a mount effect, which `react-hooks/set-state-in-effect` refuses. They now read the host after hydration through the new `lib/use-mounted.ts`. `hatchkit update` keeps files a project already has: delete those three components and run `hatchkit update --features auth-account-security` to get the new versions. CI lints a starter copy with the feature applied (`cli/test-auth-account-security-lint.ts`).
 
 - Adding `auth-account-security` with email verification to a new project no longer leaves two `emailVerification` keys in `auth.ts`. The starter's own block stayed next to the generated one, and the server failed to typecheck (TS1117).
 

@@ -193,6 +193,12 @@ export function renderAuthSecurityDocs(input: AuthSecurityDocsInput): string {
       `A password account must send its password. better-auth alone would delete on a merely`,
       `fresh session, and a browser session lasts far longer than that.`,
       "",
+      `better-auth's \`deleteUser\` removes only the user, account and session rows. The cascade in`,
+      `\`services/account-deletion/plan.ts\` deletes the rest: the plugin tables of the methods this`,
+      `project uses (two-factor secrets, passkeys) and pending verification tokens. A plugin you`,
+      `add later that stores rows per user needs a step there. Name only tables whose plugin is`,
+      `registered: the adapter throws for an unknown model, and every deletion would then fail.`,
+      "",
     );
   }
 
@@ -276,6 +282,16 @@ export function renderAuthSecurityDocs(input: AuthSecurityDocsInput): string {
       `guest. \`services/guest-upgrade.ts\` moves the guest's rows first. Add a line there for`,
       `every collection keyed by a user id: anything not moved is deleted with the guest.`,
       `Steam sign-in hands guests over too, through the same function.`,
+      "",
+    );
+  }
+  if (plan.options.includes("passkeys")) {
+    lines.push(
+      `### Passkeys`,
+      "",
+      `People add a passkey under Settings → Passkeys, then use "Sign in with a passkey" on the`,
+      `login page. Both work in the web app only, because a passkey is bound to the web domain:`,
+      `a native or desktop shell hides the button, and Settings explains why.`,
       "",
     );
   }

@@ -107,6 +107,7 @@
   "test-signing-workflow-writer.ts",
   "test-signing-asc.ts",
   "test-auth-account-security.ts",
+  "test-auth-account-security-lint.ts",
   "test-auth-apple-sign-in.ts",
   "test-auth-sign-in-methods.ts",
   "test-project-subdir.ts",

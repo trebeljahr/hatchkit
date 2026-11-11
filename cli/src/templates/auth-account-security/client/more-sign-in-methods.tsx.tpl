@@ -18,7 +18,7 @@
 import { useRouter } from "next/navigation";
 import * as React from "react";
 import { authClient, signIn } from "@/lib/auth-client";
-import { POST_AUTH_REDIRECT } from "@/lib/safe-next";
+import { POST_AUTH_REDIRECT, safeNextFromSearch } from "@/lib/safe-next";
 import { isTokenShell } from "@/lib/shell";
 import { trpc } from "@/lib/trpc";
 
@@ -47,7 +47,10 @@ export function MoreSignInMethods(): React.JSX.Element | null {
   const redirects = social.length + (methods.oauth ? 1 : 0) + (methods.steam ? 1 : 0);
   if (redirects === 0 && !methods.guest) return null;
 
-  const home = (): string => `${window.location.origin}${POST_AUTH_REDIRECT}`;
+  // Back to the page that sent this visitor to sign in, when the guard
+  // accepts it. Read at click time, from the page's own URL.
+  const destination = (): string => safeNextFromSearch(window.location.search) ?? POST_AUTH_REDIRECT;
+  const home = (): string => `${window.location.origin}${destination()}`;
   const login = (): string => `${window.location.origin}/login`;
 
   async function go(id: string, start: () => Promise<string | undefined | null>): Promise<void> {
@@ -88,7 +91,7 @@ export function MoreSignInMethods(): React.JSX.Element | null {
       return;
     }
     await authClient.getSession();
-    router.replace(POST_AUTH_REDIRECT);
+    router.replace(destination());
   }
 
   const button =
@@ -135,7 +138,7 @@ export function MoreSignInMethods(): React.JSX.Element | null {
           className={button}
           disabled={shell || busy !== null}
           onClick={() =>
-            void go("steam", startFetch("/steam/start", { intent: "sign-in", returnPath: POST_AUTH_REDIRECT }))
+            void go("steam", startFetch("/steam/start", { intent: "sign-in", returnPath: destination() }))
           }
           data-testid="sign-in-steam"
         >

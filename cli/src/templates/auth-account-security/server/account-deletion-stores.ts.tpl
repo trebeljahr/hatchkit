@@ -41,10 +41,10 @@ const APP_MODELS: Record<AppCollection, any> = {
 __HATCHKIT_DELETION_MODEL_MAP__
 };
 
-/** better-auth's model names for the tables the cascade reaches. */
+/** better-auth's model names for the tables the cascade reaches. Rendered
+ *  from the selection, like plan.ts's AUTH_COLLECTIONS. */
 const AUTH_MODELS = {
-  authTwoFactors: "twoFactor",
-  authVerifications: "verification",
+__HATCHKIT_DELETION_AUTH_MODELS__
 } as const;
 
 /** An empty filter matches the whole collection — every user's data. It is

@@ -10,38 +10,47 @@
  * a credential registered on the web origin is unusable from a shell and one
  * cannot be registered from a shell at all.
  *
- * Like every other host check here, it is made after mount: the page is
+ * Like every other host check here, it is made after hydration: the page is
  * prerendered in Node, where the shell globals do not exist.
  */
 
 import * as React from "react";
 import { authClient } from "@/lib/auth-client";
 import { isTokenShell } from "@/lib/shell";
+import { useMounted } from "@/lib/use-mounted";
 
 type PasskeyRow = { id: string; name?: string | null; createdAt?: string | Date };
 
+const listPasskeys = async (): Promise<PasskeyRow[]> => {
+  const { data } = await authClient.passkey
+    .listUserPasskeys()
+    .catch(() => ({ data: [] as PasskeyRow[] }));
+  return Array.isArray(data) ? data : [];
+};
+
 export function PasskeysRow(): React.JSX.Element {
-  const [mounted, setMounted] = React.useState(false);
-  const [shell, setShell] = React.useState(false);
+  const mounted = useMounted();
+  const shell = mounted && isTokenShell();
   const [rows, setRows] = React.useState<PasskeyRow[]>([]);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
-  React.useEffect(() => {
-    setShell(isTokenShell());
-    setMounted(true);
-  }, []);
+  const refresh = async (): Promise<void> => {
+    setRows(await listPasskeys());
+  };
 
-  const refresh = React.useCallback(async (): Promise<void> => {
-    const { data } = await authClient.passkey
-      .listUserPasskeys()
-      .catch(() => ({ data: [] as PasskeyRow[] }));
-    setRows(Array.isArray(data) ? data : []);
-  }, []);
-
+  // The first load. State is set only in the promise callback, once the
+  // server has answered, and not at all after unmount.
   React.useEffect(() => {
-    if (mounted && !shell) void refresh();
-  }, [mounted, shell, refresh]);
+    if (!mounted || shell) return;
+    let cancelled = false;
+    void listPasskeys().then((list) => {
+      if (!cancelled) setRows(list);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [mounted, shell]);
 
   async function add(): Promise<void> {
     setError("");
@@ -66,7 +75,7 @@ export function PasskeysRow(): React.JSX.Element {
     await refresh();
   }
 
-  if (mounted && shell) {
+  if (shell) {
     return (
       <div className="space-y-2" data-testid="setting-passkeys">
         <h2 className="text-lg font-semibold">Passkeys</h2>

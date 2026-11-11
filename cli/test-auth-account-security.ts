@@ -49,6 +49,10 @@ import {
   findPluginOrderViolation,
   serverPluginsFor,
 } from "./src/features/auth-account-security/plugin-order.js";
+import {
+  rewriteLoginPage,
+  rewriteLoginSignupLink,
+} from "./src/features/auth-account-security/client-rewriter.js";
 import { renderAuthSecurityTemplate } from "./src/features/auth-account-security/render.js";
 import {
   AUTH_SECURITY_DEFAULT_OPTIONS,
@@ -94,6 +98,7 @@ function makeProject(): string {
   copy("packages/server/package.json");
   copy("packages/client/src/lib/auth-client.ts");
   copy("packages/client/src/app/login/page.tsx");
+  copy("packages/client/src/app/signup/page.tsx");
   copy("packages/client/package.json");
   copy("packages/shared/src/index.ts");
   return dir;
@@ -346,22 +351,197 @@ await expect("the cascade never names a collection with no model behind it", asy
   assert.ok(withAvatars.includes('"avatars"'), "avatars must be swept when the model exists");
 });
 
+const DELETION_DIR = "packages/server/src/services/account-deletion";
+
+/** The cascade a selection generates, run against a store that records
+ *  every delete instead of touching a database. */
+async function generatedCascade(options: AuthSecurityOption[]) {
+  const dir = makeProject();
+  await apply(dir, options);
+  const read = (file: string): string => readFileSync(join(dir, DELETION_DIR, file), "utf-8");
+  const deletes: Array<{ collection: string; filter: Record<string, unknown> }> = [];
+  const { deleteAccountData } = await import(
+    pathToFileURL(join(dir, DELETION_DIR, "delete-account.ts")).href
+  );
+  await deleteAccountData(
+    {
+      find: async () => [],
+      deleteMany: async (collection: string, filter: Record<string, unknown>) => {
+        deletes.push({ collection, filter });
+      },
+    },
+    { id: "user-1", email: "Person@Example.com" },
+  );
+  return { plan: read("plan.ts"), stores: read("stores.ts"), deletes };
+}
+
+await expect("the cascade deletes passkeys when the passkey plugin is there", async () => {
+  // better-auth's deleteUser removes user, account and session rows only, so
+  // a deleted account's passkeys would stay behind without this step.
+  const { plan, stores, deletes } = await generatedCascade(["account-deletion", "passkeys"]);
+  assert.deepEqual(
+    deletes.find((step) => step.collection === "authPasskeys"),
+    { collection: "authPasskeys", filter: { userId: "user-1" } },
+    "the cascade must delete the user's passkey rows",
+  );
+  assert.match(plan, /AUTH_COLLECTIONS = \[[^\]]*"authPasskeys"/);
+  assert.match(stores, /authPasskeys: "passkey",/);
+  assert.ok(!plan.includes("__HATCHKIT_") && !stores.includes("__HATCHKIT_"));
+});
+
+await expect("the cascade names no auth table whose plugin is absent", async () => {
+  // The adapter throws `Model "twoFactor" not found in schema` for a table
+  // whose plugin is not registered, and the cascade runs before better-auth
+  // removes the user: naming one here would make every deletion fail.
+  const { plan, stores, deletes } = await generatedCascade(["account-deletion"]);
+  assert.deepEqual(
+    deletes.map((step) => step.collection),
+    ["profiles", "items", "authVerifications"],
+  );
+  assert.match(plan, /AUTH_COLLECTIONS = \["authVerifications"\] as const;/);
+  assert.doesNotMatch(stores, /twoFactor|passkey/);
+
+  const withTwoFactor = await generatedCascade(["account-deletion", "two-factor"]);
+  assert.ok(
+    withTwoFactor.deletes.some(
+      (step) => step.collection === "authTwoFactors" && step.filter.userId === "user-1",
+    ),
+    "with two-factor the TOTP secret and backup codes must be deleted",
+  );
+  assert.match(withTwoFactor.stores, /authTwoFactors: "twoFactor",/);
+  assert.doesNotMatch(withTwoFactor.stores, /passkey/);
+});
+
+// ── Login and signup pages ────────────────────────────────────────────
+console.log("\nlogin and signup pages:");
+
+const LOGIN = "packages/client/src/app/login/page.tsx";
+const SIGNUP = "packages/client/src/app/signup/page.tsx";
+const count = (source: string, needle: string): number => source.split(needle).length - 1;
+
+await expect("passkeys put a sign-in button on the login page", async () => {
+  const dir = makeProject();
+  await apply(dir, ["passkeys"]);
+  const login = readFileSync(join(dir, LOGIN), "utf-8");
+  assert.equal(count(login, "<PasskeySignIn"), 1);
+  assert.match(login, /import \{ PasskeySignIn \} from "@\/components\/auth\/passkey-sign-in";/);
+  assert.match(
+    login,
+    /<PasskeySignIn\n\s*onSignedIn=\{\(\) => \{\n\s*router\.replace\(safeNextFromSearch\(window\.location\.search\) \?\? POST_AUTH_REDIRECT\);/,
+    "a passkey sign-in must honour ?next= like the password form",
+  );
+  const button = readFileSync(
+    join(dir, "packages/client/src/components/auth/passkey-sign-in.tsx"),
+    "utf-8",
+  );
+  // WebAuthn cannot use a shell origin as its RP ID, so the button must not
+  // render there; read after hydration so the prerender still matches.
+  assert.match(button, /if \(mounted && isTokenShell\(\)\) return null;/);
+  assert.match(button, /authClient\.signIn\.passkey\(\)/);
+
+  const without = makeProject();
+  await apply(without, ["two-factor"]);
+  assert.ok(!readFileSync(join(without, LOGIN), "utf-8").includes("PasskeySignIn"));
+});
+
+await expect("a login page patched before passkeys gets the button on a later update", async () => {
+  const dir = makeProject();
+  await apply(dir, ["two-factor", "apple-oauth"]);
+  await apply(dir, ["two-factor", "apple-oauth", "passkeys"]);
+  const login = readFileSync(join(dir, LOGIN), "utf-8");
+  assert.equal(count(login, "<PasskeySignIn"), 1);
+  assert.ok(
+    login.indexOf("<PasskeySignIn") < login.indexOf("<AppleSignInButton"),
+    "the passkey button goes first in the methods block",
+  );
+});
+
+await expect("the signup page honours ?next= and carries it to the login page", async () => {
+  const dir = makeProject();
+  await apply(dir, ["google-oauth"]);
+  const signup = readFileSync(join(dir, SIGNUP), "utf-8");
+  assert.ok(!signup.includes('router.push("/dashboard")'), "signup still ignores ?next=");
+  assert.match(
+    signup,
+    /router\.push\(safeNextFromSearch\(window\.location\.search\) \?\? POST_AUTH_REDIRECT\)/,
+  );
+  assert.match(signup, /<Link href=\{authPageHref\("login", \{ next \}\)\}/);
+  assert.match(
+    signup,
+    /const next = mounted \? safeNextFromSearch\(window\.location\.search\) : null;/,
+  );
+  assert.match(signup, /import \{ useMounted \} from "@\/lib\/use-mounted";/);
+  assert.ok(!signup.includes("__HATCHKIT_"));
+
+  const login = readFileSync(join(dir, LOGIN), "utf-8");
+  assert.match(login, /<Link href=\{authPageHref\("signup", \{ next \}\)\}/);
+  assert.match(
+    login,
+    /import \{ authPageHref, POST_AUTH_REDIRECT, safeNextFromSearch \} from "@\/lib\/safe-next";/,
+  );
+});
+
+await expect(
+  "the signup page offers the methods that make an account, and only those",
+  async () => {
+    const dir = makeProject();
+    await apply(dir, ALL_OPTIONS);
+    const signup = readFileSync(join(dir, SIGNUP), "utf-8");
+    const apple = signup.indexOf("<AppleSignInButton />");
+    const google = signup.indexOf("<GoogleSignInButton />");
+    const more = signup.indexOf("<MoreSignInMethods />");
+    assert.ok(apple > 0 && google > apple && more > google, "Apple, Google, then the rest");
+    assert.ok(signup.indexOf("</form>") < apple, "the methods go below the form");
+    // These sign in to an account that already exists.
+    for (const name of ["PasskeySignIn", "EmailOtpSignIn", "MagicLinkSignIn", "UsernameSignIn"]) {
+      assert.ok(!signup.includes(name), `${name} does not belong on the signup page`);
+    }
+
+    const passwordOnly = makeProject();
+    await apply(passwordOnly, ["two-factor"]);
+    const plain = readFileSync(join(passwordOnly, SIGNUP), "utf-8");
+    assert.ok(!plain.includes("border-t pt-6"), "no empty methods block without methods");
+    assert.match(plain, /authPageHref\("login", \{ next \}\)/);
+  },
+);
+
+await expect("a login page patched before the signup link gets it on update", () => {
+  // Projects that added the feature earlier have a login page the base patch
+  // skips as already done; the link is a patch of its own for them.
+  const starter = readFileSync(join(STARTER, LOGIN), "utf-8");
+  const old = rewriteLoginPage(starter, {
+    wantsTwoFactor: true,
+    wantsGoogle: true,
+    wantsEmailOtp: false,
+    wantsMagicLink: false,
+  }).source;
+  assert.ok(old.includes('<Link href="/signup"'));
+  const linked = rewriteLoginSignupLink(old);
+  assert.equal(linked.applied, true);
+  assert.match(linked.source, /<Link href=\{authPageHref\("signup", \{ next \}\)\}/);
+  assert.equal(count(linked.source, "const mounted = useMounted();"), 1);
+  assert.equal(rewriteLoginSignupLink(linked.source).source, linked.source, "not a fixed point");
+});
+
 await expect("applying twice changes nothing the second time", async () => {
   const dir = makeProject();
   await apply(dir, ALL_OPTIONS);
   const authPath = join(dir, "packages/server/src/auth/auth.ts");
   const clientPath = join(dir, "packages/client/src/lib/auth-client.ts");
   const loginPath = join(dir, "packages/client/src/app/login/page.tsx");
+  const signupPath = join(dir, "packages/client/src/app/signup/page.tsx");
   const first = {
     auth: readFileSync(authPath, "utf-8"),
     client: readFileSync(clientPath, "utf-8"),
     login: readFileSync(loginPath, "utf-8"),
+    signup: readFileSync(signupPath, "utf-8"),
   };
 
   const second = await apply(dir, ALL_OPTIONS);
   assert.equal(readFileSync(authPath, "utf-8"), first.auth, "auth.ts was patched twice");
   assert.equal(readFileSync(clientPath, "utf-8"), first.client, "auth-client.ts was patched twice");
   assert.equal(readFileSync(loginPath, "utf-8"), first.login, "login page was patched twice");
+  assert.equal(readFileSync(signupPath, "utf-8"), first.signup, "signup page was patched twice");
   assert.equal(second.written.length, 0, "a second run must write no new files");
   assert.ok(second.skipped.length > 0, "existing files must be reported as skipped");
 

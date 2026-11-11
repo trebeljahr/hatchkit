@@ -36,7 +36,7 @@ detects its own previous output.
 | `profile-pictures` | Squared in the browser, magic-number checked on the server |
 | `email-otp` | Sign in with a code mailed to the address |
 | `magic-link` | Sign in by following a mailed link |
-| `passkeys` | WebAuthn as an additional method |
+| `passkeys` | WebAuthn as an additional method: added under Settings, used from the login page, web only |
 
 Every sign-in method after `google-oauth` is **off by default**. Each one is another way into
 the account, and a template should not widen that for every project scaffolded from it.
@@ -153,6 +153,13 @@ request from another of the person's devices can recreate a row between the two 
 A password account must send its password. better-auth alone would delete on a merely
 fresh session, and a browser session lasts far longer than that.
 
+better-auth's `deleteUser` removes only the user, account and session rows. The cascade in
+`services/account-deletion/plan.ts` deletes the rest: the plugin tables of the methods the
+project uses (two-factor secrets, passkeys) and pending verification tokens. It names only
+tables whose plugin is registered, because the adapter throws for an unknown model and
+every deletion would then fail. A plugin added later that stores rows per user needs its
+own step there.
+
 ### Profile-picture bytes are public, at an unguessable address
 
 An `<img>` sends no bearer token and, cross-origin, no cookie — so the route has to be
@@ -179,6 +186,9 @@ origin without it — `//evil.com`, `/\evil.com`, `/<tab>/evil.com`.
 survive the hop between login and signup. That is how an allowlist gets bypassed in
 practice: nobody attacks the page that validates, they attack the link that passes the
 value along.
+
+The signup page honours `next` as the login page does, and so do the buttons that leave
+the site to sign in (Google, Apple, the other OAuth providers, Steam, sign-in links).
 
 Add a screen to `SAFE_NEXT_PREFIXES` when it needs a return trip. Do not replace the
 list with a "starts with `/`" check.

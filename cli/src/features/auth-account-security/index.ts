@@ -20,10 +20,14 @@ import { FeatureLedger } from "../contract.js";
 import {
   APPLE_LOGIN_EXTRA,
   type LoginExtra,
+  PASSKEY_LOGIN_EXTRA,
   rewriteAuthClient,
   rewriteLoginPage,
   rewriteLoginPageExtras,
+  rewriteLoginSignupLink,
   rewriteSettingsPage,
+  rewriteSignupPage,
+  rewriteSignupPageExtras,
 } from "./client-rewriter.js";
 import { renderAuthSecurityDocs } from "./docs.js";
 import { PASSKEY_PACKAGE } from "./options.js";
@@ -81,7 +85,10 @@ export {
   rewriteLoginPage,
   rewriteLoginPageApple,
   rewriteLoginPageExtras,
+  rewriteLoginSignupLink,
   rewriteSettingsPage,
+  rewriteSignupPage,
+  rewriteSignupPageExtras,
 } from "./client-rewriter.js";
 
 /** Screens a signed-out visitor may be sent back to after signing in.
@@ -351,6 +358,30 @@ export async function applyAuthAccountSecurity(
   // pictures has no Avatar model, and naming a collection with no model
   // behind it would fail at import rather than at the call that needed it.
   const appCollections = ["profiles", ...(has("profile-pictures") ? ["avatars"] : []), "items"];
+  // better-auth's own tables that hold a user's rows and that its
+  // `deleteUser` leaves behind (it removes user, account and session only).
+  // Each exists only while its plugin is registered: the adapter throws for
+  // a model that is not in its schema, so naming one here without the plugin
+  // would fail every deletion.
+  const authTables = [
+    ...(has("two-factor")
+      ? [{ collection: "authTwoFactors", model: "twoFactor", comment: [] as string[] }]
+      : []),
+    ...(has("passkeys")
+      ? [
+          {
+            collection: "authPasskeys",
+            model: "passkey",
+            comment: ["The passkey plugin's credentials: deleteUser leaves them behind."],
+          },
+        ]
+      : []),
+  ];
+  // Always there: better-auth's core table, keyed by address, not by user.
+  const authCollections = [
+    ...authTables,
+    { collection: "authVerifications", model: "verification", comment: [] as string[] },
+  ];
   const userSteps = [
     `    { collection: "profiles", filter: { userId: user.id } },`,
     ...(has("profile-pictures")
@@ -361,7 +392,10 @@ export async function applyAuthAccountSecurity(
         ]
       : []),
     `    { collection: "items", filter: { ownerId: user.id } },`,
-    `    { collection: "authTwoFactors", filter: { userId: user.id } },`,
+    ...authTables.flatMap((table) => [
+      ...table.comment.map((line) => `    // ${line}`),
+      `    { collection: "${table.collection}", filter: { userId: user.id } },`,
+    ]),
   ];
   const modelImports = [
     ...(has("profile-pictures") ? [`import { Avatar } from "../../models/Avatar.js";`] : []),
@@ -383,6 +417,10 @@ export async function applyAuthAccountSecurity(
     DELETION_USER_STEPS: userSteps.join("\n"),
     DELETION_MODEL_IMPORTS: modelImports.join("\n"),
     DELETION_MODEL_MAP: modelMap.join("\n"),
+    DELETION_AUTH_COLLECTIONS: authCollections.map((table) => `"${table.collection}"`).join(", "),
+    DELETION_AUTH_MODELS: authCollections
+      .map((table) => `  ${table.collection}: "${table.model}",`)
+      .join("\n"),
     ...guestMoveTokens(ledger.read("packages/server/src/models/Item.ts")),
     ACCOUNTS_IMPORTS: has("username-sign-in")
       ? `import { UsernameSettings } from "@/components/settings/username";`
@@ -418,20 +456,21 @@ export async function applyAuthAccountSecurity(
     SIGN_IN_METHODS_HEALTH_EXTRA,
     ...(has("apple-oauth") ? [APPLE_HEALTH_EXTRA] : []),
   ];
+  const moreMethods = (
+    ["github-oauth", "discord-oauth", "generic-oauth", "steam-openid", "guest-accounts"] as const
+  ).some(has);
+  const moreMethodsExtra: LoginExtra = {
+    name: "MoreSignInMethods",
+    importLine: `import { MoreSignInMethods } from "@/components/auth/more-sign-in-methods";`,
+    jsx: "<MoreSignInMethods />",
+    position: "last",
+  };
   const loginExtras: LoginExtra[] = [
+    // First of the "first" extras, so it lands above Apple: a passkey is the
+    // one-tap way back in for somebody who already registered one.
+    ...(has("passkeys") ? [PASSKEY_LOGIN_EXTRA] : []),
     ...(has("apple-oauth") ? [APPLE_LOGIN_EXTRA] : []),
-    ...((
-      ["github-oauth", "discord-oauth", "generic-oauth", "steam-openid", "guest-accounts"] as const
-    ).some(has)
-      ? [
-          {
-            name: "MoreSignInMethods",
-            importLine: `import { MoreSignInMethods } from "@/components/auth/more-sign-in-methods";`,
-            jsx: "<MoreSignInMethods />",
-            position: "last" as const,
-          },
-        ]
-      : []),
+    ...(moreMethods ? [moreMethodsExtra] : []),
     ...(has("username-sign-in")
       ? [
           {
@@ -449,6 +488,22 @@ export async function applyAuthAccountSecurity(
           },
         ]
       : []),
+  ];
+  // The methods that make an account on first use. The rest sign in to one
+  // that exists, so they stay on the login page.
+  const signupExtras: LoginExtra[] = [
+    ...(has("apple-oauth") ? [APPLE_LOGIN_EXTRA] : []),
+    ...(has("google-oauth")
+      ? [
+          {
+            name: "GoogleSignInButton",
+            importLine: `import { GoogleSignInButton } from "@/components/auth/google-sign-in-button";`,
+            jsx: "<GoogleSignInButton />",
+            position: "last" as const,
+          },
+        ]
+      : []),
+    ...(moreMethods ? [moreMethodsExtra] : []),
   ];
 
   // 2. Patches to files the starter already ships.
@@ -546,6 +601,20 @@ export async function applyAuthAccountSecurity(
           wantsMagicLink: has("magic-link"),
         }),
       loginExtras.length > 0 && ((source: string) => rewriteLoginPageExtras(source, loginExtras)),
+      rewriteLoginSignupLink,
+    ),
+    tokens,
+    audit,
+  );
+
+  rewriteExisting(
+    ledger,
+    "packages/client/src/app/signup/page.tsx",
+    "signup page",
+    chain(
+      rewriteSignupPage,
+      signupExtras.length > 0 &&
+        ((source: string) => rewriteSignupPageExtras(source, signupExtras)),
     ),
     tokens,
     audit,

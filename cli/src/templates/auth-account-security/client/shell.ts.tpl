@@ -10,7 +10,9 @@
  * before any app script runs. **Every one of them answers `false` during a
  * Node prerender.** Never branch a first render on them — the served HTML
  * would disagree with the first client render and hydration would tear. Read
- * them in an effect after mount instead, which is what the auth components do.
+ * them once hydrated instead, which is what the auth components do:
+ * `useMounted() && isTokenShell()` (see `lib/use-mounted.ts`). Not by setting
+ * state in a mount effect: the starter's lint gate refuses that.
  */
 
 type CapacitorGlobal = { isNativePlatform?: () => boolean };

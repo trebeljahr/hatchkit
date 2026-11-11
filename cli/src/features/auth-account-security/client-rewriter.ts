@@ -318,6 +318,111 @@ ${extras.map((node) => `          ${node}`).join("\n")}
   return { source: out, applied: true };
 }
 
+/**
+ * Add `names` to the page's import from `module`, or add that import after
+ * the auth-client one. Null when neither import is where it should be.
+ */
+function withNamedImports(source: string, module: string, names: readonly string[]): string | null {
+  const escaped = module.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  const existing = new RegExp(`^import \\{([^}]*)\\} from "${escaped}";$`, "m").exec(source);
+  const have = (existing?.[1] ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (names.every((name) => have.includes(name))) return source;
+  const merged = [...new Set([...have, ...names])].sort((a, b) =>
+    a.localeCompare(b, "en", { sensitivity: "base" }),
+  );
+  const line = `import { ${merged.join(", ")} } from "${module}";`;
+  if (existing) {
+    return `${source.slice(0, existing.index)}${line}${source.slice(existing.index + existing[0].length)}`;
+  }
+  const authImport = /^import \{[^}]*\} from "@\/lib\/auth-client";\n/m.exec(source);
+  if (!authImport) return null;
+  const at = authImport.index + authImport[0].length;
+  return `${source.slice(0, at)}${line}\n${source.slice(at)}`;
+}
+
+/** The validated `next` as a render-time value: null until hydrated, since
+ *  the prerender has no URL to read. */
+const NEXT_DECLARATION = `  const mounted = useMounted();
+  // After hydration: the page is prerendered, where there is no URL to read.
+  const next = mounted ? safeNextFromSearch(window.location.search) : null;
+`;
+
+/** Declare `next` after `const router = useRouter();` and import what it
+ *  needs. Null when the anchor or an import is missing. */
+function withNextDeclaration(source: string): string | null {
+  // A page that already has its own `next` or `mounted` is somebody's
+  // edit; a second declaration would not compile.
+  if (/\bconst next = mounted \? safeNextFromSearch\(/.test(source)) return source;
+  if (/\bconst (next|mounted)\b/.test(source)) return null;
+  const router = /^(\s*const router = useRouter\(\);\n)/m;
+  if (!router.test(source)) return null;
+  const out = withNamedImports(source.replace(router, `$1${NEXT_DECLARATION}`), "@/lib/safe-next", [
+    "safeNextFromSearch",
+  ]);
+  return out && withNamedImports(out, "@/lib/use-mounted", ["useMounted"]);
+}
+
+/**
+ * Patch `packages/client/src/app/signup/page.tsx`: after signing up, go where
+ * `?next=` says (when the guard accepts it) instead of always to the
+ * dashboard, and keep `next` on the link to the login page.
+ */
+export function rewriteSignupPage(source: string): RewriteResult {
+  if (source.includes("safeNextFromSearch")) return alreadyDone(source);
+  if (!source.includes('router.push("/dashboard")')) {
+    return unchanged(
+      source,
+      "signup page does not push /dashboard after sign-up, so the redirect could not be replaced safely",
+    );
+  }
+  if (!source.includes('<Link href="/login"')) {
+    return unchanged(source, "signup page has no link to /login to carry ?next= on");
+  }
+  let out = withNamedImports(source, "@/lib/safe-next", ["authPageHref", "POST_AUTH_REDIRECT"]);
+  out = out && withNextDeclaration(out);
+  if (!out) {
+    return unchanged(
+      source,
+      "signup page does not import from @/lib/auth-client or call useRouter() where expected, or already declares its own next or mounted",
+    );
+  }
+  out = out
+    .replace(
+      'router.push("/dashboard")',
+      // Re-read at submit time, like the login page: a submit that beat
+      // hydration still honours the link it arrived with.
+      "router.push(safeNextFromSearch(window.location.search) ?? POST_AUTH_REDIRECT)",
+    )
+    .replace('<Link href="/login"', '<Link href={authPageHref("login", { next })}');
+  return { source: out, applied: true };
+}
+
+/**
+ * Keep `?next=` on the login page's link to the signup page, so somebody
+ * who arrives to sign in and has no account yet still comes back to the
+ * page that sent them. Separate from `rewriteLoginPage`, which returns early
+ * on a page it has already patched.
+ */
+export function rewriteLoginSignupLink(source: string): RewriteResult {
+  if (source.includes('authPageHref("signup"')) return alreadyDone(source);
+  if (!source.includes('<Link href="/signup"')) {
+    return unchanged(source, "login page has no link to /signup to carry ?next= on");
+  }
+  let out = withNamedImports(source, "@/lib/safe-next", ["authPageHref"]);
+  out = out && withNextDeclaration(out);
+  if (!out) {
+    return unchanged(
+      source,
+      "login page does not import from @/lib/auth-client or call useRouter() where expected, or already declares its own next or mounted",
+    );
+  }
+  out = out.replace('<Link href="/signup"', '<Link href={authPageHref("signup", { next })}');
+  return { source: out, applied: true };
+}
+
 /** The block of alternative sign-in methods `rewriteLoginPage` writes. */
 const ALT_METHODS_OPEN = '<div className="space-y-3 border-t pt-6">\n';
 
@@ -350,12 +455,59 @@ export function rewriteLoginPageExtras(
   source: string,
   extras: readonly LoginExtra[],
 ): RewriteResult {
+  return insertSignInExtras(source, extras, {
+    page: "login page",
+    placeBlock: (out) => {
+      const forgot =
+        /(\n\s*<div className="text-center text-sm">\n\s*<Link href="\/forgot-password")/;
+      if (!forgot.test(out)) return null;
+      return out.replace(forgot, `\n        ${ALT_METHODS_OPEN}        </div>\n$1`);
+    },
+    missingAnchor: "neither the alternative sign-in block nor the forgot-password link",
+  });
+}
+
+/**
+ * The same for the signup page: the methods that create an account on first
+ * use (Apple, Google, the extra social providers, guests) go below the form.
+ * Email codes, sign-in links, usernames and passkeys stay on the login page:
+ * each signs in to an account that already exists.
+ */
+export function rewriteSignupPageExtras(
+  source: string,
+  extras: readonly LoginExtra[],
+): RewriteResult {
+  return insertSignInExtras(source, extras, {
+    page: "signup page",
+    placeBlock: (out) => {
+      const form = /(\n {8}<\/form>\n)/;
+      if (!form.test(out)) return null;
+      return out.replace(form, `$1\n        ${ALT_METHODS_OPEN}        </div>\n`);
+    },
+    missingAnchor: "neither the alternative sign-in block nor a closing </form>",
+  });
+}
+
+function insertSignInExtras(
+  source: string,
+  extras: readonly LoginExtra[],
+  target: {
+    page: string;
+    /** The page with an empty methods block added, or null when the anchor
+     *  for it is gone. */
+    placeBlock: (source: string) => string | null;
+    missingAnchor: string;
+  },
+): RewriteResult {
   const wanted = extras.filter((extra) => !source.includes(`<${extra.name}`));
   if (wanted.length === 0) return alreadyDone(source);
 
   const authImport = /^import \{[^}]*\} from "@\/lib\/auth-client";\n/m.exec(source);
   if (!authImport) {
-    return unchanged(source, "login page does not import from @/lib/auth-client where expected");
+    return unchanged(
+      source,
+      `${target.page} does not import from @/lib/auth-client where expected`,
+    );
   }
   const importAt = authImport.index + authImport[0].length;
   const imports = wanted
@@ -366,15 +518,14 @@ export function rewriteLoginPageExtras(
   let out = `${source.slice(0, importAt)}${imports}${source.slice(importAt)}`;
 
   if (!out.includes(ALT_METHODS_OPEN)) {
-    const forgot =
-      /(\n\s*<div className="text-center text-sm">\n\s*<Link href="\/forgot-password")/;
-    if (!forgot.test(out)) {
+    const placed = target.placeBlock(out);
+    if (placed === null) {
       return unchanged(
         source,
-        "login page has neither the alternative sign-in block nor the forgot-password link to place the sign-in buttons by",
+        `${target.page} has ${target.missingAnchor} to place the sign-in buttons by`,
       );
     }
-    out = out.replace(forgot, `\n        ${ALT_METHODS_OPEN}        </div>\n$1`);
+    out = placed;
   }
 
   const open = out.indexOf(ALT_METHODS_OPEN) + ALT_METHODS_OPEN.length;
@@ -396,6 +547,21 @@ export const APPLE_LOGIN_EXTRA: LoginExtra = {
   name: "AppleSignInButton",
   importLine: `import { AppleSignInButton } from "@/components/auth/apple-sign-in-button";`,
   jsx: "<AppleSignInButton />",
+  position: "first",
+};
+
+/** "Sign in with a passkey". The component hides itself in a token shell,
+ *  where WebAuthn cannot work, so the page needs no host check of its own. */
+export const PASSKEY_LOGIN_EXTRA: LoginExtra = {
+  name: "PasskeySignIn",
+  importLine: `import { PasskeySignIn } from "@/components/auth/passkey-sign-in";`,
+  jsx: [
+    "<PasskeySignIn",
+    "  onSignedIn={() => {",
+    "    router.replace(safeNextFromSearch(window.location.search) ?? POST_AUTH_REDIRECT);",
+    "  }}",
+    "/>",
+  ].join("\n"),
   position: "first",
 };
 

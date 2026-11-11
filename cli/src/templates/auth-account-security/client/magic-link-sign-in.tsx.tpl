@@ -21,8 +21,9 @@
 
 import * as React from "react";
 import { authClient } from "@/lib/auth-client";
-import { POST_AUTH_REDIRECT } from "@/lib/safe-next";
+import { POST_AUTH_REDIRECT, safeNextFromSearch } from "@/lib/safe-next";
 import { isTokenShell } from "@/lib/shell";
+import { useMounted } from "@/lib/use-mounted";
 
 export function MagicLinkSignIn({
   mailConfigured,
@@ -31,19 +32,14 @@ export function MagicLinkSignIn({
    *  loading. Used only to word the confirmation honestly. */
   mailConfigured: boolean | undefined;
 }): React.JSX.Element {
-  const [mounted, setMounted] = React.useState(false);
-  const [shell, setShell] = React.useState(false);
+  // After hydration, like every other host check: the page is prerendered in
+  // Node where the shell globals do not exist.
+  const mounted = useMounted();
+  const shell = mounted && isTokenShell();
   const [email, setEmail] = React.useState("");
   const [sent, setSent] = React.useState("");
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-
-  // After mount, like every other host check: the page is prerendered in Node
-  // where the shell globals do not exist.
-  React.useEffect(() => {
-    setShell(isTokenShell());
-    setMounted(true);
-  }, []);
 
   async function send(event: React.FormEvent): Promise<void> {
     event.preventDefault();
@@ -53,8 +49,9 @@ export function MagicLinkSignIn({
       .signIn.magicLink({
         email,
         // Absolute, and pointed at the WEB origin: the API is a different
-        // origin, and a relative path would land on its 404.
-        callbackURL: `${window.location.origin}${POST_AUTH_REDIRECT}`,
+        // origin, and a relative path would land on its 404. The path is the
+        // page that sent this visitor to sign in, when the guard accepts it.
+        callbackURL: `${window.location.origin}${safeNextFromSearch(window.location.search) ?? POST_AUTH_REDIRECT}`,
       })
       .catch(() => ({ error: { code: "FAILED" } }));
     setBusy(false);
@@ -66,7 +63,7 @@ export function MagicLinkSignIn({
     setSent(email);
   }
 
-  if (mounted && shell) {
+  if (shell) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="magic-link-shell-note">
         Sign-in links open in your browser, so they cannot finish here. Use a code sent to your

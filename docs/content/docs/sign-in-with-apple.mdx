@@ -30,9 +30,9 @@ you deploy, use a test hostname with HTTPS that reaches your machine.
 | --- | --- |
 | `packages/server/src/auth/apple-sign-in.ts` | Reads the `APPLE_*` variables, mints the client secret, and builds the provider options |
 | `packages/server/src/tests/apple-sign-in.test.ts` | Runs a real better-auth instance against the module |
-| `packages/client/src/components/auth/apple-sign-in-button.tsx` | The button on `/login` |
+| `packages/client/src/components/auth/apple-sign-in-button.tsx` | The button on `/login` and `/signup` |
 
-It also patches `auth.ts`, the health router and the login page, and adds the variables to
+It also patches `auth.ts`, the health router and the login and signup pages, and adds the variables to
 `packages/server/.env.example` and `docker-compose.yml`.
 
 The button renders nothing until the server has all four required values and the key

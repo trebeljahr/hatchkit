@@ -25,9 +25,10 @@
 
 import * as React from "react";
 import { signIn } from "@/lib/auth-client";
-import { POST_AUTH_REDIRECT } from "@/lib/safe-next";
+import { POST_AUTH_REDIRECT, safeNextFromSearch } from "@/lib/safe-next";
 import { isElectron, isTokenShell } from "@/lib/shell";
 import { trpc } from "@/lib/trpc";
+import { useMounted } from "@/lib/use-mounted";
 
 export type GoogleAvailability = "pending" | "unconfigured" | "shell" | "enabled";
 
@@ -50,17 +51,11 @@ const NOTES: Record<string, string> = {
 };
 
 export function GoogleSignInButton(): React.JSX.Element {
-  const [mounted, setMounted] = React.useState(false);
-  const [shell, setShell] = React.useState(false);
-  const [desktop, setDesktop] = React.useState(false);
+  const mounted = useMounted();
+  const shell = mounted && isTokenShell();
+  const desktop = mounted && isElectron();
   const [starting, setStarting] = React.useState(false);
   const [error, setError] = React.useState("");
-
-  React.useEffect(() => {
-    setShell(isTokenShell());
-    setDesktop(isElectron());
-    setMounted(true);
-  }, []);
 
   // Not asked from a shell at all: the answer could not change the outcome.
   const health = trpc.health.check.useQuery(undefined, {
@@ -87,7 +82,9 @@ export function GoogleSignInButton(): React.JSX.Element {
     setStarting(true);
     const result = await signIn.social({
       provider: "google",
-      callbackURL: `${window.location.origin}${POST_AUTH_REDIRECT}`,
+      // Back to the page that sent this visitor to sign in, when it is one
+      // the guard accepts.
+      callbackURL: `${window.location.origin}${safeNextFromSearch(window.location.search) ?? POST_AUTH_REDIRECT}`,
       errorCallbackURL: `${window.location.origin}/login`,
     });
     if (result.error) {

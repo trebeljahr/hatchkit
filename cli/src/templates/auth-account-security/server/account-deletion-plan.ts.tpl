@@ -33,8 +33,11 @@
 export const APP_COLLECTIONS = [__HATCHKIT_DELETION_APP_COLLECTIONS__] as const;
 
 /** better-auth's own tables, reached through its adapter rather than through
- *  mongoose — the adapter is what knows which fields it stored as ObjectIds. */
-export const AUTH_COLLECTIONS = ["authTwoFactors", "authVerifications"] as const;
+ *  mongoose — the adapter is what knows which fields it stored as ObjectIds.
+ *  Rendered from the selection too: a plugin's table (two-factor, passkeys)
+ *  exists only while the plugin is registered, and the adapter throws for a
+ *  model it does not know, which would fail every deletion. */
+export const AUTH_COLLECTIONS = [__HATCHKIT_DELETION_AUTH_COLLECTIONS__] as const;
 
 export type AppCollection = (typeof APP_COLLECTIONS)[number];
 export type AuthCollection = (typeof AUTH_COLLECTIONS)[number];
@@ -54,13 +57,16 @@ export type DeletedUser = { id: string; email?: string | null };
 /**
  * Everything this person owns, wherever they own it.
  *
- * The two auth-table steps are easy to leave out and impossible to notice
- * missing:
+ * The auth-table steps are easy to leave out and impossible to notice
+ * missing. better-auth's `deleteUser` removes only user, account and session
+ * rows, and MongoDB has no foreign-key cascade, so every other table that
+ * holds this person's rows needs its own step:
  *
- * - `authTwoFactors` holds the TOTP secret and the backup codes. better-auth's
- *   `deleteUser` removes only user, account and session rows, and MongoDB has
- *   no foreign-key cascade, so without this step the second factor of a
- *   deleted account stays in the database.
+ * - `authTwoFactors` (with two-factor) holds the TOTP secret and the backup
+ *   codes; without this step the second factor of a deleted account stays in
+ *   the database.
+ * - `authPasskeys` (with passkeys) holds the public keys of this person's
+ *   passkeys, with the device names they gave them.
  * - `authVerifications` holds pending verification and change-email tokens
  *   addressed to this mailbox. A token left behind would still be redeemable
  *   after the account it referred to had gone.

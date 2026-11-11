@@ -315,6 +315,17 @@ jobs:
         working-directory: ${{ runner.temp }}/stamp
         run: pnpm run test:unit
 
+      # The account-security feature's client components are .tpl files, so
+      # nothing above lints them, and the `check` job has no starter install
+      # to lint with. This stamp has one: the test borrows its client's
+      # eslint to lint a starter copy with the feature applied.
+      - name: Lint the account-security feature's generated client
+        if: matrix.preset == 'full'
+        working-directory: cli
+        env:
+          HATCHKIT_LINT_CLIENT_DIR: ${{ runner.temp }}/stamp/packages/client
+        run: node scripts/test.mjs test-auth-account-security-lint.ts
+
       # The Postgres server creates its tables at startup from the migration
       # the overlay commits (packages/server/drizzle). Sign-up is the first
       # write that needs them. drizzle-kit must then find nothing left to

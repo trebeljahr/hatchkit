@@ -28,7 +28,7 @@
 
 import * as React from "react";
 import { signIn } from "@/lib/auth-client";
-import { POST_AUTH_REDIRECT } from "@/lib/safe-next";
+import { POST_AUTH_REDIRECT, safeNextFromSearch } from "@/lib/safe-next";
 import { isElectron, isTokenShell } from "@/lib/shell";
 import { trpc } from "@/lib/trpc";
 
@@ -94,7 +94,9 @@ export function AppleSignInButton(): React.JSX.Element | null {
     setStarting(true);
     const result = await signIn.social({
       provider: "apple",
-      callbackURL: `${window.location.origin}${POST_AUTH_REDIRECT}`,
+      // Back to the page that sent this visitor to sign in, when it is one
+      // the guard accepts.
+      callbackURL: `${window.location.origin}${safeNextFromSearch(window.location.search) ?? POST_AUTH_REDIRECT}`,
       errorCallbackURL: `${window.location.origin}/login`,
     });
     if (result.error) {
