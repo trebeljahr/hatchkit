@@ -17,8 +17,7 @@
  * before November 2026). With only `subscribers:get`, Listmonk (v6.0.0
  * `filterListQueryByPerm`, cmd/subscribers.go) limits subscriber queries
  * to the user's lists, so the confirm step cannot find the address,
- * creates it again and gets a 409. The cleanup of never-confirmed
- * subscribers lists the whole instance for the same reason. The cost:
+ * creates it again and gets a 409. The cost:
  * the token can read every subscriber on the instance.
  *
  * Reading is not changing. `subscribers:manage` passes Listmonk's
@@ -29,10 +28,9 @@
  * blocklist and `DELETE` call runs that check, and refuses a subscriber
  * on none of the project's lists with 403 "Permission denied:
  * subscriber: <id>" (`has-subscriber-list` is false for a subscriber on
- * no list). That includes the never-confirmed cleanup's `DELETE`
- * (starter prune.ts, the newsletter Worker's cron), whose subscribers are
- * on no list by definition. `POST /api/subscribers` checks only the lists
- * it names. So the starter's newsletter writes nothing at signup (the
+ * no list). The daily cleanup of never-confirmed subscribers on no list
+ * therefore never deleted anything, and is gone. `POST /api/subscribers`
+ * checks only the lists it names. So the starter's newsletter writes nothing at signup (the
  * confirmation goes out in tx `external` mode) and the confirm click
  * creates the subscriber on the list. Until 2026-11-11 the signup created
  * a subscriber on no list, and every confirm click answered 403. An

@@ -31,8 +31,6 @@
   // Only when magnets.json has an `object` magnet: the bucket the
   // download route streams it from.
   // "r2_buckets": [{ "binding": "MAGNETS", "bucket_name": "PROJECT-assets" }],
-  // Delete subscribers on no list for 30 days, once a day.
-  "triggers": { "crons": ["17 4 * * *"] },
   // Five subscribe posts per minute per client IP. namespace_id is any
   // integer not used by another rate limiter in the account.
   "ratelimits": [

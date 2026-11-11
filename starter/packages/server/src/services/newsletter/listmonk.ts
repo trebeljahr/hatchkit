@@ -264,34 +264,6 @@ export async function confirmSubscription(email: string): Promise<{ alreadyConfi
   return { alreadyConfirmed };
 }
 
-/** Every subscriber on the instance, with their memberships. Needs
- *  `subscribers:get_all`, which every project's API user has (see
- *  hatchkit's listmonk-project-user.ts). `lists` holds ALL of a
- *  subscriber's memberships, not only this project's (v6.0.0
- *  `get-subscriber-lists-lazy` does not filter by permission). The
- *  unconfirmed cleanup in prune.ts depends on that. */
-export async function listAllSubscribers(): Promise<ListmonkSubscriber[]> {
-  const res = await listmonkFetch<SubscribersQueryResponse>("/api/subscribers?per_page=all");
-  return res.data.results;
-}
-
-/** One subscriber with its memberships, or null when it is gone. */
-export async function getSubscriber(id: number): Promise<ListmonkSubscriber | null> {
-  try {
-    return (await listmonkFetch<{ data: ListmonkSubscriber }>(`/api/subscribers/${id}`)).data;
-  } catch (err) {
-    if (/: 404 /.test((err as Error).message)) return null;
-    throw err;
-  }
-}
-
-/** Delete subscribers by id (`subscribers:manage`). */
-export async function deleteSubscribers(ids: number[]): Promise<void> {
-  if (ids.length === 0) return;
-  const params = new URLSearchParams(ids.map((id) => ["id", String(id)]));
-  await listmonkFetch(`/api/subscribers?${params}`, { method: "DELETE" });
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Transactional sends — confirmation email + one-off sends
 // ─────────────────────────────────────────────────────────────────────

@@ -829,7 +829,6 @@ results.staticCoolify = await run(
       ["scripts/newsletter-test-tx.ts removed", !existsSync(join(d, "scripts/newsletter-test-tx.ts"))],
       ["scripts/newsletter-verify.ts removed", !existsSync(join(d, "scripts/newsletter-verify.ts"))],
       ["scripts/newsletter-welcome.ts removed", !existsSync(join(d, "scripts/newsletter-welcome.ts"))],
-      ["scripts/newsletter-prune.ts removed", !existsSync(join(d, "scripts/newsletter-prune.ts"))],
       ["emails/ removed", !existsSync(join(d, "emails"))],
       [
         "no newsletter:* scripts survive",

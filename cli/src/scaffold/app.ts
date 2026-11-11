@@ -710,7 +710,6 @@ async function runScaffoldSteps(
       "newsletter-test-tx",
       "newsletter-verify",
       "newsletter-welcome",
-      "newsletter-prune",
     ]) {
       removeIfExists(join(outputDir, `scripts/${script}.ts`));
     }
@@ -723,7 +722,6 @@ async function runScaffoldSteps(
       "newsletter:test-tx",
       "newsletter:welcome",
       "newsletter:verify",
-      "newsletter:prune",
     ]);
     stripNewsletterFromServerApp(outputDir);
     modifications.push("removed: newsletter (Listmonk + SES) scaffolding");

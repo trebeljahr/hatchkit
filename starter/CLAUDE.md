@@ -41,7 +41,6 @@ pnpm newsletter:welcome             # send emails/welcome.html to LISTMONK_TEST_
 pnpm newsletter:draft emails/digest-sample.html --subject "Issue 1"   # stage digest as a Listmonk draft
 NODE_ENV=production pnpm newsletter:send emails/digest-sample.html --subject "..." --confirm   # real broadcast
 pnpm newsletter:verify --magnet <key>   # also check a lead magnet's file and mail its download
-pnpm newsletter:prune --dry-run     # never-confirmed subscribers the daily cleanup would delete
 ```
 
 Hatchkit auto-subscribes your default forwarding email onto
@@ -74,10 +73,10 @@ nothing records where a person signed up or which file they asked for.
 Keep it that way, and never call `PUT /api/subscribers/:id`: it would
 delete the address from every other project's list.
 
-`services/newsletter/prune.ts` deletes `enabled` subscribers on no list
-30 days after creation, once a day in production, across the whole
-shared instance. It also removes addresses whose only list was deleted.
-Do not give "on no list" any other meaning.
+There is no cleanup of never-confirmed signups, because there is nothing
+to clean: an address that never clicks has no Listmonk record. (The old
+daily cleanup could not delete anyway: Listmonk refuses a project user's
+`DELETE` of a subscriber on none of its lists.)
 
 <!-- hatchkit:endif -->
 Before giving Hatchkit setup advice, run `hatchkit status --json` and

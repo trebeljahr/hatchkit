@@ -6,9 +6,6 @@
  *   GET  /api/newsletter/confirm     — verifies token + puts the address on the list
  *   GET  /api/newsletter/download    — verifies a lead-magnet token + redirects to the file
  *
- * Registering the routes also schedules the daily cleanup of
- * never-confirmed subscribers in production (prune.ts).
- *
  * Every endpoint logs JSON lines under `scope: "newsletter.*"` so log
  * aggregators can filter on it. A lead-magnet email that could not be
  * sent logs `newsletter.delivery` / `delivery_failed` at error level.
@@ -18,7 +15,6 @@ import type { Express, Request, Response } from "express";
 import { createNewsletterClientIp } from "./client-ip.js";
 import type { SignupState } from "./listmonk.js";
 import { getMagnet, type Magnet, magnetDownloadUrl, sendMagnetEmail } from "./magnets.js";
-import { scheduleUnconfirmedCleanup } from "./prune.js";
 import {
   checkDeliveryCooldown,
   checkRateLimit,
@@ -77,7 +73,6 @@ async function deliverMagnet(to: string, magnet: Magnet, via: "confirm" | "subsc
 
 export function registerNewsletterRoutes(app: Express): void {
   const clientIp = createNewsletterClientIp();
-  scheduleUnconfirmedCleanup();
 
   // POST /api/newsletter/subscribe
   app.post("/api/newsletter/subscribe", async (req: Request, res: Response) => {

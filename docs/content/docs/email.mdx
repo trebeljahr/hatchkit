@@ -323,31 +323,13 @@ It checks that every magnet's file exists (a `HEAD` on the bucket object or the 
 
 ### Static sites
 
-The scaffold gives a static project no newsletter, because it has no server to run one. For a static site on Cloudflare, hatchkit keeps a Worker with the same routes, magnets and cleanup in `cli/src/templates/newsletter-worker/`. Copy it into the site's repo as `workers/newsletter/` and follow its README. The Worker streams `object` magnets from an R2 bucket bound as `MAGNETS`. `hatchkit add <project> lead-magnet` edits `workers/newsletter/src/magnets.json`. hatchkit does not deploy this Worker. A scaffolded Worker would need its own zone route, secrets and release workflow, and only one hatchkit project needs it today.
+The scaffold gives a static project no newsletter, because it has no server to run one. For a static site on Cloudflare, hatchkit keeps a Worker with the same routes and magnets in `cli/src/templates/newsletter-worker/`. Copy it into the site's repo as `workers/newsletter/` and follow its README. The Worker streams `object` magnets from an R2 bucket bound as `MAGNETS`. `hatchkit add <project> lead-magnet` edits `workers/newsletter/src/magnets.json`. hatchkit does not deploy this Worker. A scaffolded Worker would need its own zone route, secrets and release workflow, and only one hatchkit project needs it today.
 
-## Deleting never-confirmed signups
+## Never-confirmed signups
 
-The starter deletes a subscriber that never confirmed 30 days after Listmonk created it. It deletes a subscriber only when all of these are true:
+An address that never clicks the confirm link leaves no subscriber in Listmonk: the form writes nothing, and only the click creates the subscriber. So there is nothing to delete later. The confirm link expires after 21 days.
 
-- It is on no list. Until 2026-11-11 the signup form created each new subscriber on no list. It now creates none before the confirm click, which creates it on the list. Account emails use `subscriber_mode: "external"` and create no subscriber. A subscriber who unsubscribed keeps an `unsubscribed` membership, so it is not on "no list".
-- Its status is `enabled`. A blocklisted or disabled subscriber stays, because deleting it removes the block.
-- Listmonk created it more than 30 days ago. Sending the form again does not restart this clock.
-
-The subscriber stores nothing about which form created it, so the rule cannot tell projects apart. It covers the whole Listmonk instance. Every project's signup form follows the same rule, so the result is correct for each of them, and several projects that run it delete nothing twice. The rule also deletes an address that is on no list for another reason: its only list was deleted (`hatchkit remove <project> listmonk-ses` deletes the project's lists), or somebody removed its membership by hand. Such an address has no subscription left. Export a list before you delete it if you want to keep its addresses.
-
-When it runs:
-
-- The deployed server runs the cleanup once a day: 10 to 20 minutes after it starts, then every 24 hours. The timer starts only when `NODE_ENV=production`.
-- `pnpm newsletter:prune --dry-run` lists what it would delete. `pnpm newsletter:prune` deletes it, wherever you run it.
-- The newsletter Worker runs the same cleanup from a daily cron trigger.
-
-Guards:
-
-- Just before it deletes a subscriber, the cleanup reads that subscriber again. A confirm click in between keeps the subscriber.
-- It deletes at most 500 subscribers per run and leaves the rest for the next day.
-- It deletes nothing when more than 10 subscribers, and more than half of the enabled subscribers, look unconfirmed. It logs `newsletter.prune` / `refused` instead. A working signup form does not leave that pattern. A Listmonk change that hides other projects' memberships from the project's API user would. If the subscribers really are pending signups, delete them in **Listmonk → Maintenance**.
-
-The cleanup reads every subscriber with `subscribers:get_all` and deletes with `subscribers:manage`. Every project's API user has both. A confirm link clicked after the cleanup still works, because the confirm route creates the subscriber again, on the list.
+Until 2026-11-11 the starter created each new address on no list and ran a daily cleanup of the ones that never confirmed. The cleanup never deleted anything: Listmonk refuses a project user's `DELETE` of a subscriber on none of its lists. It is removed. Delete leftover subscribers on no list as an admin, in **Listmonk → Maintenance** or with the admin token.
 
 ## Tearing down
 

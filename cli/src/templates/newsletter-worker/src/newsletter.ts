@@ -1,13 +1,11 @@
 /**
- * Mailing-list double opt-in, lead-magnet downloads and the cleanup of
- * never-confirmed subscribers, for a static site with no server of its
- * own. A port of the hatchkit starter's newsletter service
+ * Mailing-list double opt-in and lead-magnet downloads, for a static
+ * site with no server of its own. A port of the hatchkit starter's newsletter service
  * (packages/server/src/services/newsletter); keep the two in step.
  *
  *   POST /api/newsletter/subscribe  form post → confirmation mail → 303 /sub/check-email
  *   GET  /api/newsletter/confirm    signed link → list membership (+ download mail) → 303 /sub/confirmed
  *   GET  /api/newsletter/download   signed link → the lead-magnet file
- *   cron (daily)                    delete subscribers that never confirmed (30 days)
  *
  * Membership order matters (see "Double opt-in" in hatchkit's email docs):
  * the form post writes nothing to Listmonk. A new address has no record
@@ -69,8 +67,6 @@ export const CONFIRM_TOKEN_TTL_MS = 21 * 24 * 60 * 60 * 1000;
 // The download link only hands out a free file. A reader whose link
 // expired posts the form again and gets a new one.
 export const DOWNLOAD_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-export const UNCONFIRMED_TTL_DAYS = 30;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 const SUBSCRIBE_PATH = "/api/newsletter/subscribe";
 const CONFIRM_PATH = "/api/newsletter/confirm";
@@ -87,19 +83,6 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     return url.pathname === CONFIRM_PATH ? handleConfirm(url, env) : handleDownload(url, env);
   }
   return new Response("Not found", { status: 404 });
-}
-
-/** Cron trigger (wrangler.jsonc `triggers.crons`). */
-export async function handleScheduled(
-  _controller: unknown,
-  env: Env,
-  ctx: { waitUntil(promise: Promise<unknown>): void },
-): Promise<void> {
-  ctx.waitUntil(
-    pruneUnconfirmed(env).catch((err: unknown) => {
-      log("error", "prune", "failed", { message: (err as Error).message });
-    }),
-  );
 }
 
 function methodNotAllowed(allow: string): Response {
@@ -523,7 +506,6 @@ type ListmonkSubscriber = {
   id: number;
   email: string;
   status: "enabled" | "disabled" | "blocklisted";
-  created_at?: string;
   lists?: { id: number; subscription_status: "unconfirmed" | "confirmed" | "unsubscribed" }[];
 };
 
@@ -653,66 +635,6 @@ async function sendTransactional(
       messenger: "email",
     }),
   });
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Cleanup of never-confirmed subscribers (same rule as the starter's prune.ts)
-//
-// Deleted only when all hold: on no list (the form created the
-// subscriber there before November 2026; it now creates none before the
-// confirm click, which creates it on the list), status `enabled`
-// (a blocklisted or disabled one must stay to keep its block), and
-// Listmonk created it more than 30 days ago. Nothing on a subscriber
-// says which form made it, so this covers the whole shared instance;
-// every project's form follows the same rule. It also deletes an address
-// whose only list was deleted or whose membership was removed by hand:
-// there is no subscription left to keep it for.
-//
-// Guards: each candidate is read again just before the delete, so a
-// confirm click in between keeps it; at most MAX_PRUNE_PER_RUN go per
-// run; and nothing is deleted when more than half of the enabled
-// subscribers look unconfirmed, which is what a Listmonk change that hid
-// other projects' memberships from this API user would look like. It
-// needs `subscribers:get_all` and `subscribers:manage`, which hatchkit's
-// per-project API user has.
-// ─────────────────────────────────────────────────────────────────────
-
-const MAX_PRUNE_PER_RUN = 500;
-
-function isUnconfirmed(s: ListmonkSubscriber, cutoff: number): boolean {
-  if (s.status !== "enabled" || (s.lists?.length ?? 0) > 0) return false;
-  const created = s.created_at ? Date.parse(s.created_at) : Number.NaN;
-  return Number.isFinite(created) && created < cutoff;
-}
-
-export async function pruneUnconfirmed(
-  env: Env,
-  now: number = Date.now(),
-): Promise<{ total: number; candidates: number; deleted: number; refused?: boolean }> {
-  const cutoff = now - UNCONFIRMED_TTL_DAYS * DAY_MS;
-  const res = await listmonkFetch<{ data: { results: ListmonkSubscriber[] } }>(env, "/api/subscribers?per_page=all");
-  const all = res.data.results;
-  const stale = all.filter((s) => isUnconfirmed(s, cutoff));
-  const enabled = all.filter((s) => s.status === "enabled").length;
-  if (stale.length > 10 && stale.length * 2 > enabled) {
-    log("error", "prune", "refused", { total: all.length, candidates: stale.length });
-    return { total: all.length, candidates: stale.length, deleted: 0, refused: true };
-  }
-  let deleted = 0;
-  const batch = stale.slice(0, MAX_PRUNE_PER_RUN);
-  for (let i = 0; i < batch.length; i += 100) {
-    const ids: number[] = [];
-    for (const s of batch.slice(i, i + 100)) {
-      const fresh = await listmonkFetch<{ data: ListmonkSubscriber }>(env, `/api/subscribers/${s.id}`).catch(() => null);
-      if (fresh && isUnconfirmed(fresh.data, cutoff)) ids.push(s.id);
-    }
-    if (ids.length === 0) continue;
-    const params = new URLSearchParams(ids.map((id) => ["id", String(id)]));
-    await listmonkFetch(env, `/api/subscribers?${params}`, { method: "DELETE" });
-    deleted += ids.length;
-  }
-  log("info", "prune", "pruned", { total: all.length, candidates: stale.length, deleted });
-  return { total: all.length, candidates: stale.length, deleted };
 }
 
 // ─────────────────────────────────────────────────────────────────────

@@ -19,9 +19,8 @@
  *
  * Also covered: the sender on the confirmation email, which env var names
  * the list for each NODE_ENV, which host the confirm link and its
- * redirects point at, lead-magnet delivery (token → email → download,
- * with nothing about the signup stored on the subscriber), and the
- * cleanup of never-confirmed subscribers.
+ * redirects point at, and lead-magnet delivery (token → email → download,
+ * with nothing about the signup stored on the subscriber).
  */
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
@@ -30,7 +29,6 @@ import express from "express";
 
 import { describeListTarget, findSubscriber, resolveListId, sendCampaign } from "../services/newsletter/listmonk.js";
 import { _setMagnetsForTests, parseMagnets } from "../services/newsletter/magnets.js";
-import { findUnconfirmed, pruneUnconfirmed } from "../services/newsletter/prune.js";
 import { registerNewsletterRoutes } from "../services/newsletter/routes.js";
 import {
   _resetRateLimit,
@@ -730,75 +728,5 @@ describe("lead magnets", () => {
     });
     assert.deepEqual([...magnets.keys()], ["ok"]);
     assert.equal(problems.length, 5);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────
-// Cleanup of never-confirmed subscribers
-// ─────────────────────────────────────────────────────────────────────
-
-describe("pruneUnconfirmed", () => {
-  const now = Date.parse("2026-10-20T00:00:00Z");
-  const daysAgo = (n: number) => new Date(now - n * 24 * 60 * 60 * 1000).toISOString();
-  const sub = (id: number, email: string, extra: Partial<FakeSubscriber>): FakeSubscriber => ({
-    ...existing(email, []),
-    id,
-    created_at: daysAgo(40),
-    ...extra,
-  });
-
-  const instance = (): FakeSubscriber[] => [
-    sub(1, "stale@example.com", {}),
-    sub(2, "recent@example.com", { created_at: daysAgo(5) }),
-    sub(3, "member@example.com", { lists: [{ id: LIST_ID, subscription_status: "confirmed" }] }),
-    // Confirmed on another project's list only: kept.
-    sub(4, "other@example.com", { lists: [{ id: 99, subscription_status: "confirmed" }] }),
-    sub(5, "left@example.com", { lists: [{ id: LIST_ID, subscription_status: "unsubscribed" }] }),
-    sub(6, "blocked@example.com", { status: "blocklisted" }),
-    sub(7, "off@example.com", { status: "disabled" as any }),
-  ];
-
-  test("deletes only enabled subscribers on no list for more than 30 days", async () => {
-    const lm = fakeListmonk(instance());
-
-    const result = await pruneUnconfirmed({ now });
-
-    assert.equal(result.deleted, 1);
-    assert.deepEqual(lm.calls(), ["DELETE /api/subscribers"]);
-    assert.deepEqual(lm.subscribers.map((s) => s.id), [2, 3, 4, 5, 6, 7]);
-  });
-
-  test("keeps a subscriber that confirmed between the listing and the delete", async () => {
-    const lm = fakeListmonk(instance(), {
-      onGetById: (s) => s.lists.push({ id: LIST_ID, subscription_status: "confirmed" }),
-    });
-
-    const result = await pruneUnconfirmed({ now });
-
-    assert.equal(result.candidates, 1);
-    assert.equal(result.deleted, 0);
-    assert.ok(lm.subscribers.some((s) => s.id === 1));
-  });
-
-  test("--dry-run reports and deletes nothing", async () => {
-    const lm = fakeListmonk(instance());
-
-    const result = await pruneUnconfirmed({ now, dryRun: true });
-
-    assert.deepEqual(result.emails, ["stale@example.com"]);
-    assert.deepEqual(lm.calls(), []);
-  });
-
-  test("refuses when most of the instance looks unconfirmed", async () => {
-    const lm = fakeListmonk(Array.from({ length: 20 }, (_, i) => sub(i + 1, `s${i}@example.com`, {})));
-
-    const { result } = await captureErrors(() => pruneUnconfirmed({ now }));
-
-    assert.ok(result.refused);
-    assert.deepEqual(lm.calls(), []);
-  });
-
-  test("findUnconfirmed skips a subscriber with no creation date", () => {
-    assert.deepEqual(findUnconfirmed([sub(1, "x@example.com", { created_at: undefined }) as any], now), []);
   });
 });

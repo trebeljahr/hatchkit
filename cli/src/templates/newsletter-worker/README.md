@@ -1,7 +1,7 @@
 # Newsletter Worker
 
-Double opt-in, lead-magnet downloads and the 30-day cleanup of
-never-confirmed signups, for a static site that has no server. It does
+Double opt-in and lead-magnet downloads, for a static site that has no
+server. It does
 what the hatchkit starter's newsletter service does
 (`starter/packages/server/src/services/newsletter`), as a Cloudflare Worker
 on the site's own origin. Keep the two in step.
@@ -14,7 +14,6 @@ the site's repo as `workers/newsletter/` and fill in `wrangler.jsonc`.
 | `POST /api/newsletter/subscribe` | Form post (`email`, optional `magnet`). Writes nothing to Listmonk, mails the signed link (tx `external` mode for a new address), 303 → `/sub/check-email` |
 | `GET /api/newsletter/confirm?token=…` | Verifies the token, creates the subscriber on the list as `confirmed` (or adds the list to an existing record), mails the download link when the signup asked for a magnet, 303 → `/sub/confirmed` (`?delivery=sent` or `?delivery=failed`) |
 | `GET /api/newsletter/download?token=…` | Verifies the download token, streams the R2 object or redirects to the magnet's URL |
-| cron, daily | Deletes subscribers on no list, 30 days after Listmonk created them |
 
 Errors redirect to `/sub/error?reason=…`. The site serves the `/sub/*`
 pages as static files: `check-email`, `confirmed` and `error`.
@@ -73,9 +72,8 @@ pnpm --dir workers/newsletter exec wrangler deploy
 ```
 
 `LISTMONK_API_TOKEN` is the project's own Listmonk API user (`hatchkit
-listmonk user <project>`); the cleanup needs its `subscribers:get_all` and
-`subscribers:manage`. The cleanup covers the whole shared Listmonk instance,
-the same rule as the starter's (see hatchkit's email docs). Changing `NEWSLETTER_TOKEN_SECRET` invalidates every
+listmonk user <project>`). There is no cleanup of never-confirmed signups:
+an address that never clicks has no Listmonk record. Changing `NEWSLETTER_TOKEN_SECRET` invalidates every
 confirm and download link already sent. Wrangler needs
 `CLOUDFLARE_API_TOKEN` (Workers Scripts edit, Workers Routes edit on the
 zone) and `CLOUDFLARE_ACCOUNT_ID`. Deploy the Worker before the site
