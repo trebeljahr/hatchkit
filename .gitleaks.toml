@@ -35,6 +35,11 @@ regexes = [
 #     (cli/test-secret-hygiene.ts). The private-key rule runs on to the next
 #     "KEY-----", so the reported secret is this prefix plus whatever source
 #     follows it; anchor on the prefix only.
+#   - Paired-digit Discord client ID 112233445566778899 (cli/test-auth-providers.ts,
+#     from b864034) and the better-auth placeholder secret
+#     "test-secret-that-is-at-least-32-characters-long" (the Apple sign-in test
+#     template, from d1c7eac). Both files now build these values at runtime;
+#     the entries keep the full-history scan passing on the old commits.
 [[allowlists]]
 description = "Reviewed test vectors and fixtures (exact values)."
 regexes = [
@@ -46,6 +51,8 @@ regexes = [
   '''^abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789$''',
   '''^-----BEGIN PRIVATE KEY-----\\nx\\n-----END PRIVATE KEY-----\\n"''',
   '''^-----BEGIN RSA PRIVATE KEY-----\\nx\\n-----END RSA PRIVATE KEY-----\\n"''',
+  '''^"?112233445566778899"?$''',
+  '''^"?test-secret-that-is-at-least-32-characters-long"?$''',
 ]
 
 # Documentation placeholders such as TF_VAR_inwx_password="your-inwx-pass"

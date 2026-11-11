@@ -58,7 +58,8 @@ const GOOGLE_SECRET = `GOCSPX-${"A1b2C3d4E5f6G7h8I9j0K1l2m3n4"}`;
 const APPLE_TEAM = "ABCDE12345";
 const APPLE_SERVICES = "com.example.app.signin";
 const APPLE_KEY_ID = "KEY1234567";
-const DISCORD_ID = "112233445566778899";
+// Joined at runtime: an 18-digit literal next to "discord" trips gitleaks' discord-client-id rule.
+const DISCORD_ID = ["112233445", "566778899"].join("");
 const DISCORD_SECRET = "abcdEFGHijklMNOPqrstUVWXyz012345";
 const GITHUB_ID = "Iv23liAbCdEfGh123456";
 const GITHUB_SECRET = randomBytes(20).toString("hex");

@@ -8,3 +8,8 @@
 # never committed. Fixture replaced with fake IDs; revoking the token is
 # tracked in the vault's hatchkit-human-tasks.
 23d60fd634362da0ca14b4ba300118dd8d760de9:cli/test-migrate-domain.ts:generic-api-key:92
+
+# Coolify container names (service name plus a 24-character resource ID) in a
+# one-off VPS hardening script, read as a generic API key. Not a credential;
+# the script was later removed from the repository.
+d249afe0377f16c074075f04aeedfc5fa06c0605:infra/maintenance/vps-hardening-20261023/shared-database-resource-policy.py:generic-api-key:34
