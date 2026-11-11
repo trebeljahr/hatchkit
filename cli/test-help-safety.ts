@@ -82,6 +82,8 @@ const DANGEROUS_ARGV: string[][] = [
   ["audit", "cloudflare", "accept", "--inventory", "--help"],
   ["mac-runner", "on", "--repo", "a/b", "--help"],
   ["mac-runner", "serve", "--help"],
+  ["auth", "providers", "--help"],
+  ["auth", "providers", "--provider", "github", "--help"],
   ["mac-runner", "run", "build-macos.yml", "-f", "upload=true", "--help"],
   ["infra", "plan", "ota-updates", "--help"],
   ["infra", "apply", "ota-updates", "--help"],
@@ -232,6 +234,7 @@ checkHelpRun(
   "hatchkit audit cloudflare deploy",
 );
 checkHelpRun(["mac-runner", "serve", "--help"], "hatchkit mac-runner serve");
+checkHelpRun(["auth", "providers", "--provider", "github", "--help"], "hatchkit auth providers");
 checkHelpRun(
   ["plausible", "merge", "old.example.com", "new.example.com", "--yes", "--help"],
   "merge <old-domain> <new-domain>",

@@ -81,6 +81,7 @@ On a new machine, `hatchkit status` shows which providers are still missing and 
 | `hatchkit explain` | Print the one-page mental model (concepts, commands, workflow). |
 | `hatchkit create` | Scaffold a new project and optionally deploy it end-to-end. Interactive by default; every prompt has a matching flag, and `--yes` makes it fully non-interactive. |
 | `hatchkit update` | Add features (workspaces, desktop, mobile, …) to a project already scaffolded. |
+| `hatchkit auth providers` | Take the Google, Apple, GitHub and Discord sign-in buttons live. Registers a sign-in-only GitHub App through GitHub's manifest flow; walks through the other dashboards and reads each value from the clipboard. Stores everything in `.env.production`, then checks the deployed sign-in redirect. |
 | `hatchkit add <project> [services]` | Provision GlitchTip / Plausible / Listmonk + SES / email / search clients for an existing project. |
 | `hatchkit signing org-init` | One-time per dev machine — collect Apple Distribution .p12 / App Store Connect API key, Google Play service account JSON, Azure Trusted Signing service principal. |
 | `hatchkit signing apply [project-dir]` | Wire signed installers and store uploads for the Windows, iOS and Android builds. Idempotent. See [Signing](docs/content/docs/signing.mdx) for every file and secret it writes. |

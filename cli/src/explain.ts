@@ -91,6 +91,12 @@ const MODEL: ExplainModel = {
       when: "The Worker hatchkit-audit runs it every 6 h (cron 17 */6 * * *) with its own read-only user token and mails Rico through SES only when something unexpected happened; hatchkit writes the signed expected state and its operator-token run windows to the bucket hatchkit-audit. Run it locally after a scare: it also checks the Worker is still the one hatchkit deployed and ran in the last 8 h. `deploy` and `publish` write with the operator token (ask first); `accept`/`forget` change only the local config.",
     },
     {
+      name: "hatchkit auth providers [dir] [--provider google|apple|github|discord] [--dry-run] [--verify]",
+      summary:
+        "Take the OAuth sign-in buttons `update --auth-options` wrote from hidden to live: register each provider's app and store its client ID (plain) and secret (encrypted) in .env.production. GitHub gets a sign-in-only GitHub App through the manifest flow; Google, Apple and Discord have no API, so it prints each dashboard URL and the values to paste, then reads every value from the clipboard on Enter.",
+      when: "After `hatchkit update --features auth-account-security --auth-options google-oauth,…`. Interactive; `--dry-run` prints the steps and the GitHub App manifest, `--verify` asks the deployed server for each sign-in URL and checks its client_id and redirect_uri. It offers `hatchkit sync --deploy` once values are stored.",
+    },
+    {
       name: "hatchkit mac-runner status|on|off|serve [--run <id>]|run <workflow> [--repo <owner/name>]",
       summary:
         "Run a repo's Apple jobs (macOS and iOS builds) on this Mac instead of GitHub's macOS runners, which bill 10x Linux minutes in a private repo. The jobs read the repo variable APPLE_RUNNER: unset, they run on GitHub; set to a label, they wait for this Mac. Artifacts, TestFlight, Steam, itch and draft releases stay in the same workflow.",

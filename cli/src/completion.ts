@@ -62,6 +62,7 @@ const SERVER_SUB = ["add"] as const;
 const EXTRA_SUBCOMMANDS: Record<string, readonly string[]> = {
   host: ["integrity", "updates"],
   audit: ["cloudflare"],
+  auth: ["providers"],
   infra: ["plan", "apply", "output"],
   "mac-runner": ["on", "off", "status", "serve", "run"],
   signing: ["org-init", "apply"],

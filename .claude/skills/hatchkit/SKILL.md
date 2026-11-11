@@ -45,6 +45,7 @@ Use `hatchkit help <command>` for current options. The families below have diffe
 |---|---|
 | `setup` / `init`, `config add` | Interactive provider onboarding |
 | `create`, `update`, `server add` | Scaffold a project, add features, or restore server source to a static project |
+| `auth providers` | Register the chosen OAuth providers' apps and store their keys in `.env.production` (GitHub App via the manifest flow; Google, Apple, Discord guided, values read from the clipboard); `--dry-run` writes nothing, `--verify` only reads the deployed sign-in |
 | `adopt`, `adopt --resume` | Review and wire an existing repository; can create resources, commit, push, and deploy |
 | `add PROJECT SERVICES`, `remove PROJECT SERVICES` | Provision services or remove ledger-owned resources |
 | `destroy PROJECT` | Reverse recorded create/adopt actions; preview with `--recipe` |

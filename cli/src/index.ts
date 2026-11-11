@@ -8,6 +8,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import { AUDIT_USAGE, runAuditCommand } from "./audit/command.js";
+import { AUTH_USAGE } from "./auth-providers/usage.js";
 import { BACKUP_USAGE, runBackupCommand } from "./backups/command.js";
 import {
   PAUSABLE_PROVIDERS,
@@ -188,6 +189,12 @@ async function main(): Promise<void> {
     case "map": {
       const { runMapCommand } = await import("./map/command.js");
       await runMapCommand(args.slice(1));
+      break;
+    }
+    case "auth": {
+      const { runAuthCommand } = await import("./auth-providers/command.js");
+      const result = await runAuthCommand(args.slice(1));
+      if (result.exitCode !== 0) process.exit(result.exitCode);
       break;
     }
     case "mac-runner":
@@ -4513,6 +4520,9 @@ function printCommandHelp(cmd: string | undefined): void {
     case "map":
       console.log(MAP_USAGE);
       return;
+    case "auth":
+      console.log(AUTH_USAGE);
+      return;
     case "mac-runner":
       console.log(MAC_RUNNER_USAGE);
       return;
@@ -6668,6 +6678,7 @@ function printHelp(topic?: HelpTopic): void {
     create          Scaffold a new project (interactive)
     adopt           Bring an existing project under hatchkit management (run in project dir)
     update          Add features to an already-scaffolded project (run in project dir)
+    auth providers  Register the chosen sign-in providers' apps and store their keys (GitHub App manifest; Google/Apple/Discord guided)
     server add      Retrofit a server into a client-only project
     add             Create GlitchTip / Plausible / Listmonk + SES / email / search clients for an existing project
     add i18n        Give a scaffolded project a second language (writes local files only)

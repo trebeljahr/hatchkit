@@ -87,6 +87,11 @@ Open **Services**, then **Sign in with Apple for Email Communication**, and add 
 domain or address your app sends from. Apple checks each domain's SPF record. Without
 this step, password-reset and verification mail to these users does not arrive.
 
+`hatchkit auth providers --provider apple` prints these steps with your domain filled in.
+It reads the Team ID, Services ID and Key ID from the clipboard, reads
+`AuthKey_<KEY_ID>.p8` from `~/Downloads`, checks that the key is an ES256 key, stores all
+four, and moves the `.p8` file to the Trash.
+
 ## Where Hatchkit expects the values
 
 All five go into the server's environment. `auth/apple-sign-in.ts` reads them from

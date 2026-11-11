@@ -280,6 +280,42 @@ Reapplying the same generators to unchanged output is idempotent. An upgrade can
 
 ---
 
+## `hatchkit auth providers`
+
+Takes the OAuth sign-in buttons that `hatchkit update --auth-options …` wrote from hidden to
+live. Each button stays hidden until its provider's credentials reach the server.
+
+```bash
+hatchkit auth providers --dry-run              # the steps, the GitHub App manifest, the variables
+hatchkit auth providers                        # every OAuth provider the project picked
+hatchkit auth providers --provider github      # one provider
+hatchkit auth providers --verify               # check the deployed sign-in redirect only
+```
+
+GitHub uses the GitHub App manifest flow: you confirm once on github.com, and hatchkit
+exchanges the returned code for the client ID and secret. Google, Apple and Discord have no
+API. Hatchkit prints each dashboard URL and the values to paste there, then reads each
+value from the clipboard when you press Enter. It never prints a value and empties the
+clipboard after each read. Client IDs are stored plain and secrets encrypted in
+`.env.production`. Then it offers `hatchkit sync --deploy` and checks the `client_id` and
+`redirect_uri` that `/api/auth/sign-in/social` returns.
+
+| Flag | Effect |
+| --- | --- |
+| `--provider <list>` | Only these providers (`google`, `apple`, `github`, `discord`) |
+| `--dry-run` | Print the plan; write nothing and open nothing |
+| `--verify` | Only check the deployed sign-in, one request per provider |
+| `--replace` | Ask again for providers whose variables are already set |
+| `--github-oauth-app` | GitHub: guided OAuth app steps instead of the manifest flow |
+| `--github-org <org>` | GitHub: register the App under this organization |
+| `--github-app-name <name>` | GitHub: the App's name, at most 34 characters |
+| `--no-sync` | Do not offer `hatchkit sync --deploy` |
+| `--json` | With `--dry-run` or `--verify`: print JSON |
+
+See [Sign-in methods](/docs/sign-in-methods) for each provider's steps.
+
+---
+
 ## `hatchkit dev-setup`
 
 Host-wide and per-project setup for stable HTTPS dev URLs over Tailscale:

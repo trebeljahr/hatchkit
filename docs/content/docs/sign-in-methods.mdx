@@ -36,22 +36,75 @@ months later.
 of a cookie, and they cannot receive a browser redirect back from a provider. The
 [account-security page](/docs/auth-account-security) explains each verdict.
 
-Set the variables in `packages/server/.env.production` with `dotenvx set`, then run
-`hatchkit sync`. Every variable is listed, empty, in `packages/server/.env.example`.
+`hatchkit auth providers` sets the Google, Apple, GitHub and Discord variables (see the
+next section). For the other methods, set the variables in
+`packages/server/.env.production` with `dotenvx set`, then run `hatchkit sync`. Every
+variable is listed, empty, in `packages/server/.env.example`.
+
+## Take the buttons live with `hatchkit auth providers`
+
+```bash
+hatchkit auth providers --dry-run
+```
+
+```bash
+hatchkit auth providers
+```
+
+The command works through every OAuth provider the project picked. `--provider github`
+limits it to one.
+
+- **GitHub** has an API for this: the GitHub App manifest flow. Hatchkit opens github.com
+  with a sign-in-only App filled in: one callback URL, read access to email addresses, no
+  repository access and no webhook. You check the name and confirm once. Hatchkit then
+  exchanges GitHub's code for the client ID and secret. The App is public, because GitHub
+  lets only the owner sign in to a private App. With no repository permissions, an
+  installation of it grants nothing. `--github-oauth-app` walks you through a classic
+  OAuth app instead.
+- **Google, Apple and Discord** have no API. Hatchkit prints each dashboard URL and the
+  values to paste there, with your domain filled in. After a step, copy the value with the
+  dashboard's copy button and press Enter. Hatchkit reads the clipboard, checks the value's
+  shape, never prints it, and empties the clipboard. Apple's `.p8` key is read from
+  `~/Downloads` and moved to the Trash once it is stored.
+
+Client IDs go into `packages/server/.env.production` as plain values and secrets go in
+encrypted. Nothing is written for a provider until all its values are in. Then hatchkit
+offers `hatchkit sync --deploy`. After the deploy it asks the server for each sign-in URL,
+the same request the button sends. The URL must carry the stored client ID and the
+redirect URI `https://app.example.com/api/auth/callback/<provider>`. To check again after
+a later deploy:
+
+```bash
+hatchkit auth providers --verify
+```
+
+The clipboard reader uses `pbpaste`, so it needs macOS. On other systems hatchkit asks for
+a hidden paste instead.
 
 ## Steps only a person can do
 
-Hatchkit does not register apps with providers. Google, Apple, GitHub and Discord offer
-no API for it. A self-hosted OIDC provider may have one, but it needs that provider's admin
-credentials, which stay with you. Each provider needs a person in its dashboard once. Every URL below uses the made-up domain
-`app.example.com`; use your app's domain.
+Google, Apple and Discord offer no API for registering an app. A self-hosted OIDC provider
+may have one, but it needs that provider's admin credentials, which stay with you. Each
+provider needs a person in its dashboard once; `hatchkit auth providers` prints these
+steps for your domain. Every URL below uses the made-up domain `app.example.com`; use your
+app's domain.
 
 ### Google
 
-1. In the Google Cloud console, open **APIs & Services → Credentials**.
-2. Create an **OAuth client ID** of type **Web application**.
-3. Add the redirect URI `https://app.example.com/api/auth/callback/google`.
-4. Copy the client ID and secret into `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+1. Create one Google Cloud project for each app. If Google refuses with a project quota
+   message, ask Google for a higher quota.
+2. Under **Google Auth Platform → Branding**, set the app name, the support email, the home
+   page and the authorized domain. Leave the logo empty: a logo makes Google require brand
+   verification.
+3. Under **Audience**, choose **External**, then select **Publish app**. In Testing, only
+   listed test users can sign in. With the basic scopes only (`openid`, `email`,
+   `profile`), publishing needs no verification.
+4. Under **Data access**, add no scopes.
+5. Under **Clients**, create a **Web application** client. Add the JavaScript origin
+   `https://app.example.com` and the redirect URI
+   `https://app.example.com/api/auth/callback/google`.
+6. Copy the client ID and secret from the creation dialog into `GOOGLE_CLIENT_ID` and
+   `GOOGLE_CLIENT_SECRET`.
 
 ### Apple
 
@@ -60,12 +113,15 @@ Team ID. [Sign in with Apple](/docs/sign-in-with-apple) has them all.
 
 ### GitHub
 
+`hatchkit auth providers` registers a GitHub App for you. To use a classic OAuth app:
+
 1. On GitHub, open **Settings → Developer settings → OAuth Apps** and create an app.
 2. Set the callback URL to `https://app.example.com/api/auth/callback/github`.
 3. Generate a client secret.
 4. Copy both into `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
 
-One GitHub OAuth app has one callback URL. Use a second app for a staging domain.
+One GitHub OAuth app has one callback URL. Use a second app for a staging domain. A GitHub
+App takes up to ten callback URLs.
 
 ### Discord
 

@@ -242,6 +242,23 @@ export function renderAuthSecurityDocs(input: AuthSecurityDocsInput): string {
     "",
   );
 
+  const oauthButtons = (
+    ["google-oauth", "apple-oauth", "github-oauth", "discord-oauth"] as const
+  ).filter((option) => plan.options.includes(option));
+  if (oauthButtons.length > 0) {
+    lines.push(
+      `### Taking the OAuth buttons live`,
+      "",
+      `Each OAuth button stays hidden until its provider's credentials reach the server. Run`,
+      `\`hatchkit auth providers\` (\`--dry-run\` first to see the steps). It registers a GitHub App`,
+      `through GitHub's manifest flow, walks through the Google, Apple and Discord dashboards,`,
+      `reads each value from the clipboard, stores it in \`packages/server/.env.production\``,
+      `(secrets encrypted), offers \`hatchkit sync --deploy\` and checks the deployed sign-in`,
+      `redirect. \`hatchkit auth providers --verify\` repeats only the check.`,
+      "",
+    );
+  }
+
   const methodSections: Array<[AuthSecurityOption, string, string[]]> = [
     ["github-oauth", "GitHub", [`Callback URL: \`https://<domain>/api/auth/callback/github\`.`]],
     ["discord-oauth", "Discord", [`Redirect: \`https://<domain>/api/auth/callback/discord\`.`]],
@@ -317,7 +334,8 @@ export function renderAuthSecurityDocs(input: AuthSecurityDocsInput): string {
       `### Sign in with Apple`,
       "",
       `The button renders only when all four required variables are set and the key parses.`,
-      `A partial set is logged by name at boot and leaves Apple off. Set the values in`,
+      `A partial set is logged by name at boot and leaves Apple off.`,
+      `\`hatchkit auth providers --provider apple\` stores them for you. By hand: set the values in`,
       `\`packages/server/.env.production\` (encrypted with dotenvx), then run \`hatchkit sync\` to`,
       `push them to Coolify:`,
       "",

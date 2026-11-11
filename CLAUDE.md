@@ -47,6 +47,21 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   a feature. The list lives in `SUPPORTED_ADDITIONS`
   (`cli/src/scaffold/update.ts`) — read it rather than this line, which has
   gone stale before.
+- `hatchkit auth providers [dir] [--provider google|apple|github|discord]
+  [--dry-run] [--verify]`: after `update --auth-options` picked OAuth
+  buttons, register each provider's app and store its keys in
+  `.env.production` (client IDs plain, secrets encrypted). GitHub: a
+  sign-in-only GitHub App through the manifest flow (one confirmation on
+  github.com, `POST /app-manifests/{code}/conversions`; public, email
+  addresses read-only; `--github-oauth-app` for the guided OAuth app).
+  Google, Apple, Discord have no API: dashboard URLs + values to paste,
+  then each value from the clipboard on Enter (never echoed, clipboard
+  emptied), Apple's `.p8` from Downloads to the Trash. Shape checks, then
+  offers `sync --deploy` and checks `/api/auth/sign-in/social`'s
+  `client_id` + `redirect_uri`. Needs a terminal except `--dry-run` /
+  `--verify`. See `cli/src/auth-providers/plan.ts` for why a GitHub App
+  works with better-auth; test `test-auth-providers.ts` (fake GitHub,
+  clipboard, Trash, deployed app).
 - `hatchkit add <project> [services]`: provision GlitchTip/Plausible/Resend/S3/email.
 - `hatchkit keys show|push|rotate <project>`: manage dotenvx private keys.
 - `hatchkit secrets rotate <project>`: rotate one project's provider

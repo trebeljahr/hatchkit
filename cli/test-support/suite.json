@@ -110,6 +110,7 @@
   "test-auth-account-security-lint.ts",
   "test-auth-apple-sign-in.ts",
   "test-auth-sign-in-methods.ts",
+  "test-auth-providers.ts",
   "test-project-subdir.ts",
   "test-project-lookup.ts",
   "test-project-coolify-apps.ts",
