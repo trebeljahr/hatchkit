@@ -1650,10 +1650,15 @@ export class CoolifyApi {
    *  Same secrecy rule as `listAppEnvs`: never print a value. */
   async listAppEnvRows(
     uuid: string,
-  ): Promise<Array<{ key: string; value: string | undefined; isPreview: boolean }>> {
+  ): Promise<Array<{ key: string; value: string | undefined; isPreview: boolean; uuid?: string }>> {
     const raw = await this.request<unknown>("GET", `/applications/${uuid}/envs`);
     const rows = Array.isArray(raw) ? raw : [];
-    const out: Array<{ key: string; value: string | undefined; isPreview: boolean }> = [];
+    const out: Array<{
+      key: string;
+      value: string | undefined;
+      isPreview: boolean;
+      uuid?: string;
+    }> = [];
     for (const r of rows) {
       if (!r || typeof r !== "object") continue;
       const e = r as Record<string, unknown>;
@@ -1662,9 +1667,19 @@ export class CoolifyApi {
         key: e.key,
         value: typeof e.value === "string" ? e.value : e.value === null ? "" : undefined,
         isPreview: e.is_preview === true || e.is_preview === 1,
+        ...(typeof e.uuid === "string" ? { uuid: e.uuid } : {}),
       });
     }
     return out;
+  }
+
+  /** Delete ONE env variable by its row uuid (from {@link listAppEnvRows}).
+   *  `DELETE /applications/{uuid}/envs/{env_uuid}` needs a token with the
+   *  `delete` ability. A row already gone answers 404 → "not-found". */
+  async deleteAppEnv(appUuid: string, envUuid: string): Promise<"deleted" | "not-found"> {
+    return this.delete(
+      `/applications/${encodeURIComponent(appUuid)}/envs/${encodeURIComponent(envUuid)}`,
+    );
   }
 
   /** Names of an application's PRODUCTION env variables. Values are

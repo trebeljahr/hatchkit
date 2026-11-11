@@ -90,7 +90,7 @@ export async function provisionCoolifyRedis(
   }
 
   // The project's own Docker network, or the one its app already runs on.
-  const apps = await findCoolifyAppsForProject(config.name, config.topology).catch(() => []);
+  const apps = await findCoolifyAppsForProject(config.name, config).catch(() => []);
   const { placement, note } = await placeProjectResource(api, {
     serverUuid,
     projectName: config.name,
@@ -145,7 +145,7 @@ export async function provisionCoolifyRedis(
     api,
     coolifyUrl: cfg.url,
     projectName: config.name,
-    topology: config.topology,
+    shape: config,
   });
 
   return { databaseUuid, internalUrl };

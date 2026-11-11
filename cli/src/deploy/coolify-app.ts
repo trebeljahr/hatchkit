@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { getCoolifyConfig, getDnsConfig } from "../config.js";
+import type { Surface } from "../prompts.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
 import type { ApplicationCreateInput } from "../utils/coolify-api.js";
@@ -10,8 +11,15 @@ import ora from "../utils/spinner.js";
 import { DEPLOY_HOOK_WATCH_PATH } from "./coolify-deploy-hook.js";
 import { deployImageDefaults, existingAppUuids } from "./coolify.js";
 import { type CoolifyDeployApp, repoSlugFromRemote } from "./gh-actions-secrets.js";
+import { type CoolifyRuntime, resolveCoolifyRuntime } from "./image-runtime.js";
 import { placeProjectResource } from "./project-network.js";
-import { type RoutedApp, type RoutingPlan, type Topology, computeRoutingPlan } from "./routing.js";
+import {
+  type ClientHost,
+  type RoutedApp,
+  type RoutingPlan,
+  type Topology,
+  computeRoutingPlan,
+} from "./routing.js";
 import { pushNativeOriginsToServerApps } from "./trusted-origins.js";
 
 export interface WireUpInput {
@@ -956,67 +964,109 @@ function inferZone(domain: string): string {
   return parts.slice(-2).join(".");
 }
 
-/** Look up the Coolify apps belonging to a project for the
- *  Actions-secrets push.
+/** The manifest fields that decide which Coolify apps a project has.
+ *  `ProjectManifest` and create's `ProjectConfig` both fit. */
+export interface ProjectAppsShape {
+  topology?: Topology;
+  /** Manifest `coolifyRuntime`. Absent means `compose`, the runtime of
+   *  every project deployed before `image` existed. */
+  coolifyRuntime?: CoolifyRuntime;
+  surfaces?: Surface;
+  clientHost?: ClientHost;
+  /** Manifest `coolifyApps`: uuids `migrate-runtime` recorded. */
+  coolifyApps?: { app?: string; client?: string; server?: string };
+}
+
+/** Look up the Coolify apps belonging to a project.
  *
- *  `single-origin` (and any project whose topology we don't know) has
- *  ONE app; the candidate list below covers hatchkit's current name
- *  plus the legacy ones older `runCoolifySetup` releases produced.
+ *  The routing plan names them, and the plan depends on the runtime as
+ *  well as the topology: an `image` project with a client and a server
+ *  runs them as `<name>-client` + `<name>-server` even under
+ *  `single-origin`. Going by topology alone found only the server of
+ *  such a project, so its client got no deploy hook, no key push and no
+ *  doctor check. Pass the manifest (or create's config) so the lookup
+ *  sees what sync sees.
  *
- *  `split` has TWO, and both need a deploy trigger — returning only one
- *  would leave half the deployment stuck on a stale image forever. Each
- *  is matched through its aliases so a hand-rolled `-backend` /
- *  `-frontend` pair (tiao's shape) is found rather than skipped, and
- *  each carries a `role` so the secrets push can name them apart.
+ *  A two-app plan returns each app it finds with its `role`, matched
+ *  through its aliases so a hand-rolled `-backend` / `-frontend` pair
+ *  (tiao's shape) is found. A one-app plan, or a two-app plan with
+ *  neither app present, falls back to the single-app names: hatchkit's
+ *  current `<name>` plus the legacy ones older releases produced. That
+ *  fallback also finds the one image app `migrate-runtime` makes of a
+ *  compose app that ran one service.
  *
+ *  A bare `Topology` is still accepted and means a compose project.
  *  Returns an empty array when Coolify isn't configured or nothing
- *  matches — callers log a manual-recipe hint in that case. */
+ *  matches; callers log a manual-recipe hint in that case. */
 export async function findCoolifyAppsForProject(
   projectName: string,
-  topology: Topology = "single-origin",
+  shape: Topology | ProjectAppsShape = "single-origin",
 ): Promise<CoolifyDeployApp[]> {
   const cfg = await getCoolifyConfig();
   if (!cfg) return [];
   const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
-  const apps = await api.listApplications();
-  const byName = new Map(apps.map((a) => [a.name, a.uuid]));
+  return matchProjectCoolifyApps(
+    await api.listApplications(),
+    projectName,
+    typeof shape === "string" ? { topology: shape } : shape,
+  );
+}
 
-  if (topology === "split") {
-    const plan = computeRoutingPlan({
+/** {@link findCoolifyAppsForProject} against an app list already read.
+ *  Pure, for tests. */
+export function matchProjectCoolifyApps(
+  apps: ReadonlyArray<{ uuid: string; name: string }>,
+  projectName: string,
+  shape: ProjectAppsShape = {},
+): CoolifyDeployApp[] {
+  const byName = new Map(apps.map((a) => [a.name, a.uuid]));
+  const live = new Set(apps.map((a) => a.uuid));
+  const recorded = (uuid: string | undefined) => (uuid && live.has(uuid) ? uuid : undefined);
+
+  let plan: RoutingPlan | undefined;
+  try {
+    plan = computeRoutingPlan({
       name: projectName,
       // Domain doesn't affect the app NAMES, which is all we need here.
       domain: "example.invalid",
-      topology: "split",
+      topology: shape.topology ?? "single-origin",
+      surfaces: shape.surfaces,
+      runtime: resolveCoolifyRuntime(shape.coolifyRuntime),
+      ...(shape.clientHost === "cloudflare" ? { clientHost: "cloudflare" as const } : {}),
     });
+  } catch {
+    // A shape the plan refuses (a Worker client on a compose runtime):
+    // the single-app names below still find what is there.
+  }
+
+  const roled = plan?.apps.filter(
+    (r): r is RoutedApp & { role: "client" | "server" } =>
+      r.role === "client" || r.role === "server",
+  );
+  if (roled && roled.length > 0) {
     const found: CoolifyDeployApp[] = [];
-    for (const routed of plan.apps) {
-      for (const candidate of [routed.appName, ...routed.aliases]) {
-        const uuid = byName.get(candidate);
-        if (uuid) {
-          found.push({ uuid, role: routed.role === "server" ? "server" : "client" });
-          break;
-        }
-      }
+    for (const routed of roled) {
+      const uuid =
+        recorded(shape.coolifyApps?.[routed.role]) ??
+        [routed.appName, ...routed.aliases].map((n) => byName.get(n)).find(Boolean);
+      if (uuid) found.push({ uuid, role: routed.role });
     }
     if (found.length > 0) return found;
-    // Fall through: a manifest may say `split` before the apps exist.
+    // Fall through: a manifest may name two apps before they exist, or
+    // one image app may stand in for both.
   }
 
-  const found: CoolifyDeployApp[] = [];
-  // Single-app fallbacks. Picked in priority order — first match wins.
-  for (const candidate of [
-    projectName,
-    `${projectName}-server`,
-    `${projectName}-web`,
-    `${projectName}-app`,
-    `${projectName}-api`,
-  ]) {
-    const uuid = byName.get(candidate);
-    if (uuid) {
-      found.push({ uuid });
-      break;
-    }
-  }
-
-  return found;
+  const single =
+    recorded(shape.coolifyApps?.app) ??
+    // Picked in priority order — first match wins.
+    [
+      projectName,
+      `${projectName}-server`,
+      `${projectName}-web`,
+      `${projectName}-app`,
+      `${projectName}-api`,
+    ]
+      .map((n) => byName.get(n))
+      .find(Boolean);
+  return single ? [{ uuid: single }] : [];
 }

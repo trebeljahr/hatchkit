@@ -80,6 +80,8 @@ The encrypted file is **not** shipped into the image, and the server `Dockerfile
 1. It could never cover the client half anyway. Next.js inlines `NEXT_PUBLIC_*` into the browser bundle at image **build** time, so those arrive as Docker build args — no runtime file can affect them.
 2. Putting the ciphertext and the key that decrypts it in one image buys little over just holding the resolved values.
 
+A project with a client app and a server app keeps the server's values in `packages/server/.env.production`. Only the server app gets them. The client app gets `NODE_ENV`, its `PORT` and the values of `packages/client/.env.production`, if that file exists. The starter's client reads nothing else at runtime. Older releases pushed the server values to the client app too, so `hatchkit sync` deletes each server key it finds on a client app, and `--dry-run` lists them. A client that reads a value at runtime gets it from `packages/client/.env.production`. An env file at the project root is shared: every app gets all of it. `hatchkit keys push` puts `DOTENV_PRIVATE_KEY_PRODUCTION` on the server app only.
+
 `src/config/env.ts` still calls dotenvx, guarded by an `existsSync`, so in a deployed container the call is a no-op and `process.env` already holds everything. The guard is what makes the same file work on a workstation, in CI, and in production.
 
 `hatchkit doctor` fails when a project's repo disagrees with this — when `.env.production` exists but isn't committed (a global `core.excludesFile` listing `.env.production` is the usual cause, and a repo `.gitignore` only beats it with an explicit `!` negation), or when a `Dockerfile` still copies the file into its runtime stage.

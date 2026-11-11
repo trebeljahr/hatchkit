@@ -13,6 +13,22 @@
  * "Missing required environment variable: MONGODB_URI", and the first
  * CI deploy gate failed with it.
  *
+ * Which values go where. In a two-package project the file this reads
+ * is the server package's (`packages/server/.env.production`), and its
+ * values are the server's secrets. A client app gets none of them: only
+ * NODE_ENV, its PORT and the client package's own `.env.production`.
+ * The starter's client is a Next.js standalone server that reads
+ * NODE_ENV, PORT and its drain settings at runtime, and NEXT_PUBLIC_*
+ * only at image BUILD time (CI passes them as build args), so a server
+ * secret in its container is exposure with no use. Earlier releases
+ * pushed the server file to every app, so a client app can still hold
+ * server keys: the push removes each one it finds (key names only in
+ * the output), and says so when it cannot. A client that does read a
+ * value at runtime gets it from the client package's own file.
+ *
+ * A file at the project root, or a project with no client app, is one
+ * shared env: every app gets all of it, as before.
+ *
  * Each app's live env is read before the write so the caller learns
  * which apps' env CHANGED. Coolify hands env to a container when it
  * starts it, so a changed app keeps the old values until it is
@@ -23,8 +39,13 @@
 
 import chalk from "chalk";
 import type { CoolifyApi } from "../utils/coolify-api.js";
+import { envFileOwner } from "../utils/env-files.js";
 import ora from "../utils/spinner.js";
-import { resolveProductionEnv } from "./env-resolve.js";
+import {
+  type ResolvedProdEnv,
+  resolveClientProductionEnv,
+  resolveProductionEnv,
+} from "./env-resolve.js";
 import type { RoutedApp } from "./routing.js";
 import { TRUSTED_ORIGINS_KEY, mergePushedTrustedOrigins } from "./trusted-origins.js";
 
@@ -49,6 +70,8 @@ export interface EnvChange {
    *  `read:sensitive`, or the read failed). The app then counts as
    *  changed: nothing shows it isn't. */
   unreadable: boolean;
+  /** Server keys this push removed from a client app. Names only. */
+  removed: string[];
 }
 
 export interface EnvPushOutcome {
@@ -56,6 +79,9 @@ export interface EnvPushOutcome {
   relPath: string;
   /** App name → number of vars pushed (or that would be, on a dry run). */
   pushed: Record<string, number>;
+  /** Client app name → server keys removed from it (or that would be,
+   *  on a dry run). Names only. Only apps that held any are listed. */
+  removed: Record<string, string[]>;
   /** Apps whose env this push changed. Empty on a dry run. */
   changed: EnvChange[];
   /** Keys still holding a scaffold placeholder. Pushed anyway. */
@@ -65,7 +91,9 @@ export interface EnvPushOutcome {
   errors: string[];
 }
 
-/** Push `.env.production` (decrypted) onto every app in `apps`.
+/** Push `.env.production` (decrypted) onto every app in `apps`: all of
+ *  it to the server side, and to a client app only what the client
+ *  needs (see the module header).
  *
  *  Returns null when the project has no `.env.production`: a project
  *  holding every value in Coolify is a legitimate setup, so that is
@@ -84,6 +112,7 @@ export async function pushProductionEnv(args: {
   const outcome: EnvPushOutcome = {
     relPath: resolvedEnv.relPath,
     pushed: {},
+    removed: {},
     changed: [],
     placeholders: [],
     errors: [],
@@ -127,8 +156,13 @@ export async function pushProductionEnv(args: {
   const baseline: Record<string, string> = { NODE_ENV: "production" };
   if (project.surfaces !== "static") baseline.FRONTEND_URL = `https://${project.domain}`;
 
+  const clientSide = await clientEnvPlan(args.projectDir, resolvedEnv, args.apps, json);
+
   for (const app of args.apps) {
-    const values: Record<string, string> = { ...baseline, ...resolvedEnv.values };
+    const isClient = clientSide !== null && app.role === "client";
+    const values: Record<string, string> = isClient
+      ? { NODE_ENV: "production", ...clientSide.values }
+      : { ...baseline, ...resolvedEnv.values };
     if (app.role !== "compose") values.PORT = app.portsExposes;
     // TRUSTED_ORIGINS is a list the dashboard adds to by hand (a pinned
     // browser-extension id, say). Pushing the file's value verbatim
@@ -158,35 +192,173 @@ export async function pushProductionEnv(args: {
       }
     }
     const count = Object.keys(values).length;
+    // The live rows, read once: for the change report, and on a client
+    // app for the server keys it still holds.
+    let rows: LiveRows | null = null;
+    if (!dryRun || isClient) {
+      try {
+        rows = await api.listAppEnvRows(app.uuid);
+      } catch {
+        rows = null;
+      }
+    }
+    const stale =
+      isClient && rows ? staleServerKeys(rows, clientSide.serverKeys, values, clientSide.keep) : [];
     if (dryRun) {
       if (!json) {
         console.log(
           chalk.dim(
-            `    · env → ${app.name}: would push ${count} var(s) from ${resolvedEnv.relPath}`,
+            `    · env → ${app.name}: would push ${count} var(s) from ${isClient ? clientSide.source : resolvedEnv.relPath}`,
           ),
         );
+        if (stale.length > 0) {
+          console.log(
+            chalk.dim(
+              `    · env → ${app.name}: would remove ${stale.length} server key(s): ${stale.map((r) => r.key).join(", ")}`,
+            ),
+          );
+        }
       }
       outcome.pushed[app.name] = count;
+      if (stale.length > 0) outcome.removed[app.name] = stale.map((r) => r.key);
+      if (isClient && rows === null) {
+        outcome.errors.push(
+          `env ${app.name}: couldn't read its env to check for server keys left by an earlier push`,
+        );
+      }
       continue;
     }
-    const before = await liveEnvDiff(api, app.uuid, values);
+    const before = rows ? diffRows(rows, values) : { keys: [], unreadable: true };
     const spinner = json ? null : ora(`Coolify: env → "${app.name}"`).start();
     try {
       await api.setAppEnv(app.uuid, values);
       outcome.pushed[app.name] = count;
-      if (before.unreadable || before.keys.length > 0) {
-        outcome.changed.push({ uuid: app.uuid, name: app.name, ...before });
-      }
-      // Names only. These are production secrets.
       spinner?.succeed(
         `Coolify: pushed ${count} env var(s) to "${app.name}"${describeChange(before)}`,
       );
     } catch (err) {
       spinner?.fail(`Coolify: env push failed: ${(err as Error).message}`);
       outcome.errors.push(`env ${app.name}: ${(err as Error).message}`);
+      continue;
+    }
+    const removed = isClient
+      ? await removeStaleServerKeys(api, app, rows, stale, outcome.errors, json)
+      : [];
+    if (removed.length > 0) outcome.removed[app.name] = removed;
+    if (before.unreadable || before.keys.length > 0 || removed.length > 0) {
+      outcome.changed.push({ uuid: app.uuid, name: app.name, ...before, removed });
     }
   }
   return outcome;
+}
+
+type LiveRows = Awaited<ReturnType<CoolifyApi["listAppEnvRows"]>>;
+
+/** What a client app gets when the pushed file is the server package's,
+ *  or null when every app shares the one file. */
+interface ClientEnvPlan {
+  /** The client package's own values (decrypted ones only). */
+  values: Record<string, string>;
+  /** Keys a client app keeps even when the server file names them too:
+   *  everything the client file declares, decrypted or not. */
+  keep: Set<string>;
+  /** Keys that are the server's: removed from a client app that holds
+   *  them. */
+  serverKeys: Set<string>;
+  /** For log lines: where the client's values came from. */
+  source: string;
+}
+
+async function clientEnvPlan(
+  projectDir: string,
+  serverEnv: ResolvedProdEnv,
+  apps: EnvPushApp[],
+  json: boolean | undefined,
+): Promise<ClientEnvPlan | null> {
+  if (!apps.some((a) => a.role === "client")) return null;
+  if (envFileOwner(projectDir, serverEnv.path) !== "server") return null;
+  const clientEnv = await resolveClientProductionEnv(projectDir);
+  if (clientEnv && clientEnv.undecrypted.length > 0 && !json) {
+    console.log(
+      chalk.yellow(
+        `\n  ${clientEnv.relPath}: ${clientEnv.undecrypted.length} value(s) still encrypted ` +
+          `(${clientEnv.undecrypted.join(", ")}) — not pushed to the client app. Its key is ` +
+          `${clientEnv.relPath.replace(/\.env\.production$/, ".env.keys")}, not the keychain's.`,
+      ),
+    );
+  }
+  return {
+    values: clientEnv?.values ?? {},
+    keep: new Set([...Object.keys(clientEnv?.values ?? {}), ...(clientEnv?.undecrypted ?? [])]),
+    serverKeys: new Set([
+      ...Object.keys(serverEnv.values),
+      // The key that decrypts the server file. `create` and `keys push`
+      // used to put it on every app.
+      "DOTENV_PRIVATE_KEY_PRODUCTION",
+    ]),
+    source: clientEnv ? clientEnv.relPath : "the baseline (no client .env.production)",
+  };
+}
+
+/** Production rows of a client app that carry a server key the client
+ *  is not pushed. */
+function staleServerKeys(
+  rows: LiveRows,
+  serverKeys: Set<string>,
+  pushed: Record<string, string>,
+  keep: Set<string>,
+): LiveRows {
+  return rows.filter(
+    (r) => !r.isPreview && serverKeys.has(r.key) && !(r.key in pushed) && !keep.has(r.key),
+  );
+}
+
+/** Delete `stale` from a client app. Returns the keys removed; a key
+ *  that could not be removed is an error naming the dashboard fix. */
+async function removeStaleServerKeys(
+  api: CoolifyApi,
+  app: EnvPushApp,
+  rows: LiveRows | null,
+  stale: LiveRows,
+  errors: string[],
+  json: boolean | undefined,
+): Promise<string[]> {
+  if (rows === null) {
+    errors.push(
+      `env ${app.name}: couldn't read its env to check for server keys left by an earlier push`,
+    );
+    return [];
+  }
+  const removed: string[] = [];
+  const failed: string[] = [];
+  let reason = "";
+  for (const row of stale) {
+    if (!row.uuid) {
+      failed.push(row.key);
+      reason ||= "Coolify returned no row uuid";
+      continue;
+    }
+    try {
+      await api.deleteAppEnv(app.uuid, row.uuid);
+      removed.push(row.key);
+    } catch (err) {
+      failed.push(row.key);
+      reason ||= (err as Error).message.split("\n")[0];
+    }
+  }
+  if (removed.length > 0 && !json) {
+    console.log(
+      chalk.green(`  ✓ Coolify: removed ${removed.length} server key(s) from "${app.name}"`) +
+        chalk.dim(` (${removed.join(", ")})`),
+    );
+  }
+  if (failed.length > 0) {
+    errors.push(
+      `env ${app.name}: still holds server key(s) ${failed.join(", ")} — couldn't remove them (${reason}). ` +
+        "Delete them in the Coolify dashboard (the app → Environment Variables), or give the token the delete ability and re-run.",
+    );
+  }
+  return removed;
 }
 
 /** Which of `values` the app's live PRODUCTION env lacks or holds with
@@ -196,12 +368,19 @@ export async function liveEnvDiff(
   appUuid: string,
   values: Record<string, string>,
 ): Promise<{ keys: string[]; unreadable: boolean }> {
-  let rows: Awaited<ReturnType<CoolifyApi["listAppEnvRows"]>>;
+  let rows: LiveRows;
   try {
     rows = await api.listAppEnvRows(appUuid);
   } catch {
     return { keys: [], unreadable: true };
   }
+  return diffRows(rows, values);
+}
+
+function diffRows(
+  rows: LiveRows,
+  values: Record<string, string>,
+): { keys: string[]; unreadable: boolean } {
   const live = new Map<string, string | undefined>();
   for (const row of rows) if (!row.isPreview) live.set(row.key, row.value);
   const keys: string[] = [];

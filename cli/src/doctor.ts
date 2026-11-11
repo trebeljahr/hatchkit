@@ -4205,7 +4205,7 @@ export async function checkProjectCoolifyAutoDeployState(
   const { DEPLOY_HOOK_WATCH_PATH, deployHookKeychainKey } = await import(
     "./deploy/coolify-deploy-hook.js"
   );
-  const apps = await findCoolifyAppsForProject(manifest.name, manifest.topology).catch(() => []);
+  const apps = await findCoolifyAppsForProject(manifest.name, manifest).catch(() => []);
   if (apps.length === 0) return out;
   const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
   const title = `Project ${manifest.name} (Coolify deploy hooks)`;

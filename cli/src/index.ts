@@ -3547,10 +3547,13 @@ async function handleCreate(): Promise<void> {
       // print the manual command instead of failing the whole flow.
       if (scaffoldResult?.dotenvx) {
         try {
-          // Every app this run provisioned: one under a compose
-          // single-origin, `-client` + `-server` otherwise — and each
-          // container decrypts its own .env.production at runtime.
+          // Every app this run provisioned except a client half. The
+          // keychain key is the server's (packages/server/.env.keys), and
+          // the client image never decrypts anything: its .dockerignore
+          // keeps every .env.* out. A client holding the key would hold
+          // every server secret the committed ciphertext carries.
           for (const app of coolifyResult.apps) {
+            if (app.role === "client") continue;
             await pushProjectKeyToCoolify(config.name, { appName: app.name });
           }
         } catch (err) {
@@ -3592,7 +3595,7 @@ async function handleCreate(): Promise<void> {
           const apps =
             coolifyApps.length > 0
               ? deployAppsFromRouted(coolifyApps)
-              : await findCoolifyAppsForProject(config.name, config.topology);
+              : await findCoolifyAppsForProject(config.name, config);
           if (slug) {
             if (apps.length > 0) {
               await setCoolifyDeploySecrets({

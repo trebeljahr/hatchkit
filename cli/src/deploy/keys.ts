@@ -173,7 +173,10 @@ export type RunDotenvxRotateFn = (params: {
   projectDir: string;
   envProductionPath: string;
 }) => Promise<void>;
-export type CoolifyPushFn = (projectName: string) => Promise<{ uuid: string }>;
+export type CoolifyPushFn = (
+  projectName: string,
+  options?: { projectDir?: string },
+) => Promise<{ uuid: string }>;
 export type GhPushFn = (projectName: string, repoSlug: string) => Promise<void>;
 export type DetectRepoSlugFn = () => Promise<string | undefined>;
 
@@ -356,7 +359,7 @@ export async function rotateProjectKey(
       skippedCoolify = "no-coolify-config";
     } else {
       try {
-        pushedCoolify = await coolifyPush(projectName);
+        pushedCoolify = await coolifyPush(projectName, { projectDir });
       } catch (err) {
         if (err instanceof Error && /not found/i.test(err.message)) {
           skippedCoolify = "coolify-app-not-found";
@@ -470,17 +473,21 @@ async function runDotenvxRotate(
   }
 }
 
-/** Push DOTENV_PRIVATE_KEY_PRODUCTION onto a Coolify application.
- *  Resolves the application by name. When `appName` is omitted, walks
- *  the same candidate list `findCoolifyAppsForProject` understands so
- *  the key push works across every layout hatchkit can produce —
- *  the bare project name `<project>` (current convention from both
- *  `create` and `adopt`), the legacy `<project>-web` suffix, and the
- *  `<project>-server`/`-client` shape from the (currently unused)
- *  starter-split layout. */
+/** Push DOTENV_PRIVATE_KEY_PRODUCTION onto a project's Coolify app.
+ *
+ *  The key decrypts the server's `.env.production`, so it goes to the
+ *  app that runs the server and never to a client app: a client that
+ *  holds it holds every server secret the committed ciphertext carries.
+ *  When `appName` is omitted the app comes from the project's routing
+ *  plan (`findCoolifyAppsForProject`): the `server` half of a two-app
+ *  deployment, else the one app of a single-app deployment (`<project>`
+ *  or a legacy `-server` / `-web` name). The plan is read from the
+ *  manifest in `projectDir` (default cwd) when that manifest is this
+ *  project's, so an image-runtime project's `<project>-server` and an
+ *  aliased `-backend` are both found. */
 export async function pushProjectKeyToCoolify(
   projectName: string,
-  options: { appName?: string } = {},
+  options: { appName?: string; projectDir?: string } = {},
 ): Promise<{ uuid: string }> {
   const key = await getSecret(SECRET_KEYS.dotenvxPrivateKey(projectName));
   if (!key) {
@@ -495,23 +502,18 @@ export async function pushProjectKeyToCoolify(
   }
 
   const api = new CoolifyApi({ url: coolify.url, token: coolify.token });
-  const candidates = options.appName
-    ? [options.appName]
-    : [projectName, `${projectName}-web`, `${projectName}-server`, `${projectName}-client`];
-
   const spinner = ora(`Resolving Coolify app for "${projectName}"`).start();
   let appName: string;
   let uuid: string;
   try {
     const apps = await api.listApplications();
-    const match = candidates
-      .map((name) => {
-        const app = apps.find((a) => a.name === name);
-        return app ? { name, uuid: app.uuid } : undefined;
-      })
-      .find((m): m is { name: string; uuid: string } => m !== undefined);
+    const match = options.appName
+      ? apps.find((a) => a.name === options.appName)
+      : await keyTargetApp(apps, projectName, options.projectDir ?? process.cwd());
     if (!match) {
-      const tried = candidates.join(", ");
+      const tried = options.appName
+        ? options.appName
+        : "the server app of its routing plan, or a single app named after it";
       spinner.fail(
         `No Coolify application found for project "${projectName}" (tried: ${tried}). Run \`hatchkit create\` with runDeployment first.`,
       );
@@ -534,6 +536,26 @@ export async function pushProjectKeyToCoolify(
     throw err;
   }
   return { uuid };
+}
+
+/** The app {@link pushProjectKeyToCoolify} writes the key to: never a
+ *  `client` half. */
+async function keyTargetApp(
+  apps: ReadonlyArray<{ uuid: string; name: string }>,
+  projectName: string,
+  projectDir: string,
+): Promise<{ uuid: string; name: string } | undefined> {
+  const { matchProjectCoolifyApps } = await import("./coolify-app.js");
+  const { readManifest } = await import("../scaffold/manifest.js");
+  let manifest: ReturnType<typeof readManifest> = null;
+  try {
+    manifest = readManifest(projectDir);
+  } catch {
+    // Unreadable manifest: the single-app names still apply.
+  }
+  const shape = manifest?.name === projectName ? manifest : {};
+  const target = matchProjectCoolifyApps(apps, projectName, shape).find((a) => a.role !== "client");
+  return target ? apps.find((a) => a.uuid === target.uuid) : undefined;
 }
 
 /** Push DOTENV_PRIVATE_KEY_PRODUCTION as a GitHub Actions secret on

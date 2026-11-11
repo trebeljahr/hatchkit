@@ -15,8 +15,12 @@
  * Locks in:
  *
  *   1. pushProductionEnv pushes the file's values, the baseline and each
- *      app's own PORT onto every app, and reports which apps' env
- *      changed (key names only).
+ *      app's own PORT onto the server side, and reports which apps' env
+ *      changed (key names only). A client app gets NODE_ENV, its PORT and
+ *      the client package's own file, never the server's secrets; server
+ *      keys an earlier push left on it are deleted (dry run: listed), a
+ *      refused delete is an error naming them. A root env file is shared
+ *      by every app, as before.
  *   2. Live env equal to the file → pushed, reported unchanged.
  *      Live values unreadable → counted as changed.
  *   3. Ciphertext the key can't open → nothing pushed, an error.
@@ -88,6 +92,7 @@ interface EnvRow {
   key: string;
   value: string;
   is_preview: boolean;
+  uuid?: string;
 }
 
 interface Call {
@@ -102,9 +107,13 @@ interface Call {
 function fakeCoolify(
   apps: FakeApp[],
   env: Record<string, EnvRow[]> = {},
-  opts: { hideValues?: boolean } = {},
+  opts: { hideValues?: boolean; denyDelete?: boolean } = {},
 ): { fetch: typeof fetch; calls: Call[]; env: Record<string, EnvRow[]> } {
   const calls: Call[] = [];
+  let rowSeq = 0;
+  for (const rows of Object.values(env)) {
+    for (const r of rows) r.uuid ??= `env-${++rowSeq}`;
+  }
   const json = (value: unknown, status = 200) =>
     new Response(JSON.stringify(value), {
       status,
@@ -130,9 +139,20 @@ function fakeCoolify(
       const rows = env[envs[1]] ?? [];
       return json(
         rows.map((r) =>
-          opts.hideValues ? { key: r.key, is_preview: r.is_preview } : { ...r, is_literal: true },
+          opts.hideValues
+            ? { uuid: r.uuid, key: r.key, is_preview: r.is_preview }
+            : { ...r, is_literal: true },
         ),
       );
+    }
+    const oneEnv = path.match(/^\/applications\/([^/]+)\/envs\/([^/]+)$/);
+    if (oneEnv && method === "DELETE") {
+      if (opts.denyDelete) return json({ message: "Missing required permissions: delete" }, 403);
+      const rows = env[oneEnv[1]] ?? [];
+      const at = rows.findIndex((r) => r.uuid === oneEnv[2]);
+      if (at < 0) return json({ message: "Environment variable not found." }, 404);
+      rows.splice(at, 1);
+      return json({ message: "Environment variable deleted." });
     }
     const bulk = path.match(/^\/applications\/([^/]+)\/envs\/bulk$/);
     if (bulk && method === "PATCH") {
@@ -141,7 +161,13 @@ function fakeCoolify(
       for (const item of (body?.data ?? []) as Array<{ key: string; value: string }>) {
         const existing = rows.find((r) => r.key === item.key && !r.is_preview);
         if (existing) existing.value = item.value;
-        else rows.push({ key: item.key, value: item.value, is_preview: false });
+        else
+          rows.push({
+            key: item.key,
+            value: item.value,
+            is_preview: false,
+            uuid: `env-${++rowSeq}`,
+          });
       }
       return json({ message: "ok" });
     }
@@ -218,7 +244,16 @@ const PAIR: EnvPushApp[] = [
   { uuid: "server-uuid", name: "demo-app-server", role: "server", portsExposes: "3000" },
 ];
 
-/** What each app of PAIR holds after a push of ENV_FILE. */
+/** What the client app of PAIR holds after a push of ENV_FILE. */
+function clientRows(port: string): EnvRow[] {
+  return [
+    { key: "NODE_ENV", value: "production", is_preview: false },
+    { key: "PORT", value: port, is_preview: false },
+  ];
+}
+
+/** What the server app of PAIR holds after a push of ENV_FILE, and what
+ *  every app held after a push by an earlier release. */
 function pushedRows(port: string): EnvRow[] {
   return Object.entries({
     NODE_ENV: "production",
@@ -255,21 +290,23 @@ await expect("pushes file values + baseline + each app's PORT, reports both chan
   assert.ok(outcome);
   assert.deepEqual(outcome.errors, []);
   assert.equal(outcome.relPath, join("packages", "server", ".env.production"));
-  assert.deepEqual(outcome.pushed, { "demo-app-client": 5, "demo-app-server": 5 });
+  assert.deepEqual(outcome.pushed, { "demo-app-client": 2, "demo-app-server": 5 });
   const server = bulkBody(fake.calls, "server-uuid");
   assert.equal(server.MONGODB_URI, MONGO_URL, "the database URL reaches the server");
   assert.equal(server.BETTER_AUTH_SECRET, "test-auth-secret");
   assert.equal(server.PORT, "3000");
   assert.equal(server.NODE_ENV, "production");
   assert.equal(server.FRONTEND_URL, "https://demo.example.com");
-  assert.equal(bulkBody(fake.calls, "client-uuid").PORT, "3001", "each half keeps its own port");
+  assert.deepEqual(
+    bulkBody(fake.calls, "client-uuid"),
+    { NODE_ENV: "production", PORT: "3001" },
+    "the client gets its own port and none of the server's secrets",
+  );
   assert.deepEqual(
     outcome.changed.map((c) => [c.name, [...c.keys].sort(), c.unreadable]),
-    [
-      ["demo-app-client", ["BETTER_AUTH_SECRET", "FRONTEND_URL", "MONGODB_URI"], false],
-      ["demo-app-server", ["BETTER_AUTH_SECRET", "MONGODB_URI"], false],
-    ],
+    [["demo-app-server", ["BETTER_AUTH_SECRET", "MONGODB_URI"], false]],
   );
+  assert.deepEqual(outcome.removed, {});
   assert.ok(!out.includes(MONGO_URL), "a value was printed");
   assert.ok(!out.includes("test-auth-secret"), "a value was printed");
 });
@@ -277,7 +314,7 @@ await expect("pushes file values + baseline + each app's PORT, reports both chan
 await expect("live env equal to the file → pushed, reported unchanged", async () => {
   const dir = projectDir({ name: "demo-app" }, ENV_FILE);
   const fake = fakeCoolify([], {
-    "client-uuid": pushedRows("3001"),
+    "client-uuid": clientRows("3001"),
     "server-uuid": pushedRows("3000"),
   });
   const { value: outcome } = await withCoolify(fake, () =>
@@ -365,11 +402,136 @@ await expect("dry run → counts only, no write, nothing reported changed", asyn
   const { value: outcome, out } = await withCoolify(fake, () =>
     pushProductionEnv({ api, projectDir: dir, project: PROJECT, apps: PAIR, dryRun: true }),
   );
-  assert.deepEqual(outcome?.pushed, { "demo-app-client": 5, "demo-app-server": 5 });
+  assert.deepEqual(outcome?.pushed, { "demo-app-client": 2, "demo-app-server": 5 });
   assert.deepEqual(outcome?.changed, []);
   assert.deepEqual(writes(fake.calls), []);
   assert.match(out, /would push 5 var\(s\)/);
 });
+
+await expect("server keys an earlier push left on a client app are deleted", async () => {
+  const dir = projectDir({ name: "demo-app" }, ENV_FILE);
+  const client = [
+    ...pushedRows("3001"),
+    { key: "DOTENV_PRIVATE_KEY_PRODUCTION", value: "test-private-key", is_preview: false },
+    // Set by hand in the dashboard: not the server's, so it stays.
+    { key: "CLIENT_ONLY_FLAG", value: "on", is_preview: false },
+    // Preview rows are not production env and are never touched.
+    { key: "MONGODB_URI", value: MONGO_URL, is_preview: true },
+  ];
+  const fake = fakeCoolify([], { "client-uuid": client, "server-uuid": pushedRows("3000") });
+  const { value: outcome, out } = await withCoolify(fake, () =>
+    pushProductionEnv({ api, projectDir: dir, project: PROJECT, apps: PAIR }),
+  );
+  assert.ok(outcome);
+  assert.deepEqual(outcome.errors, []);
+  const removed = ["BETTER_AUTH_SECRET", "DOTENV_PRIVATE_KEY_PRODUCTION", "MONGODB_URI"];
+  assert.deepEqual([...(outcome.removed["demo-app-client"] ?? [])].sort(), removed);
+  assert.deepEqual(
+    fake.env["client-uuid"]!.map((r) => `${r.key}${r.is_preview ? " (preview)" : ""}`).sort(),
+    ["CLIENT_ONLY_FLAG", "FRONTEND_URL", "MONGODB_URI (preview)", "NODE_ENV", "PORT"],
+    "FRONTEND_URL is a baseline, not a secret of the server file",
+  );
+  assert.equal(
+    fake.calls.filter((c) => c.method === "DELETE").length,
+    3,
+    "one DELETE per server key, by row uuid",
+  );
+  assert.deepEqual(
+    outcome.changed.map((c) => [c.name, [...c.removed].sort()]),
+    [["demo-app-client", removed]],
+    "a removal is a change: the container keeps the old env until redeployed",
+  );
+  assert.ok(!fake.calls.some((c) => c.method === "DELETE" && c.path.includes("server-uuid")));
+  assert.ok(!out.includes(MONGO_URL), "a value was printed");
+  assert.ok(!out.includes("test-private-key"), "a value was printed");
+});
+
+await expect("dry run lists the server keys it would delete, deletes nothing", async () => {
+  const dir = projectDir({ name: "demo-app" }, ENV_FILE);
+  const fake = fakeCoolify([], { "client-uuid": pushedRows("3001") });
+  const { value: outcome, out } = await withCoolify(fake, () =>
+    pushProductionEnv({ api, projectDir: dir, project: PROJECT, apps: PAIR, dryRun: true }),
+  );
+  assert.deepEqual(writes(fake.calls), []);
+  assert.deepEqual([...(outcome?.removed["demo-app-client"] ?? [])].sort(), [
+    "BETTER_AUTH_SECRET",
+    "MONGODB_URI",
+  ]);
+  assert.match(out, /would remove 2 server key\(s\): .*MONGODB_URI/);
+});
+
+await expect("a delete Coolify refuses → an error naming the keys and the fix", async () => {
+  const dir = projectDir({ name: "demo-app" }, ENV_FILE);
+  const fake = fakeCoolify([], { "client-uuid": pushedRows("3001") }, { denyDelete: true });
+  const { value: outcome } = await withCoolify(fake, () =>
+    pushProductionEnv({ api, projectDir: dir, project: PROJECT, apps: PAIR }),
+  );
+  assert.ok(outcome);
+  assert.equal(outcome.errors.length, 1, outcome.errors.join("\n"));
+  assert.match(outcome.errors[0]!, /demo-app-client: still holds server key\(s\) /);
+  assert.match(outcome.errors[0]!, /MONGODB_URI/);
+  assert.match(outcome.errors[0]!, /Environment Variables/);
+  assert.deepEqual(outcome.removed, {});
+  assert.equal(
+    bulkBody(fake.calls, "server-uuid").MONGODB_URI,
+    MONGO_URL,
+    "the server still got its env",
+  );
+});
+
+await expect("the client package's own .env.production reaches the client app", async () => {
+  const dir = projectDir(
+    { name: "demo-app" },
+    `${ENV_FILE}SENTRY_DSN=https://server-dsn@example.com/1\n`,
+  );
+  mkdirSync(join(dir, "packages/client"), { recursive: true });
+  writeFileSync(
+    join(dir, "packages/client/.env.production"),
+    "NEXT_PUBLIC_SENTRY_DSN=https://client-dsn@example.com/2\nSENTRY_DSN=https://client-dsn@example.com/2\n" +
+      'LOCKED="encrypted:BCtSlYNoXhJmFd8bjBAAApD9wRkNOMNj"\n',
+  );
+  const fake = fakeCoolify([], {
+    "client-uuid": [...pushedRows("3001"), { key: "LOCKED", value: "x", is_preview: false }],
+  });
+  const { value: outcome, out } = await withCoolify(fake, () =>
+    pushProductionEnv({ api, projectDir: dir, project: PROJECT, apps: PAIR }),
+  );
+  assert.ok(outcome);
+  assert.deepEqual(outcome.errors, [], "an undecryptable client value blocks nothing");
+  assert.deepEqual(bulkBody(fake.calls, "client-uuid"), {
+    NODE_ENV: "production",
+    NEXT_PUBLIC_SENTRY_DSN: "https://client-dsn@example.com/2",
+    SENTRY_DSN: "https://client-dsn@example.com/2",
+    PORT: "3001",
+  });
+  assert.deepEqual(
+    [...(outcome.removed["demo-app-client"] ?? [])].sort(),
+    ["BETTER_AUTH_SECRET", "MONGODB_URI"],
+    "a key the client file declares stays, even one the server file has too",
+  );
+  assert.ok(
+    fake.env["client-uuid"]!.some((r) => r.key === "LOCKED"),
+    "its own key is kept",
+  );
+  assert.match(out, /LOCKED/);
+  assert.equal(bulkBody(fake.calls, "server-uuid").SENTRY_DSN, "https://server-dsn@example.com/1");
+});
+
+await expect(
+  "a root .env.production is shared: every app gets all of it, nothing removed",
+  async () => {
+    const dir = projectDir({ name: "demo-app" });
+    writeFileSync(join(dir, ".env.production"), ENV_FILE);
+    const fake = fakeCoolify([], { "client-uuid": pushedRows("3001") });
+    const { value: outcome } = await withCoolify(fake, () =>
+      pushProductionEnv({ api, projectDir: dir, project: PROJECT, apps: PAIR }),
+    );
+    assert.ok(outcome);
+    assert.equal(bulkBody(fake.calls, "client-uuid").MONGODB_URI, MONGO_URL);
+    assert.deepEqual(outcome.removed, {});
+    assert.ok(!fake.calls.some((c) => c.method === "DELETE"));
+  },
+);
 
 // ---------------------------------------------------------------------------
 // 4. sync --deploy redeploys an app whose env changed
@@ -484,6 +646,63 @@ await expect("--no-env → env untouched, nothing to redeploy", async () => {
   );
   assert.deepEqual(result.envChanged, []);
   assert.deepEqual(writes(fake.calls), []);
+});
+
+/** The two Docker Image apps of an image-runtime `single-origin` project. */
+function imagePair(): FakeApp[] {
+  return [
+    {
+      uuid: "client-uuid",
+      name: "demo-app-client",
+      build_pack: "dockerimage",
+      fqdn: "https://demo.example.com",
+      ports_exposes: "3000",
+    },
+    {
+      uuid: "server-uuid",
+      name: "demo-app-server",
+      build_pack: "dockerimage",
+      fqdn: "https://demo.example.com/api",
+      ports_exposes: "3000",
+    },
+  ];
+}
+
+await expect(
+  "sync: an image pair's client loses the server keys; --deploy redeploys it",
+  async () => {
+    const dir = projectDir(IMAGE_MANIFEST, ENV_FILE);
+    const fake = fakeCoolify(imagePair(), {
+      "client-uuid": pushedRows("3000"),
+      "server-uuid": pushedRows("3000"),
+    });
+    const { value: result, out } = await withCoolify(fake, () =>
+      runSync({ projectDir: dir, deploy: true, ...ENV_AND_DEPLOY }),
+    );
+    assert.equal(result.ok, true, result.error ?? out);
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(result.envRemoved).map(([k, v]) => [k, [...v].sort()])),
+      { "demo-app-client": ["BETTER_AUTH_SECRET", "MONGODB_URI"] },
+    );
+    assert.ok(!fake.env["client-uuid"]!.some((r) => r.key === "MONGODB_URI"));
+    assert.ok(fake.env["server-uuid"]!.some((r) => r.key === "MONGODB_URI"));
+    assert.ok(result.envChanged.includes("demo-app-client"));
+    assert.ok(starts(fake.calls).includes("/applications/client-uuid/start"), out);
+  },
+);
+
+await expect("sync --dry-run: names the client's server keys, deletes nothing", async () => {
+  const dir = projectDir(IMAGE_MANIFEST, ENV_FILE);
+  const fake = fakeCoolify(imagePair(), { "client-uuid": pushedRows("3000") });
+  const { value: result, out } = await withCoolify(fake, () =>
+    runSync({ projectDir: dir, dryRun: true, ...ENV_AND_DEPLOY }),
+  );
+  assert.ok(!fake.calls.some((c) => c.method === "DELETE"), out);
+  assert.deepEqual([...(result.envRemoved["demo-app-client"] ?? [])].sort(), [
+    "BETTER_AUTH_SECRET",
+    "MONGODB_URI",
+  ]);
+  assert.match(out, /demo-app-client: would remove 2 server key\(s\)/);
 });
 
 // ---------------------------------------------------------------------------

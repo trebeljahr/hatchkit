@@ -457,7 +457,7 @@ export async function auditProjectIsolation(
       const { findCoolifyAppsForProject } = await import("../deploy/coolify-app.js");
       const { CoolifyApi } = await import("../utils/coolify-api.js");
       const api = new CoolifyApi({ url: cfg.url, token: cfg.token });
-      const apps = await findCoolifyAppsForProject(name, manifest.topology).catch(() => []);
+      const apps = await findCoolifyAppsForProject(name, manifest).catch(() => []);
       for (const app of apps) {
         const env = Object.fromEntries(
           (await api.listAppEnvs(app.uuid).catch(() => [])).map((e) => [e.key, e.value]),

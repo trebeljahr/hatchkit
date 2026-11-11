@@ -34,6 +34,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { relative } from "node:path";
+import { locateClientEnvFile } from "../utils/env-files.js";
 import { locateEnvProductionFile } from "./keys.js";
 
 /** Names that describe the encryption itself rather than the app's
@@ -75,7 +76,24 @@ export interface ResolvedProdEnv {
 export async function resolveProductionEnv(projectDir: string): Promise<ResolvedProdEnv | null> {
   const path = locateEnvProductionFile(projectDir);
   if (!path || !existsSync(path)) return null;
+  return resolveEnvFile(path, projectDir);
+}
 
+/** The client package's own `.env.production`, decrypted, or null when
+ *  it has none. {@link resolveProductionEnv} reads the server package's
+ *  file first, so in a two-package project this is the only way to read
+ *  the client's. It usually has a keypair of its own
+ *  (`packages/client/.env.keys`), which the keychain does not hold: on a
+ *  machine without that file its values come back in `undecrypted`. */
+export async function resolveClientProductionEnv(
+  projectDir: string,
+): Promise<ResolvedProdEnv | null> {
+  const path = locateClientEnvFile(projectDir, ".env.production");
+  return path ? resolveEnvFile(path, projectDir) : null;
+}
+
+/** Read and decrypt one env file. */
+export async function resolveEnvFile(path: string, projectDir: string): Promise<ResolvedProdEnv> {
   // Isolated sink: dotenvx writes decrypted values here rather than
   // into process.env, so nothing this CLI spawns later inherits a
   // production secret it has no business seeing.

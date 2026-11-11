@@ -426,7 +426,7 @@ export async function isolateProject(
       ? opts.apps
       : manifest?.clientHost === "cloudflare"
         ? coolifyAppsBesideWorker(manifest, await api.listApplications())
-        : await findCoolifyAppsForProject(name, manifest?.topology);
+        : await findCoolifyAppsForProject(name, manifest ?? {});
   if (apps.length === 0) {
     result.errors.push(`no Coolify app named after ${name} was found`);
     return result;

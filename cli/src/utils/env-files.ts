@@ -23,7 +23,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /** Directories scanned for `.env.*`, in precedence order. `""` is the
  *  project root. Shared by every reader and writer. */
@@ -49,6 +49,23 @@ export function envFileCandidates(projectDir: string, name: string): string[] {
 /** The existing `name` for this project, or undefined when it has none. */
 export function locateEnvFile(projectDir: string, name: string): string | undefined {
   return envFileCandidates(projectDir, name).find((p) => existsSync(p));
+}
+
+/** Which half of a two-package project an env file belongs to: the
+ *  `server` or `client` package, or `root` for a file at the project
+ *  root (and any path that is not one of {@link envFileCandidates}). */
+export function envFileOwner(projectDir: string, path: string): "server" | "client" | "root" {
+  const dir = ENV_FILE_DIRS[envFileCandidates(projectDir, basename(path)).indexOf(path)];
+  if (!dir) return "root";
+  return dir.endsWith("/server") ? "server" : "client";
+}
+
+/** The client package's existing `name`, or undefined when it has none.
+ *  {@link locateEnvFile} prefers the server package, so this is how a
+ *  two-package project's client file is found. */
+export function locateClientEnvFile(projectDir: string, name: string): string | undefined {
+  const candidates = envFileCandidates(projectDir, name);
+  return candidates.find((p, i) => ENV_FILE_DIRS[i].endsWith("/client") && existsSync(p));
 }
 
 /** Where a writer should put `name`. Prefers, in order:

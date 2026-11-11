@@ -87,8 +87,7 @@
 
 import chalk from "chalk";
 import type { CoolifyApi, CoolifyApplication } from "../utils/coolify-api.js";
-import { findCoolifyAppsForProject } from "./coolify-app.js";
-import type { Topology } from "./routing.js";
+import { type ProjectAppsShape, findCoolifyAppsForProject } from "./coolify-app.js";
 
 /** One env var whose value points at a Coolify-managed database.
  *  Carries the key and the HOST only — never the value, which is a
@@ -268,9 +267,12 @@ export async function joinProjectAppsToDatabaseNetwork(args: {
   /** Coolify base URL, for the recipes. */
   coolifyUrl: string;
   projectName: string;
-  topology?: Topology;
+  /** The manifest or create config: which apps the project has depends
+   *  on its runtime as well as its topology (an image project runs its
+   *  client and server as two apps even under `single-origin`). */
+  shape?: ProjectAppsShape;
 }): Promise<void> {
-  const { api, coolifyUrl, projectName, topology } = args;
+  const { api, coolifyUrl, projectName, shape } = args;
   // A `split` run provisions Mongo AND Redis back to back, and both call
   // this. The PATCH is idempotent, but saying "joined 2 app(s)" twice
   // reads like something happened twice. One join per project per
@@ -278,7 +280,7 @@ export async function joinProjectAppsToDatabaseNetwork(args: {
   if (joinedThisRun.has(projectName)) return;
   let apps: Array<{ uuid: string }>;
   try {
-    apps = await findCoolifyAppsForProject(projectName, topology ?? "single-origin");
+    apps = await findCoolifyAppsForProject(projectName, shape ?? {});
   } catch (err) {
     apps = [];
     console.log(

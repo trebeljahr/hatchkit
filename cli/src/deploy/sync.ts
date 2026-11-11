@@ -139,8 +139,8 @@ import {
 import { type EnvChange, type EnvPushApp, pushProductionEnv } from "./env-push.js";
 import {
   type CoolifyDeployApp,
-  repoSlugFromRemote,
   deployAppsFromRouted,
+  repoSlugFromRemote,
   setCoolifyDeploySecrets,
 } from "./gh-actions-secrets.js";
 import {
@@ -376,6 +376,10 @@ export interface SyncResult {
   created: string[];
   /** Per-app count of env vars pushed, keyed by app name. */
   envPushed: Record<string, number>;
+  /** Client app name → server keys removed from it (or that a dry run
+   *  would remove). An earlier push sent the server's env to every app;
+   *  a client app gets only its own now. Names only. */
+  envRemoved: Record<string, string[]>;
   /** Names of the apps whose env this run changed (or whose live values
    *  it could not read). `--deploy` redeploys them. */
   envChanged: string[];
@@ -603,6 +607,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   const created: string[] = [];
   const wouldCreate: string[] = [];
   const envPushed: Record<string, number> = {};
+  const envRemoved: Record<string, string[]> = {};
   let envPlaceholders: string[] = [];
   const dnsUpserted: string[] = [];
   let secretsPushed: string[] = [];
@@ -982,6 +987,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     });
     if (envOutcome) {
       Object.assign(envPushed, envOutcome.pushed);
+      Object.assign(envRemoved, envOutcome.removed);
       envPlaceholders = envOutcome.placeholders;
       envChanged = envOutcome.changed;
       errors.push(...envOutcome.errors);
@@ -1182,6 +1188,7 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
     deployed,
     created,
     envPushed,
+    envRemoved,
     envChanged: envChanged.map((c) => c.name),
     envPlaceholders,
     dnsUpserted,
@@ -1311,6 +1318,7 @@ function emptyResult(opts: SyncOptions): SyncResult {
     deployed: [],
     created: [],
     envPushed: {},
+    envRemoved: {},
     envChanged: [],
     envPlaceholders: [],
     dnsUpserted: [],
