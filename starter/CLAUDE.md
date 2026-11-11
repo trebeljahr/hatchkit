@@ -1329,6 +1329,7 @@ The order in `app.ts` is load-bearing. Do not rearrange:
 <!-- hatchkit:endif -->
 <!-- hatchkit:if fullstack -->
 - **E2E tests:** Playwright. Files in `e2e/*.spec.ts`. Helpers in `e2e/helpers.ts`.
+- **E2E infrastructure is this project's own.** `e2e/infra.ts` names the local containers (`<project>-e2e-mongo`, …) and holds every port the suite uses. `pnpm run test:e2e` starts what is missing, reuses what is running, and its teardown removes only the containers that run started. Never remove e2e containers by name. A second checkout running the suite at the same time needs its own ports through the `E2E_*` variables in that file's header.
 - Use `data-testid` attributes for E2E selectors, not CSS classes or text content.
 <!-- hatchkit:endif -->
 

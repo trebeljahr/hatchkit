@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { E2E_PORTS } from "../infra";
 import { API_ORIGIN, API_PORT, CLIENT_HEADER, EXPORT_DIR, HARNESS_UA, MAIN_JS, REPO_ROOT } from "./support";
 
 /*
@@ -62,8 +63,9 @@ function stop(child: ChildProcess | null): Promise<void> {
  *   1. MONGODB_URI, which CI sets.
  *   2. A `mongod` of our own on a free port, with a throwaway data directory.
  *   3. The MongoDB the repository's own tooling already runs — the browser
- *      e2e container on 27018, then `pnpm dev:infra` on 27017 — under a
- *      database name nothing else writes to.
+ *      e2e container on this project's port (e2e/infra.ts), then
+ *      `pnpm dev:infra` on 27017 — under a database name nothing else writes
+ *      to.
  *
  * Returns the URI and what has to be stopped afterwards.
  */
@@ -82,7 +84,7 @@ async function startDatabase(): Promise<{ uri: string; mongod: ChildProcess | nu
     return { uri: `mongodb://127.0.0.1:${port}/starter-desktop-e2e`, mongod, dbPath };
   }
 
-  for (const port of [27018, 27017]) {
+  for (const port of [E2E_PORTS.mongo, 27017]) {
     if (await portInUse(port)) {
       console.log(`[desktop-e2e] using the MongoDB already listening on ${port}`);
       return { uri: `mongodb://127.0.0.1:${port}/starter-desktop-e2e`, mongod: null, dbPath: null };

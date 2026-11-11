@@ -282,7 +282,9 @@ group("the emitted shared package is the CommonJS the exports map promises", () 
       pkg.exports?.["."]?.default === "./dist/index.js" && pkg.exports["."].import === undefined,
     ],
     ["dist/index.js is CommonJS", index.includes("__exportStar(require(")],
-    ["dist/index.js re-exports api-level", index.includes('require("./api-level.js")')],
+    // Extensionless in source (Turbopack cannot map `./x.js` onto `./x.ts`
+    // for the client), so `require("./api-level")` — resolved by CommonJS.
+    ["dist/index.js re-exports api-level", /require\("\.\/api-level(?:\.js)?"\)/.test(index)],
   ];
 });
 

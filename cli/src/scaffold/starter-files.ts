@@ -463,14 +463,15 @@ export function isGeneratedDevDesktopScript(script: string): boolean {
  *    · packages/server/.env.example            (same three keys)
  *    · playwright.config.ts                    (E2E DB + bucket + public URL)
  *    · packages/server/src/config/env.ts       (Zod fallback default for S3_BUCKET_NAME)
+ *    · e2e/infra.ts                            (E2E stack name: containers are
+ *                                               `<name>-e2e-<svc>`, see e2e-stack.ts)
  *    · .github/workflows/build-and-deploy.yml  (E2E bucket + DB, whole-word only)
  *    · e2e/start-server.sh                     (E2E bucket, whole-word only)
  *
- *  The last two also name containers `starter-e2e-<svc>`, and the
- *  postgres overlay writes those names after this pass, so a bare
- *  `starter-e2e` followed by `-` stays as it is there. The bucket must
- *  match playwright.config.ts, or the E2E server writes to a bucket
- *  the SeaweedFS container never created.
+ *  The last two match whole words not followed by `-`, so a container
+ *  name spelled out in full (the CI workflow's) is left as it is. The
+ *  bucket must match playwright.config.ts, or the E2E server writes to a
+ *  bucket the SeaweedFS container never created.
  *
  *  Idempotent — after the first run the literal `starter-` prefix is
  *  gone, so re-runs (e.g. through `hatchkit update`) are no-ops. */
@@ -492,6 +493,10 @@ export function applyProjectName(outputDir: string, projectName: string): void {
     // a different database than the server under test wrote to — two
     // projects on one machine then also shared it.
     "e2e/db-utils.ts",
+    // The e2e stack name, which every local e2e container is named after.
+    // Left as `starter-e2e`, two projects would reuse — and tear down — each
+    // other's containers.
+    "e2e/infra.ts",
   ];
   for (const rel of targets) {
     const path = join(outputDir, rel);

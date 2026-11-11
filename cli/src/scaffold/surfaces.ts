@@ -158,7 +158,7 @@ function pruneToClientOnly(outputDir: string, modifications: string[]): void {
   // still builds after the file goes.
   const sharedIndex = join(outputDir, "packages/shared/src/index.ts");
   if (existsSync(sharedIndex)) {
-    rewriteFile(sharedIndex, (c) => c.replace(/^export \* from "\.\/ml-types\.js";\n/m, ""));
+    rewriteFile(sharedIndex, (c) => c.replace(/^export \* from "\.\/ml-types(?:\.js)?";\n/m, ""));
   }
 
   // Routes that talk to the server: every authenticated page (which
@@ -602,7 +602,7 @@ function removeDbDataVolume(content: string): string {
 
 // ── shared helpers ─────────────────────────────────────────────────────
 
-function dropWorkspaceEntry(outputDir: string, name: string): void {
+export function dropWorkspaceEntry(outputDir: string, name: string): void {
   const path = join(outputDir, "pnpm-workspace.yaml");
   if (!existsSync(path)) return;
   const content = readFileSync(path, "utf-8");

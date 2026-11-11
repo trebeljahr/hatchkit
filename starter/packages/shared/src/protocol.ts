@@ -1,4 +1,4 @@
-import type { RoomMember } from "./types.js";
+import type { RoomMember } from "./types";
 
 // ── Client → Server ──────────────────────────────────────────────────
 

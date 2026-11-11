@@ -256,9 +256,12 @@ function restoreSharedMlTypes(root: string, sharedDir: string, result: ServerAdd
   const indexPath = join(sharedDir, "src/index.ts");
   if (!existsSync(indexPath)) return;
   const existing = readFileSync(indexPath, "utf-8");
-  if (existing.includes("./ml-types.js")) return;
+  // Either spelling counts as present: the starter's barrel is extensionless
+  // (Turbopack cannot map `./x.js` onto `./x.ts` when the web client compiles
+  // this package's source), and older projects carry `./ml-types.js`.
+  if (/^export \* from "\.\/ml-types(?:\.js)?";$/m.test(existing)) return;
   if (!result.dryRun) {
-    writeFileSync(indexPath, `${existing.trimEnd()}\nexport * from "./ml-types.js";\n`, "utf-8");
+    writeFileSync(indexPath, `${existing.trimEnd()}\nexport * from "./ml-types";\n`, "utf-8");
   }
   markUpdated(result, rel(root, indexPath));
 }

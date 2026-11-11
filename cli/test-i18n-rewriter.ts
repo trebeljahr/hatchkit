@@ -277,8 +277,8 @@ console.log("\n── applyI18nRewrites: the full set ────────�
     // missing export here is the feature failing to resolve.
     const barrel = readFileSync(join(root, "packages/shared/src/index.ts"), "utf-8");
     assert(
-      barrel.includes('export * from "./locale.js";') &&
-        barrel.includes('export * from "./format-duration.js";'),
+      barrel.includes('export * from "./locale";') &&
+        barrel.includes('export * from "./format-duration";'),
       "the shared barrel exports the resolver and the byte-stable formatter",
     );
 

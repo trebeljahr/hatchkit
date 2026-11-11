@@ -2,7 +2,8 @@
  * Local S3 for the E2E run.
  *
  * The starter's server talks to S3 through `services/storage.ts`. E2E
- * gives it a throwaway SeaweedFS container on :9002 — locally from
+ * gives it a throwaway SeaweedFS container on the project's S3 port
+ * (e2e/infra.ts; 9002 in the starter) — locally from
  * `e2e/start-server.sh`, in CI from a "Start SeaweedFS" step in
  * build-and-deploy.yml. `playwright.config.ts` hands the server the
  * matching endpoint, bucket and credentials.
@@ -16,6 +17,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { E2E_INFRA_REL_PATH, readE2eInfraPorts } from "./e2e-stack.js";
 import { rewriteFile } from "./starter-files.js";
 
 /** Pinned SeaweedFS image. The starter's start-server.sh,
@@ -32,16 +34,19 @@ export function needsLocalS3(opts: {
   return opts.features.includes("s3") || (opts.mlServices?.length ?? 0) > 0;
 }
 
-/** The CI step, at the 6-space step indent both workflows use. */
-export function seaweedfsCiStep(bucket: string): string {
+/** The CI step, at the 6-space step indent both workflows use. `port` is
+ *  the host port it publishes: a `create` project's own (e2e/infra.ts,
+ *  which playwright.config.ts builds the S3 endpoint from), 9002 for the
+ *  starter and for projects older than that file. */
+export function seaweedfsCiStep(bucket: string, port = 9002): string {
   return [
     "      - name: Start SeaweedFS",
     "        run: |",
-    "          docker run -d --name e2e-seaweedfs -p 9002:8333 \\",
+    `          docker run -d --name e2e-seaweedfs -p ${port}:8333 \\`,
     `            -e S3_BUCKET=${bucket} \\`,
     `            --tmpfs /data ${SEAWEEDFS_IMAGE}`,
     "          for i in $(seq 1 60); do",
-    `            curl -sf -o /dev/null http://127.0.0.1:9002/${bucket} && exit 0`,
+    `            curl -sf -o /dev/null http://127.0.0.1:${port}/${bucket} && exit 0`,
     "            sleep 1",
     "          done",
     `          echo "SeaweedFS did not serve bucket ${bucket} within 60s" >&2`,
@@ -105,13 +110,13 @@ function withinE2eJob(lines: string[], keep: (line: string) => boolean): string[
  *  S3 lose the step entirely. Idempotent. */
 export function upgradeWorkflowE2eS3(
   workflow: string,
-  opts: { bucket: string; s3Env: "playwright" | "workflow"; enabled: boolean },
+  opts: { bucket: string; s3Env: "playwright" | "workflow"; enabled: boolean; port?: number },
 ): string {
   if (!opts.enabled) return stripWorkflowE2eS3(workflow);
   const lines = workflow.split("\n");
   const step = findS3Step(lines);
   if (!step) return workflow;
-  const replacement = seaweedfsCiStep(opts.bucket).split("\n");
+  const replacement = seaweedfsCiStep(opts.bucket, opts.port).split("\n");
   lines.splice(step.start, step.end - step.start, ...replacement);
   const out =
     opts.s3Env === "playwright"
@@ -122,11 +127,12 @@ export function upgradeWorkflowE2eS3(
   return out.join("\n");
 }
 
-/** Drop the SeaweedFS block from e2e/start-server.sh. Idempotent. */
+/** Drop the SeaweedFS block from e2e/start-server.sh: the container and the
+ *  wait for its bucket. Idempotent. */
 export function stripStartServerE2eS3(script: string): string {
   return script.replace(
-    /\n[ \t]*# SeaweedFS S3 on port 9002\n[\s\S]*?\n[ \t]*echo "\[e2e\] SeaweedFS bucket ready"\n[ \t]*fi\n/,
-    "\n",
+    /\n[ \t]*# SeaweedFS S3\n[\s\S]*?\n[ \t]*echo "\[e2e\] SeaweedFS bucket ready"\n/,
+    "",
   );
 }
 
@@ -169,12 +175,18 @@ export function e2eS3Retrofits(
   const playwrightBucket = existsSync(playwrightPath)
     ? /S3_BUCKET_NAME:\s*"([^"]+)"/.exec(readFileSync(playwrightPath, "utf-8"))?.[1]
     : undefined;
+  // playwright.config.ts builds the S3 endpoint from e2e/infra.ts's port, so
+  // the step publishes that one. Projects without the file used 9002.
+  const infraPath = join(projectDir, E2E_INFRA_REL_PATH);
+  const playwrightPort = existsSync(infraPath)
+    ? readE2eInfraPorts(readFileSync(infraPath, "utf-8"))?.s3
+    : undefined;
   const upgrade = (c: string): string => {
     const envBucket = /^ +S3_BUCKET_NAME: *"?([\w.-]+)"?\s*$/m.exec(c)?.[1];
     return upgradeWorkflowE2eS3(
       c,
       playwrightBucket
-        ? { enabled, s3Env: "playwright", bucket: playwrightBucket }
+        ? { enabled, s3Env: "playwright", bucket: playwrightBucket, port: playwrightPort }
         : { enabled, s3Env: "workflow", bucket: envBucket ?? `${manifest.name}-e2e` },
     );
   };

@@ -1,22 +1,38 @@
-import { execSync } from "child_process";
+import { execFileSync } from "node:child_process";
+import { E2E_RUN_ID, E2E_RUN_LABEL } from "./infra";
 
-export default async function globalTeardown() {
+/**
+ * Removes the containers e2e/start-server.sh started for this run — and no
+ * others.
+ *
+ * Each container that script starts carries `E2E_RUN_LABEL=<this run's id>`;
+ * one it found already running (started by an earlier run of this project, or
+ * by one still in progress) has another run's id, or none, and is left alone.
+ * Removing by name instead would stop a container a parallel run is using.
+ */
+export default async function globalTeardown(): Promise<void> {
   if (process.env.CI) return;
 
-  console.log("[e2e] Cleaning up test containers...");
-  const containers = [
-    "starter-e2e-mongo",
-    "starter-e2e-redis",
-    "starter-e2e-seaweedfs",
-  ];
+  let ids: string[];
+  try {
+    ids = execFileSync(
+      "docker",
+      ["ps", "--all", "--quiet", "--filter", `label=${E2E_RUN_LABEL}=${E2E_RUN_ID}`],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    )
+      .split("\n")
+      .map((id) => id.trim())
+      .filter(Boolean);
+  } catch {
+    // No Docker, or the daemon is gone: nothing this run can clean up.
+    return;
+  }
+  if (ids.length === 0) return;
 
-  for (const name of containers) {
-    try {
-      execSync(`docker stop ${name} && docker rm ${name}`, {
-        stdio: "ignore",
-      });
-    } catch {
-      // Container may not exist or already stopped
-    }
+  console.log(`[e2e] Removing ${ids.length} test container(s) this run started...`);
+  try {
+    execFileSync("docker", ["rm", "--force", ...ids], { stdio: "ignore" });
+  } catch {
+    // Already gone.
   }
 }

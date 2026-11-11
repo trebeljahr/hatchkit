@@ -16,6 +16,8 @@
  *  - the tests drive them without a project on disk.
  */
 
+import { hasSharedBarrelExport, sharedBarrelExport } from "../shared-barrel.js";
+
 export interface PatchResult {
   content: string;
   changed: boolean;
@@ -29,11 +31,11 @@ const unchanged = (content: string): PatchResult => ({ content, changed: false }
 // packages/shared
 // ---------------------------------------------------------------------------
 
-const SHARED_EXPORT = 'export * from "./extension-bridge.js";';
+const SHARED_EXPORT = sharedBarrelExport("extension-bridge");
 
 /** Re-export the bridge protocol from the shared package's barrel. */
 export function addSharedBridgeExport(content: string): PatchResult {
-  if (content.includes("./extension-bridge.js")) return unchanged(content);
+  if (hasSharedBarrelExport(content, "extension-bridge")) return unchanged(content);
   const trimmed = content.endsWith("\n") ? content : `${content}\n`;
   return { content: `${trimmed}${SHARED_EXPORT}\n`, changed: true };
 }

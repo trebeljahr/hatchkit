@@ -56,8 +56,10 @@ import {
   substituteDesktopFiles,
 } from "./desktop.js";
 import { applyDevLauncher } from "./dev-launcher.js";
+import { stripDocsSite, wantsDocsSite } from "./docs-site.js";
 import { type DotenvxSeedResult, seedDotenvxProduction } from "./dotenvx.js";
 import { applyE2eS3Gate } from "./e2e-s3.js";
+import { applyE2eStack } from "./e2e-stack.js";
 import { collectIdentifierMismatches, formatIdentifierMismatches } from "./identifier-agreement.js";
 import {
   type ProjectIdentifiers,
@@ -463,6 +465,9 @@ async function runScaffoldSteps(
     `assigned ports: server=${ports.server} client=${ports.client}` +
       (ports.nativeHmr ? ` native=${ports.nativeHmr}` : ""),
   );
+  // The e2e suite's containers and servers get ports of their own, derived
+  // from the two above, so two projects' runs never meet. See e2e-stack.ts.
+  applyE2eStack(outputDir, ports, modifications);
 
   // Runs after the ports are assigned and before the next.config flip that
   // rebuilds `transpilePackages` from the directories under `packages/`: a
@@ -520,6 +525,12 @@ async function runScaffoldSteps(
       modifications.push(...stripDeviceGrant(outputDir));
     }
   }
+
+  // `--no-docs`: the documentation site goes before the launcher, which writes
+  // the `dev:docs` scripts back whenever `docs-site/` is still on disk, and
+  // before the operational layer, whose docs-in-client module wires the docs
+  // into the client image and CI only when the package exists.
+  if (!wantsDocsSite(config)) modifications.push(...stripDocsSite(outputDir));
 
   // The launcher's two project-specific facts: the pinned ports it defaults
   // to, and the native shells' document origins it hands the dev server as
@@ -781,7 +792,9 @@ async function runScaffoldSteps(
     const sharedIndexPath = join(outputDir, "packages/shared/src/index.ts");
     if (existsSync(sharedIndexPath)) {
       let content = readFileSync(sharedIndexPath, "utf-8");
-      content = content.replace('export * from "./ml-types.js";\n', "");
+      // Both spellings: the starter's barrel is extensionless, and a
+      // project scaffolded before that carries `./ml-types.js`.
+      content = content.replace(/^export \* from "\.\/ml-types(?:\.js)?";\n/m, "");
       writeFileSync(sharedIndexPath, content, "utf-8");
     }
 
@@ -1458,6 +1471,7 @@ function scaffoldDryRun(config: ProjectConfig, outputDir: string): string[] {
   if (!config.features.includes("stripe")) actions.push("Remove Stripe integration");
   if (!config.features.includes("desktop")) actions.push("Remove desktop (Electron) scaffolding");
   if (!config.features.includes("mobile")) actions.push("Remove mobile (Capacitor) scaffolding");
+  if (!wantsDocsSite(config)) actions.push("Remove the documentation site (docs-site/)");
   // docs/feature-authoring.md says not to add to this list and to use the
   // ledger instead. It cannot serve here: a create-time dry run returns before
   // the starter is copied, so there is no tree for a ledger to record against

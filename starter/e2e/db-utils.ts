@@ -1,7 +1,8 @@
 import { MongoClient } from "mongodb";
+import { E2E_PORTS } from "./infra";
 
 const MONGODB_URI =
-  process.env.MONGODB_URI ?? "mongodb://127.0.0.1:27018/starter-e2e";
+  process.env.MONGODB_URI ?? `mongodb://127.0.0.1:${E2E_PORTS.mongo}/starter-e2e`;
 
 let client: MongoClient | null = null;
 

@@ -26,7 +26,7 @@ import {
   formatDuration,
   formatDurationShort,
   parseDecimalInput,
-} from "./format-duration.js";
+} from "./format-duration";
 
 /** Largest non-zero unit down to seconds, always with the smaller ones. */
 const DURATION: readonly [number, string][] = [

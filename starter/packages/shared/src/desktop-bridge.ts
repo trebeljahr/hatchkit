@@ -12,7 +12,7 @@
  * this file may touch Node, Electron or the DOM.
  */
 
-import type { DesktopShortcutAction, DesktopShortcutBindings } from "./desktop-shortcuts.js";
+import type { DesktopShortcutAction, DesktopShortcutBindings } from "./desktop-shortcuts";
 
 /** The OS platforms the shell reports, as Node's `process.platform` spells them. */
 export type DesktopPlatform = "darwin" | "win32" | "linux";

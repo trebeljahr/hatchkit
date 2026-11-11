@@ -214,14 +214,12 @@ export function applyPostgresOverlay(outputDir: string): PostgresOverlayResult {
 
   // ── playwright.config.ts: MONGODB_URI → POSTGRES_URL ─────────────────
   rewriteFile(outputDir, "playwright.config.ts", (content) =>
-    content
-      .replace(/MONGODB_URI/g, "POSTGRES_URL")
-      .replace(
-        /process\.env\.POSTGRES_URL\s*\?\?\s*"mongodb:\/\/[^"]+"/,
-        'process.env.POSTGRES_URL ?? "postgres://postgres:postgres@127.0.0.1:5433/' +
-          "starter-e2e" +
-          '"',
-      ),
+    content.replace(/MONGODB_URI/g, "POSTGRES_URL").replace(
+      /process\.env\.POSTGRES_URL\s*\?\?\s*(["`])mongodb:\/\/[^"`]+\1/,
+      // The port is the project's own (e2e/infra.ts), like the container
+      // e2e/start-server.sh starts on it.
+      "process.env.POSTGRES_URL ?? `postgres://postgres:postgres@127.0.0.1:${E2E_PORTS.postgres}/starter-e2e`",
+    ),
   );
   modifications.push("playwright.config.ts: MONGODB_URI → POSTGRES_URL");
 
@@ -324,22 +322,23 @@ $6- postgres-data:/var/lib/postgresql/data`,
   return out;
 }
 
-function rewriteStartServerForPostgres(content: string): string {
+export function rewriteStartServerForPostgres(content: string): string {
   // Replace the mongo container block with a postgres container block,
-  // and the mongo readiness check with a pg one. Port: 5433 to avoid
-  // clashing with a local-dev postgres on 5432.
+  // and the mongo readiness check with a pg one. The container name and
+  // port come from e2e/infra.ts through playwright.config.ts, like the
+  // other containers' (see scaffold/e2e-stack.ts).
   let out = content.replace("workflow provides MongoDB/Redis", "workflow provides Postgres/Redis");
   out = out.replace(
-    /(\s*# MongoDB on port 27018[\s\S]*?echo "\[e2e\] Started MongoDB on port 27018"\s*\n\s*fi)/,
+    /(\s*# MongoDB\n[\s\S]*?echo "\[e2e\] Started MongoDB on port \$\{E2E_MONGO_PORT\}"\s*\n\s*fi)/,
     `
-  # Postgres on port 5433
-  if ! docker ps --format '{{.Names}}' | grep -q starter-e2e-postgres; then
-    docker run -d --name starter-e2e-postgres -p 5433:5432 \\
-      -e POSTGRES_USER=postgres \\
-      -e POSTGRES_PASSWORD=postgres \\
-      -e POSTGRES_DB=starter-e2e \\
-      --tmpfs /var/lib/postgresql/data postgres:16-alpine
-    echo "[e2e] Started Postgres on port 5433"
+  # Postgres
+  start_container "\${E2E_STACK}-postgres" -p "\${E2E_POSTGRES_PORT}:5432" \\
+    -e POSTGRES_USER=postgres \\
+    -e POSTGRES_PASSWORD=postgres \\
+    -e POSTGRES_DB=starter-e2e \\
+    --tmpfs /var/lib/postgresql/data postgres:16-alpine
+  if [ "$STARTED" = 1 ]; then
+    echo "[e2e] Started Postgres on port \${E2E_POSTGRES_PORT}"
   fi`,
   );
   out = out.replace(
@@ -347,7 +346,7 @@ function rewriteStartServerForPostgres(content: string): string {
     `
   # Wait for Postgres
   for i in $(seq 1 30); do
-    docker exec starter-e2e-postgres pg_isready -U postgres -d starter-e2e 2>/dev/null && break
+    docker exec "\${E2E_STACK}-postgres" pg_isready -U postgres -d starter-e2e 2>/dev/null && break
     sleep 1
   done
   echo "[e2e] Postgres ready"`,
@@ -913,11 +912,13 @@ export const profileRouter = router({
 `;
 
 const POSTGRES_E2E_DB_UTILS = `import pg from "pg";
+import { E2E_PORTS } from "./infra";
 
 const { Pool } = pg;
 
 const POSTGRES_URL =
-  process.env.POSTGRES_URL ?? "postgres://postgres:postgres@127.0.0.1:5433/starter-e2e";
+  process.env.POSTGRES_URL ??
+  \`postgres://postgres:postgres@127.0.0.1:\${E2E_PORTS.postgres}/starter-e2e\`;
 
 let pool: pg.Pool | null = null;
 

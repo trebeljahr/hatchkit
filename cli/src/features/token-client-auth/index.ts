@@ -174,7 +174,9 @@ export const tokenClientAuthFeature = registerFeature({
       // No tsconfig edit: `packages/core` already compiles with the DOM lib,
       // which the sign-in helper needs for `fetch`, `Response` and
       // `AbortSignal`. The client kit ships it that way.
-      applyEdit(EDITED.coreIndex, (source) => rewriteBarrel(source, ["session-auth"]));
+      applyEdit(EDITED.coreIndex, (source) =>
+        rewriteBarrel(source, ["session-auth"], { jsExtension: true }),
+      );
     } else {
       ledger.conflict(
         OWNED.coreSessionAuth,

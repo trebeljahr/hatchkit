@@ -947,8 +947,19 @@ results.postgres = await run(
         /^ {10}POSTGRES_URL: postgres:\/\/postgres:postgres@127\.0\.0\.1:5433\/starter-e2e$/m.test(e2e),
       ],
       ["e2e job: redis service kept", /redis-e2e:/.test(e2e)],
-      ["start-server.sh: local postgres on 5433", /-p 5433:5432/.test(startServer) && !/mongo/i.test(startServer)],
-      ["playwright: POSTGRES_URL default on 5433", /127\.0\.0\.1:5433\/starter-e2e/.test(playwright)],
+      [
+        "start-server.sh: local postgres on the project's port",
+        startServer.includes('start_container "${E2E_STACK}-postgres" -p "${E2E_POSTGRES_PORT}:5432"') &&
+          !/mongo/i.test(startServer),
+      ],
+      [
+        "playwright: POSTGRES_URL default on the project's port",
+        playwright.includes("127.0.0.1:${E2E_PORTS.postgres}/starter-e2e`"),
+      ],
+      [
+        "db-utils.ts: same default as playwright",
+        readFileSync(join(d, "e2e/db-utils.ts"), "utf-8").includes("127.0.0.1:${E2E_PORTS.postgres}/starter-e2e`"),
+      ],
       ["docker-compose: postgres service", /^ {2}postgres:/m.test(compose)],
       ["docker-compose: no mongo service", !/^ {2}mongo:/m.test(compose)],
       ["docker-compose: postgres-data volume", /postgres-data:/.test(compose)],
@@ -988,6 +999,7 @@ results.postgres = await run(
 const { SEAWEEDFS_IMAGE, seaweedfsCiStep, upgradeWorkflowE2eS3 } = await import(
   "./src/scaffold/e2e-s3.js"
 );
+const { e2ePortsFor, readE2eInfraPorts } = await import("./src/scaffold/e2e-stack.js");
 
 /** Every file under `dir` whose content mentions MinIO. */
 function filesMentioningMinio(dir: string): string[] {
@@ -1014,18 +1026,22 @@ results.e2eS3Enabled = await run("e2e local S3: s3 feature", "bucket-app", ["s3"
   const ci = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
   const startServer = readFileSync(join(d, "e2e/start-server.sh"), "utf-8");
   const playwright = readFileSync(join(d, "playwright.config.ts"), "utf-8");
+  const s3Port = readE2eInfraPorts(readFileSync(join(d, "e2e/infra.ts"), "utf-8"))?.s3;
   const job = e2eJob(ci);
   return [
     ["no file in the project mentions MinIO", filesMentioningMinio(d).length === 0],
-    ["ci: SeaweedFS step creates bucket-app-e2e", ci.includes(seaweedfsCiStep("bucket-app-e2e"))],
+    ["e2e/infra.ts declares an S3 port", typeof s3Port === "number" && s3Port !== 9002],
+    // playwright.config.ts builds the CI S3 endpoint from that port too.
+    ["ci: SeaweedFS step creates bucket-app-e2e on the project's port", ci.includes(seaweedfsCiStep("bucket-app-e2e", s3Port))],
     ["ci: e2e job sets no S3_* / AWS_* env", !/^\s+(S3_|AWS_)/m.test(job)],
     ["playwright: bucket is bucket-app-e2e", playwright.includes('S3_BUCKET_NAME: "bucket-app-e2e"')],
-    ["playwright: public URL uses the same bucket", playwright.includes("127.0.0.1:9002/bucket-app-e2e")],
+    ["playwright: public URL uses the same bucket", playwright.includes("127.0.0.1:${E2E_PORTS.s3}/bucket-app-e2e`")],
     ["start-server.sh: creates bucket-app-e2e", startServer.includes("S3_BUCKET=bucket-app-e2e")],
-    ["start-server.sh: waits on bucket-app-e2e", startServer.includes("9002/bucket-app-e2e &&")],
+    ["start-server.sh: waits on bucket-app-e2e", startServer.includes('${E2E_S3_PORT}/bucket-app-e2e" &&')],
     ["start-server.sh: pinned image", startServer.includes(SEAWEEDFS_IMAGE)],
-    // global-teardown.ts removes containers by these literal names.
-    ["start-server.sh: container names unchanged", startServer.includes("starter-e2e-seaweedfs")],
+    // Named after the project's stack, never the starter's literal name.
+    ["start-server.sh: container named after the stack", startServer.includes('"${E2E_STACK}-seaweedfs"')],
+    ["start-server.sh: no starter container names", !startServer.includes("starter-e2e-")],
     ["ci: needs: entries all resolve", ciNeedsAreResolvable(ci)],
   ];
 });
@@ -1056,10 +1072,79 @@ results.e2eS3Ml = await run(
   [],
   (d) => {
     const ci = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
-    return [["ci: SeaweedFS step kept", ci.includes(seaweedfsCiStep("ml-app-e2e"))]];
+    const s3Port = readE2eInfraPorts(readFileSync(join(d, "e2e/infra.ts"), "utf-8"))?.s3;
+    return [["ci: SeaweedFS step kept", ci.includes(seaweedfsCiStep("ml-app-e2e", s3Port))]];
   },
   { mlServices: ["background-removal"] },
 );
+
+// ── e2e stack: per-project names and ports ──────────────────────────
+// Several projects run their browser suites on one machine at once. With the
+// starter's global names (`starter-e2e-mongo` on 27018, …) one project's run
+// reused another's database container, and a teardown by name removed a
+// container a parallel run was still using. Each scaffold now names its
+// containers after the project and derives its ports from the ones it was
+// assigned; the teardown removes only containers labelled with its run's id.
+{
+  const stacks: Array<{ name: string; infra: string; ports: ReturnType<typeof readE2eInfraPorts>; manifestPorts: { server: number; client: number } }> = [];
+  for (const name of ["alpha-app", "beta-app"]) {
+    results[`e2eStack:${name}`] = await run(`e2e stack: ${name}`, name, ["s3"], (d) => {
+      const infra = readFileSync(join(d, "e2e/infra.ts"), "utf-8");
+      const manifest = JSON.parse(readFileSync(join(d, ".hatchkit.json"), "utf-8"));
+      stacks.push({ name, infra, ports: readE2eInfraPorts(infra), manifestPorts: manifest.ports });
+      const startServer = readFileSync(join(d, "e2e/start-server.sh"), "utf-8");
+      const teardown = readFileSync(join(d, "e2e/global-teardown.ts"), "utf-8");
+      const playwright = readFileSync(join(d, "playwright.config.ts"), "utf-8");
+      const ci = readFileSync(join(d, ".github/workflows/build-and-deploy.yml"), "utf-8");
+      const job = e2eJob(ci);
+      const e2e = readE2eInfraPorts(infra);
+      return [
+        [`e2e/infra.ts: stack is ${name}-e2e`, infra.includes(`process.env.E2E_STACK || "${name}-e2e"`)],
+        ["e2e/infra.ts: ports derived from the assigned ones", JSON.stringify(e2e) === JSON.stringify(e2ePortsFor(manifest.ports))],
+        ["playwright: registers the teardown", /globalTeardown: "\.\/e2e\/global-teardown\.ts"/.test(playwright)],
+        ["playwright: hands start-server.sh the stack env", playwright.includes("...e2eStackEnv(),")],
+        ["start-server.sh: every container labelled with the run id", (startServer.match(/^\s*docker run /gm) ?? []).length === 1 && startServer.includes('--label "${E2E_RUN_LABEL}=${E2E_RUN_ID}"')],
+        ["start-server.sh: no fixed container names or ports", !/starter-e2e-|27018|6380|9002/.test(startServer)],
+        ["teardown: removes by this run's label", teardown.includes("label=${E2E_RUN_LABEL}=${E2E_RUN_ID}")],
+        ["teardown: names no container", !/starter-e2e-|-mongo|-redis|-seaweedfs/.test(teardown)],
+        ["ci: e2e origins are the project's", job.includes(`BETTER_AUTH_URL: http://127.0.0.1:${e2e?.server}`) && job.includes(`FRONTEND_URL: http://127.0.0.1:${e2e?.client}`)],
+      ];
+    });
+  }
+  const [a, b] = stacks;
+  const checks: Check[] = [
+    ["two scaffolds: different stack names", !!a && !!b && a.infra !== b.infra],
+    [
+      "two scaffolds: no e2e port in common",
+      !!a?.ports && !!b?.ports && Object.values(a.ports).every((p) => !Object.values(b.ports!).includes(p)),
+    ],
+    [
+      "derived ports stay in 15000–20999, below the Linux ephemeral range",
+      [a, b].every((x) => !!x?.ports && Object.values(x.ports).every((p) => p >= 15000 && p <= 20999)),
+    ],
+    [
+      "derivation is one-to-one over the whole server range",
+      (() => {
+        const seen = new Set<number>();
+        for (let server = 5000; server <= 5999; server++) {
+          const p = e2ePortsFor({ server, client: 6000 + (server - 5000) });
+          for (const v of [p.mongo, p.redis, p.s3, p.postgres, p.server]) {
+            if (seen.has(v)) return false;
+            seen.add(v);
+          }
+        }
+        return true;
+      })(),
+    ],
+  ];
+  let ok = true;
+  console.log("\n── e2e stack: two projects side by side ─────────────");
+  for (const [n, c] of checks) {
+    console.log(`  ${c ? "✓" : "✗"} ${n}`);
+    if (!c) ok = false;
+  }
+  results.e2eStackPerProject = ok;
+}
 
 console.log("\n── e2e local S3: pinned image + workflow retrofit ─────────────");
 {
@@ -1762,7 +1847,7 @@ console.log("\n── update: add workspaces (+ idempotent re-run) ────�
         existsSync(join(d, "packages/server/src/ws/membership-sync.ts")),
       ],
       ["routers registered", routerAfterFirst.includes("workspaces: workspacesRouter")],
-      ["shared re-export wired", readFileSync(join(d, "packages/shared/src/index.ts"), "utf-8").includes("./membership.js")],
+      ["shared re-export wired", /^export \* from "\.\/membership";$/m.test(readFileSync(join(d, "packages/shared/src/index.ts"), "utf-8"))],
       ["organization plugin installed", auth.includes("organization(")],
       ["lockdown wired as the before-hook", auth.includes("hooks: { before: organizationLockdown }")],
       ["organization deletion disabled server-side", auth.includes("disableOrganizationDeletion: true")],
@@ -1885,7 +1970,7 @@ console.log("\n── server add: retrofit client-only project ─────�
       ["initial scaffold was static", before?.surfaces === "static"],
       ["server package created", existsSync(join(d, "packages/server/package.json"))],
       ["shared ml-types restored", existsSync(join(d, "packages/shared/src/ml-types.ts"))],
-      ["shared barrel exports ml-types", sharedIndex.includes("./ml-types.js")],
+      ["shared barrel exports ml-types", /^export \* from "\.\/ml-types";$/m.test(sharedIndex)],
       ["manifest surfaces now fullstack", after?.surfaces === "fullstack"],
       ["gh-pages switched to coolify", after?.deploymentMode === "coolify"],
       ["root dev script restored", rootPkg.scripts?.dev === "node scripts/dev.mjs"],
@@ -5220,6 +5305,170 @@ results.ciStampPresets = (() => {
   }
   return ok;
 })();
+
+// ── @starter/shared resolves the way Turbopack resolves it ───────────
+// The web client compiles packages/shared from source: its tsconfig maps
+// `@starter/shared` onto `../shared/src/index.ts`. Turbopack does not map a
+// `./x.js` specifier onto `./x.ts`, so one `.js` re-export anywhere in that
+// graph fails the client's first RUNTIME import from `@starter/shared` with
+// "Module not found: Can't resolve './x.js'" — while every `import type`
+// keeps compiling, so nothing else notices. A Next build needs an installed
+// project; this walks the same graph from the client's own path mapping and
+// resolves each value import with Turbopack's rule (the specifier as written,
+// then `.ts`, `.tsx`, `/index.ts` appended — never `.js` swapped for `.ts`).
+// The features chosen are the ones that add their own re-exports to the barrel.
+
+/** Every relative value import reachable from the client's `@starter/shared`
+ *  entry that does not resolve without a `.js` → `.ts` mapping, as
+ *  `<file>: <specifier>`. */
+function sharedImportsTurbopackCannotResolve(projectDir: string): string[] {
+  const clientDir = join(projectDir, "packages/client");
+  const tsconfig = readFileSync(join(clientDir, "tsconfig.json"), "utf-8");
+  const entryRel = /"@starter\/shared":\s*\[\s*"([^"]+)"/.exec(tsconfig)?.[1];
+  if (!entryRel) return ["packages/client/tsconfig.json: no `@starter/shared` path mapping"];
+  const isFile = (p: string): boolean => existsSync(p) && statSync(p).isFile();
+  const resolveLikeTurbopack = (from: string, spec: string): string | undefined => {
+    const base = resolve(dirname(from), spec);
+    return [base, `${base}.ts`, `${base}.tsx`, join(base, "index.ts")].find(isFile);
+  };
+  // Value imports and re-exports only: `import type` / `export type` are
+  // erased before resolution, so a `.js` there never reaches the bundler.
+  const VALUE_SPECIFIER =
+    /^(?:import|export)\s+(?!type\s)[^;]*?\bfrom\s+"(\.{1,2}\/[^"]+)"|^import\s+"(\.{1,2}\/[^"]+)"/gm;
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  const visit = (file: string): void => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    for (const m of readFileSync(file, "utf-8").matchAll(VALUE_SPECIFIER)) {
+      const spec = m[1] ?? m[2];
+      const target = resolveLikeTurbopack(file, spec);
+      if (target) visit(target);
+      else missing.push(`${file.slice(projectDir.length + 1)}: ${spec}`);
+    }
+  };
+  const entry = resolve(clientDir, entryRel);
+  if (!isFile(entry)) return [`client path mapping points at a missing file: ${entryRel}`];
+  visit(entry);
+  return missing;
+}
+
+/** Relative specifiers ending in `.js` anywhere under packages/shared/src. */
+function sharedJsSpecifiers(projectDir: string): string[] {
+  const root = join(projectDir, "packages/shared/src");
+  const out: string[] = [];
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.tsx?$/.test(e.name)) {
+        for (const m of readFileSync(p, "utf-8").matchAll(/\bfrom\s+"(\.{1,2}\/[^"]+\.js)"/g)) {
+          out.push(`${p.slice(projectDir.length + 1)}: ${m[1]}`);
+        }
+      }
+    }
+  };
+  if (existsSync(root)) walk(root);
+  return out;
+}
+
+results.sharedTurbopackImports = await run(
+  "client runtime import of the shared package (Turbopack resolution)",
+  "shared-imports",
+  ["websocket", "s3", "workspaces", "extension", "auth-account-security", "token-client-auth", "client-core"],
+  (d) => {
+    const unresolved = sharedImportsTurbopackCannotResolve(d);
+    const jsSpecifiers = sharedJsSpecifiers(d);
+    if (unresolved.length > 0) console.log(`    unresolved: ${unresolved.join(", ")}`);
+    if (jsSpecifiers.length > 0) console.log(`    .js specifiers: ${jsSpecifiers.join(", ")}`);
+    const barrel = readFileSync(join(d, "packages/shared/src/index.ts"), "utf-8");
+    return [
+      ["every value import under @starter/shared resolves without .js → .ts", unresolved.length === 0],
+      ["packages/shared/src has no `.js` relative specifiers", jsSpecifiers.length === 0],
+      // Guards the walk itself: a barrel it never followed proves nothing.
+      ["the walk reached the feature re-exports", /export \* from "\.\/membership";/.test(barrel)],
+    ];
+  },
+);
+
+// ── create --no-docs ──────────────────────────────────────────────────
+// The starter's Docusaurus site is published at https://<domain>/docs/ from
+// the client image. `--no-docs` (docsSite: false) removes the package before
+// the docs-in-client module runs, so none of its wiring is written: no copy
+// step in the client Dockerfile, no docs check in CI, no docs sitemap in the
+// robots route. The default scaffold is the control — without it, "no docs
+// step" could pass because the module never ran at all.
+{
+  const { dockerfileHasDocsStep, workflowHasDocsCheck, sitemapsInRobotsRoute } = await import(
+    "./src/features/docs-in-client/index.js"
+  );
+  const docsWiring = (d: string) => {
+    const read = (rel: string): string =>
+      existsSync(join(d, rel)) ? readFileSync(join(d, rel), "utf-8") : "";
+    return {
+      dockerfile: dockerfileHasDocsStep(read("packages/client/Dockerfile")),
+      workflow: workflowHasDocsCheck(read(".github/workflows/build-and-deploy.yml")),
+      robots: sitemapsInRobotsRoute(read("packages/client/src/app/robots.ts")).some((s) =>
+        s.includes("/docs/"),
+      ),
+      script: existsSync(join(d, "scripts/docs/build-into-client.mjs")),
+    };
+  };
+
+  results.docsDefault = await run("docs site: shipped by default", "docs-app", [], (d) => {
+    const wiring = docsWiring(d);
+    const scripts = JSON.parse(readFileSync(join(d, "package.json"), "utf-8")).scripts ?? {};
+    return [
+      ["docs-site/ kept", existsSync(join(d, "docs-site/package.json"))],
+      ["client Dockerfile builds the docs", wiring.dockerfile],
+      ["deploy workflow verifies the docs build", wiring.workflow],
+      ["robots route names the docs sitemap", wiring.robots],
+      ["dev:docs script kept", typeof scripts["dev:docs"] === "string"],
+    ];
+  });
+
+  results.docsStripped = await run(
+    "docs site: --no-docs strips it",
+    "nodocs-app",
+    [],
+    (d) => {
+      const wiring = docsWiring(d);
+      const pkg = JSON.parse(readFileSync(join(d, "package.json"), "utf-8"));
+      const workspace = readFileSync(join(d, "pnpm-workspace.yaml"), "utf-8");
+      const lockfile = readFileSync(join(d, "pnpm-lock.yaml"), "utf-8");
+      const gitignore = readFileSync(join(d, ".gitignore"), "utf-8");
+      const launchRaw = readFileSync(join(d, ".claude/launch.json"), "utf-8");
+      let launch: { configurations?: Array<{ name?: string }> } = {};
+      let launchParses = true;
+      try {
+        launch = JSON.parse(launchRaw);
+      } catch {
+        launchParses = false;
+      }
+      return [
+        ["docs-site/ removed", !existsSync(join(d, "docs-site"))],
+        ["workspace no longer lists docs-site", !/^\s*-\s*"docs-site"\s*$/m.test(workspace)],
+        ["lockfile importer dropped", !/^ {2}docs-site:\s*$/m.test(lockfile)],
+        [
+          "dev:docs scripts removed",
+          pkg.scripts?.["dev:docs"] === undefined && pkg.scripts?.["dev:docs:fixed"] === undefined,
+        ],
+        ["dev script kept", typeof pkg.scripts?.dev === "string"],
+        ["client Dockerfile has no docs step", !wiring.dockerfile],
+        ["no COPY docs-site in the client Dockerfile", !readFileSync(join(d, "packages/client/Dockerfile"), "utf-8").includes("docs-site")],
+        ["deploy workflow has no docs check", !wiring.workflow],
+        ["robots route names no docs sitemap", !wiring.robots],
+        ["no docs copy script", !wiring.script],
+        ["every client Dockerfile COPY source exists", dockerCopySourcesMissing(d, "packages/client/Dockerfile").length === 0],
+        [".gitignore has no Docusaurus block", !gitignore.includes("docs-site/")],
+        ["launch.json still parses", launchParses],
+        ["launch.json has no docs entry", !(launch.configurations ?? []).some((c) => c.name === "docs")],
+        ["launch.json keeps client + server", (launch.configurations ?? []).length === 2],
+      ];
+    },
+    { docsSite: false },
+  );
+}
 
 // Clean up the isolated config dir + every keychain entry scoped to
 // the throwaway service.

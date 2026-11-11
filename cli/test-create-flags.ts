@@ -290,6 +290,13 @@ await test("--local-dev derives a slug when given none; --no-local-dev wins", ()
   assert.equal(both.presets.localDev, undefined);
 });
 
+await test("--docs / --no-docs set docsSite; --no-docs wins; absent leaves it to the prompt", () => {
+  assert.equal(parseCreateFlags(["--no-docs"]).presets.docsSite, false);
+  assert.equal(parseCreateFlags(["--docs"]).presets.docsSite, true);
+  assert.equal(parseCreateFlags(["--docs", "--no-docs"]).presets.docsSite, false);
+  assert.equal(parseCreateFlags([]).presets.docsSite, undefined);
+});
+
 await test("--yes has -y and --non-interactive as aliases", () => {
   assert.equal(parseCreateFlags(["--yes"]).yes, true);
   assert.equal(parseCreateFlags(["-y"]).yes, true);
@@ -358,6 +365,7 @@ const FULL_PRESETS: Partial<ProjectConfig> = {
   serverSize: "cpx21",
   serverLocation: "nbg1",
   features: ["analytics"],
+  docsSite: true,
   analyticsProviders: ["glitchtip"],
   provisionServices: ["glitchtip"],
   email: { transactional: "listmonk-ses", mailingList: "none" },
@@ -416,6 +424,7 @@ await test("a partial flag set still prompts for what is missing", async () => {
     ["serverSize", "Server size"],
     ["serverLocation", "Server location"],
     ["features", "Features"],
+    ["docsSite", "Docs site"],
     ["analyticsProviders", "Analytics providers"],
     ["email", "Email"],
     ["emailForwarding", "Email forwarding"],
@@ -588,6 +597,14 @@ await test("--yes resolves defaults for everything left unspecified", async () =
   assert.equal(config.runDeployment, true);
   assert.deepEqual(config.features, []);
   assert.equal(config.s3Provider, "none");
+});
+
+await test("--yes ships the docs site unless --no-docs says otherwise", async () => {
+  const shipped = await nonInteractive({ name: "blog", domain: "blog.example.com" });
+  assert.notEqual(shipped.docsSite, false);
+  const { presets } = parseCreateFlags(["--name", "blog", "--domain", "blog.example.com", "--no-docs"]);
+  const stripped = await collectProjectConfig({ presets, nonInteractive: true });
+  assert.equal(stripped.docsSite, false);
 });
 
 await test("--yes carries flag-supplied values through to the resolved plan", async () => {

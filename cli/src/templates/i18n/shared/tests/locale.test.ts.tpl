@@ -31,7 +31,7 @@ import {
   SUPPORTED_LOCALES,
   type LocalePreference,
   type SupportedLocale,
-} from "./locale.js";
+} from "./locale";
 
 const TARGET_LOCALE = "__HATCHKIT_TARGET_LOCALE__" as SupportedLocale;
 

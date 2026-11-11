@@ -19,6 +19,7 @@
  */
 
 import type { FeatureContext } from "../contract.js";
+import { hasSharedBarrelExport, sharedBarrelExport } from "../shared-barrel.js";
 import type { WorkspacesTargets } from "./types.js";
 
 /**
@@ -52,10 +53,10 @@ export function wireSharedExport(ctx: FeatureContext): void {
     ctx,
     "packages/shared/src/index.ts",
     (content) => {
-      if (content.includes("./membership.js")) return content;
-      return `${content.trimEnd()}\nexport * from "./membership.js";\n`;
+      if (hasSharedBarrelExport(content, "membership")) return content;
+      return `${content.trimEnd()}\n${sharedBarrelExport("membership")}\n`;
     },
-    'Add `export * from "./membership.js";` to packages/shared/src/index.ts.',
+    `Add \`${sharedBarrelExport("membership")}\` to packages/shared/src/index.ts.`,
   );
 }
 

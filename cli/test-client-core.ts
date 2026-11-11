@@ -1087,7 +1087,7 @@ if (!existsSync(join(STARTER, "package.json"))) {
     // only THIS feature stripped. A real project has been through every other
     // strip as well, and two of those rewrite files this feature has blocks in:
     // the `websocket` strip rewrites `packages/server/src/index.ts`, and the ML
-    // prune removes `export * from "./ml-types.js";` from
+    // prune removes `export * from "./ml-types";` from
     // `packages/shared/src/index.ts`. Both used to take an anchor with them, so
     // `update` handed four of its own blocks to the manual checklist — for a
     // project hatchkit had generated, which is the exact case the checklist was
@@ -1099,9 +1099,9 @@ if (!existsSync(join(STARTER, "package.json"))) {
     // nothing selected and no ML service, so every conditional strip takes its
     // "remove" arm.
     // Read before applying: these two assert what the SCAFFOLD did, and the
-    // apply is about to add a block whose own comment names `./ml-types.js`.
+    // apply is about to add a block whose own comment names `./ml-types`.
     const prunedWs = !existsSync(join(scaffolded, "packages/server/src/ws"));
-    const prunedMlExport = !/^export \* from "\.\/ml-types\.js";$/m.test(
+    const prunedMlExport = !/^export \* from "\.\/ml-types(?:\.js)?";$/m.test(
       readFileSync(join(scaffolded, "packages/shared/src/index.ts"), "utf-8"),
     );
     const prunedCoreImages = ["server", "client"].every((role) => {
@@ -1140,7 +1140,7 @@ if (!existsSync(join(STARTER, "package.json"))) {
       ],
       [
         "the shared barrel re-exports the handshake",
-        read("packages/shared/src/index.ts").includes('./api-level.js"'),
+        /^export \* from "\.\/api-level";$/m.test(read("packages/shared/src/index.ts")),
       ],
       [
         "the kit does not import the room socket's authenticator",

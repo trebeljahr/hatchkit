@@ -287,7 +287,7 @@ await test("apply writes the files and wires the existing ones", async () => {
       "the feature should be detectable afterwards",
     );
 
-    assert.match(read(root, "packages/shared/src/index.ts"), /export \* from "\.\/membership\.js";/);
+    assert.match(read(root, "packages/shared/src/index.ts"), /^export \* from "\.\/membership";$/m);
 
     const router = read(root, "packages/server/src/trpc/router.ts");
     assert.match(router, /workspaces: workspacesRouter/);

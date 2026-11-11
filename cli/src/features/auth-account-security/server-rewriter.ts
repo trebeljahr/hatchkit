@@ -20,6 +20,7 @@
  * template or spliced in here.
  */
 
+import { hasSharedBarrelExport, sharedBarrelExport } from "../shared-barrel.js";
 import { ORDERED_SERVER_PLUGINS } from "./plugin-order.js";
 import { renderPluginList } from "./render.js";
 
@@ -703,8 +704,8 @@ export function rewriteProfileRouter(source: string): RewriteResult {
 /** Re-export the new shared modules from the shared package barrel. */
 export function rewriteSharedIndex(source: string, modules: readonly string[]): RewriteResult {
   const lines = modules
-    .map((name) => `export * from "./${name}.js";`)
-    .filter((line) => !source.includes(line));
+    .filter((name) => !hasSharedBarrelExport(source, name))
+    .map(sharedBarrelExport);
   if (lines.length === 0) return alreadyDone(source);
   return { source: `${source.trimEnd()}\n${lines.join("\n")}\n`, applied: true };
 }

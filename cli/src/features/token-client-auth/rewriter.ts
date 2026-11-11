@@ -36,6 +36,8 @@
  * about `--dry-run`.
  */
 
+import { hasSharedBarrelExport, sharedBarrelExport } from "../shared-barrel.js";
+
 /** What a rewrite concluded. `manual` means the file was left untouched. */
 export type RewriteOutcome = "rewritten" | "already-applied" | "manual";
 
@@ -270,11 +272,21 @@ export function rewriteCors(source: string): RewriteResult {
 
 // ── barrels ──────────────────────────────────────────────────────────
 
-/** Re-export a feature module from a package barrel. Append-only. */
-export function rewriteBarrel(source: string, modules: readonly string[]): RewriteResult {
-  const lines = modules
-    .map((name) => `export * from "./${name}.js";`)
-    .filter((line) => !source.includes(line));
+/** Re-export a feature module from a package barrel. Append-only.
+ *
+ *  `packages/shared` takes the extensionless line (the web client compiles
+ *  it from source, and Turbopack cannot map `./x.js` onto `./x.ts`; see
+ *  `features/shared-barrel.ts`). `packages/core` keeps its own `.js`
+ *  convention — its consumers read `dist/` — so its caller passes
+ *  `{ jsExtension: true }`. Either spelling already present counts. */
+export function rewriteBarrel(
+  source: string,
+  modules: readonly string[],
+  opts: { jsExtension?: boolean } = {},
+): RewriteResult {
+  const line = (name: string): string =>
+    opts.jsExtension ? `export * from "./${name}.js";` : sharedBarrelExport(name);
+  const lines = modules.filter((name) => !hasSharedBarrelExport(source, name)).map(line);
   if (lines.length === 0) return done();
   return wrote(`${source.trimEnd()}\n${lines.join("\n")}\n`);
 }

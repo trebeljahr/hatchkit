@@ -29,6 +29,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { FeatureLedger } from "../contract.js";
+import { hasSharedBarrelExport, sharedBarrelExport } from "../shared-barrel.js";
 import type { I18nConfig } from "./types.js";
 
 /** Left behind by every edit below, and the reason a second run is a
@@ -319,7 +320,7 @@ export function rewriteGlobalsCss(input: RewriteInput): RewriteStatus {
  *  resolve, not a cosmetic omission. */
 export function rewriteSharedBarrel(input: RewriteInput): RewriteStatus {
   return editThrough(input, SHARED_BARREL_REL, (before) => {
-    if (before.includes(`"./locale.js"`)) return before;
+    if (hasSharedBarrelExport(before, "locale")) return before;
 
     const lines = before.split("\n");
     let lastExport = -1;
@@ -330,8 +331,8 @@ export function rewriteSharedBarrel(input: RewriteInput): RewriteStatus {
     lines.splice(
       lastExport + 1,
       0,
-      `export * from "./locale.js";`,
-      `export * from "./format-duration.js";`,
+      sharedBarrelExport("locale"),
+      sharedBarrelExport("format-duration"),
     );
     return lines.join("\n");
   });
@@ -638,7 +639,7 @@ const STEPS: readonly RewriteStep[] = [
   {
     relPath: SHARED_BARREL_REL,
     apply: rewriteSharedBarrel,
-    residue: `Export the new shared modules from ${SHARED_BARREL_REL}: \`export * from "./locale.js";\` and \`export * from "./format-duration.js";\`.`,
+    residue: `Export the new shared modules from ${SHARED_BARREL_REL}: \`${sharedBarrelExport("locale")}\` and \`${sharedBarrelExport("format-duration")}\`.`,
   },
   {
     relPath: SHARED_PKG_REL,

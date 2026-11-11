@@ -93,11 +93,24 @@ export function anchoredBlocks(content: string): Array<{ anchor: string[]; block
   return out.reverse();
 }
 
-/** Non-blank lines of `content`, trimmed, with their original line index. */
+/**
+ * One line as an anchor compares it: trimmed, and with the `.js` dropped from
+ * relative module specifiers. The starter's shared barrel imports `./schemas`
+ * where projects scaffolded before it import `./schemas.js` (Turbopack cannot
+ * map `./x.js` onto `./x.ts`); the two lines mean the same thing, and an anchor
+ * that told them apart would hand the block to the manual checklist in every
+ * project older than that change.
+ */
+function anchorText(line: string): string {
+  return line.trim().replace(/(["'])(\.{1,2}\/[^"']*?)\.js\1/g, "$1$2$1");
+}
+
+/** Non-blank lines of `content`, normalised by {@link anchorText}, with their
+ *  original line index. */
 function significantLines(content: string): Array<{ index: number; text: string }> {
   return content
     .split("\n")
-    .map((text, index) => ({ index, text: text.trim() }))
+    .map((text, index) => ({ index, text: anchorText(text) }))
     .filter((line) => line.text !== "");
 }
 
@@ -107,7 +120,7 @@ function significantLines(content: string): Array<{ index: number; text: string 
  */
 function countMatches(content: string, context: readonly string[]): number {
   if (context.length === 0) return 0;
-  const wanted = context.map((line) => line.trim());
+  const wanted = context.map(anchorText);
   const significant = significantLines(content);
   let matches = 0;
   for (let start = 0; start + wanted.length <= significant.length; start += 1) {
@@ -137,7 +150,7 @@ export function insertAfter(
   block: string,
 ): string | null {
   if (anchor.length === 0) return null;
-  const wanted = anchor.map((line) => line.trim());
+  const wanted = anchor.map(anchorText);
   const significant = significantLines(content);
   let at: number | null = null;
   for (let start = 0; start + wanted.length <= significant.length; start += 1) {

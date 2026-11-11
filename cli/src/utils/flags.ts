@@ -374,6 +374,10 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
     presets.createGithubRepo = true;
   }
   if (argv.includes("--install")) presets.installDeps = true;
+  // The documentation site (docs-site/, published at /docs/). Absent = ask,
+  // or ship it under --yes. --no-docs wins over --docs.
+  if (argv.includes("--docs")) presets.docsSite = true;
+  if (argv.includes("--no-docs")) presets.docsSite = false;
   if (argv.includes("--deploy")) presets.runDeployment = true;
 
   if (forceNoGithub) presets.createGithubRepo = false;

@@ -55,6 +55,8 @@ import {
   type ProjectConfig,
   collectProjectConfig,
   describeDeployNow,
+  docsSitePromptApplies,
+  docsSiteUrl,
   summarizeEmailForwarding,
   summarizeEmailIntent,
 } from "./prompts.js";
@@ -3044,6 +3046,11 @@ async function handleCreate(): Promise<void> {
     );
   }
   console.log(`  Features:   ${config.features.length > 0 ? config.features.join(", ") : "none"}`);
+  if (docsSitePromptApplies(config)) {
+    console.log(
+      `  Docs site:  ${config.docsSite === false ? "no (--no-docs)" : docsSiteUrl(config.domain)}`,
+    );
+  }
   console.log(
     `  Services:   ${provisionServices.length > 0 ? provisionServices.join(", ") : "none"}`,
   );
@@ -4826,6 +4833,9 @@ function printHelp(topic?: HelpTopic): void {
     --services <list>              ${PROVISION_SERVICE_VALUES}
     --db-engine <${DB_ENGINE_VALUES}>     Database engine for the scaffolded server
     --db-provider <${DB_PROVIDER_VALUES}>   ${chalk.dim("coolify")} provisions a container, ${chalk.dim("external")} means you supply a URI
+    --docs / --no-docs             Ship the Docusaurus docs site (docs-site/, served at
+                                   https://<domain>/docs/), or leave it out. Default: ship it.
+                                   Only fullstack/split scaffolds have it.
 
   ${chalk.bold("Storage:")}
     --s3-provider <${S3_PROVIDER_VALUES}>

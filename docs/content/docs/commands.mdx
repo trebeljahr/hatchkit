@@ -91,6 +91,7 @@ prompting. That makes `create` CI-safe.
 | `--services <list>` | `glitchtip`, `plausible`, `listmonk-ses`, `s3`, `email`, `search-console` |
 | `--db-engine <value>` | `mongodb` · `postgres` |
 | `--db-provider <value>` | `coolify` (provision a container) · `external` (you supply a URI) |
+| `--docs` / `--no-docs` | Ship the starter's Docusaurus docs site (`docs-site/`, built into the client image and served at `https://<domain>/docs/`), or leave it out. `--no-docs` removes the package, its workspace entry and `dev:docs` scripts, so no docs build step reaches the client Dockerfile or CI. Default: ship it. Asked only for `fullstack` and `split` scaffolds; the other surfaces never have it. |
 
 #### Storage
 

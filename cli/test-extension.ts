@@ -402,7 +402,7 @@ check("a fresh apply lands the whole file set and wires every starter file", () 
     const read = (rel: string): string => readFileSync(join(dir, rel), "utf-8");
 
     assert.ok(
-      read("packages/shared/src/index.ts").includes('export * from "./extension-bridge.js";'),
+      read("packages/shared/src/index.ts").includes('export * from "./extension-bridge";'),
     );
 
     // The starter owns the switch, so the feature leaves env.ts and the

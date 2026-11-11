@@ -82,6 +82,25 @@ export type DeploymentMode = "coolify" | "gh-pages" | "cloudflare" | "scaffold-o
 export function isStaticHostMode(mode: DeploymentMode): boolean {
   return mode === "gh-pages" || mode === "cloudflare";
 }
+
+/** Whether `create` asks about the documentation site. Only a scaffold that
+ *  keeps a client half ships `docs-site/`: `backend` and the static surfaces
+ *  drop it in their own prune, so asking there would offer something the
+ *  scaffold removes anyway. */
+export function docsSitePromptApplies(
+  c: Pick<ProjectConfig, "surfaces" | "deploymentMode" | "scaffoldRepo">,
+): boolean {
+  return (
+    (c.surfaces === "fullstack" || c.surfaces === "split") &&
+    !isStaticHostMode(c.deploymentMode) &&
+    c.scaffoldRepo !== false
+  );
+}
+
+/** Where the documentation site is published, for the prompt and the plan. */
+export function docsSiteUrl(domain: string | undefined): string {
+  return `https://${domain || "<domain>"}/docs/`;
+}
 export type GitHubRepoVisibility = "private" | "public";
 export type DnsProvider = "inwx" | "cloudflare" | "manual";
 export type S3Provider = "hetzner" | "r2" | "aws" | "existing" | "none";
@@ -304,6 +323,12 @@ export interface ProjectConfig {
   serverLocation?: string;
 
   features: Feature[];
+  /** Ship the starter's documentation site (`docs-site/`, Docusaurus,
+   *  published at `https://<domain>/docs/` from the client image). Undefined
+   *  means yes; `false` (`--no-docs`) strips the package and everything that
+   *  builds it. Only asked for surfaces that keep a client half; `backend`
+   *  and the static hosts drop the site in their own prune. */
+  docsSite?: boolean;
   /** Which parts of the `auth-account-security` feature to switch on.
    *  Undefined means the documented defaults, which leave the three
    *  net-new sign-in methods (email codes, magic links, passkeys) OFF:
@@ -813,6 +838,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     serverSize: presets.serverSize ?? "cpx21",
     serverLocation: presets.serverLocation ?? "nbg1",
     features: presets.features ?? [],
+    docsSite: presets.docsSite,
     analyticsProviders: presets.analyticsProviders,
     provisionServices: seedProvisionServices(presets),
     s3Provider: presets.s3Provider ?? "none",
@@ -1074,6 +1100,17 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
           choices: featurePromptChoices(c),
         });
         return { ...c, features };
+      },
+    },
+    {
+      name: "Docs site",
+      skip: (c) => !docsSitePromptApplies(c) || presets.docsSite !== undefined,
+      run: async (c) => {
+        const docsSite = await confirm({
+          message: `Publish a documentation site (Docusaurus) at ${docsSiteUrl(c.domain)}?`,
+          default: c.docsSite ?? true,
+        });
+        return { ...c, docsSite };
       },
     },
     {
@@ -1616,6 +1653,7 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     serverSize: deployTarget === "new" ? (presets.serverSize ?? "cpx21") : undefined,
     serverLocation: deployTarget === "new" ? (presets.serverLocation ?? "nbg1") : undefined,
     features,
+    docsSite: presets.docsSite,
     analyticsProviders,
     provisionServices,
     s3Provider,
