@@ -131,12 +131,25 @@ def package_matches(package, pairs, scratch):
         return False
     with subprocess.Popen(['dpkg-deb', '--fsys-tarfile', str(debs[0])], stdout=subprocess.PIPE) as tar_stream:
         members = {}
+        # A hard link in a .deb (perl -> perl5.38.2, perlbug -> perlthanks)
+        # carries no data; its content is the earlier member it names. The
+        # stream cannot seek back, so every regular member is hashed on the way.
+        digests = {}
         with tarfile.open(fileobj=tar_stream.stdout, mode='r|') as archive:
             wanted = {'.' + p for p in paths}
             for member in archive:
+                digest = None
+                if member.isreg():
+                    hasher = hashlib.sha256()
+                    source = archive.extractfile(member)
+                    for block in iter(lambda: source.read(1 << 20), b''):
+                        hasher.update(block)
+                    digest = digests[member.name] = hasher.hexdigest()
+                elif member.islnk():
+                    target = member.linkname if member.linkname.startswith('./') else './' + member.linkname.lstrip('/')
+                    digest = digests.get(target)
                 if member.name in wanted:
-                    data = archive.extractfile(member).read() if member.isreg() else None
-                    members[member.name[1:]] = (member, data and hashlib.sha256(data).hexdigest())
+                    members[member.name[1:]] = (member, digest)
     for deb_path in paths:
         if deb_path not in members:
             return False

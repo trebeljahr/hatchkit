@@ -161,6 +161,40 @@ class PackageExplainedChanges(unittest.TestCase):
                  patch.object(integrity.subprocess, 'Popen', side_effect=popen):
                 self.assertTrue(integrity.package_matches('svc', [(str(live), '/lib/systemd/system/unit.service')], Path(scratch)))
 
+    def test_package_matches_follows_hard_links_to_their_target_content(self):
+        import grp, os, pwd
+        with tempfile.TemporaryDirectory() as folder:
+            live = Path(folder) / 'perlthanks'
+            live.write_bytes(b'#!/usr/bin/perl bug')
+            live.chmod(0o755)
+            uname, gname = pwd.getpwuid(os.getuid()).pw_name, grp.getgrgid(os.getgid()).gr_name
+            def archive(target_content, link_first=False):
+                buffer = io.BytesIO()
+                with integrity.tarfile.open(fileobj=buffer, mode='w') as tar:
+                    target = integrity.tarfile.TarInfo('./usr/bin/perlbug')
+                    target.size, target.mode, target.uname, target.gname = len(target_content), 0o755, uname, gname
+                    link = integrity.tarfile.TarInfo('./usr/bin/perlthanks')
+                    link.type, link.linkname, link.mode, link.uname, link.gname = integrity.tarfile.LNKTYPE, './usr/bin/perlbug', 0o755, uname, gname
+                    if link_first:
+                        tar.addfile(link)
+                    tar.addfile(target, io.BytesIO(target_content))
+                    if not link_first:
+                        tar.addfile(link)
+                return buffer.getvalue()
+            def fake_run(argv, **kwargs):
+                if argv[0] == 'dpkg-query':
+                    return subprocess.CompletedProcess(argv, 0, '5.38', '')
+                (Path(kwargs['cwd']) / 'perl_5.38_amd64.deb').write_bytes(b'deb')
+                return subprocess.CompletedProcess(argv, 0, '', '')
+            cases = ((archive(b'#!/usr/bin/perl bug'), True), (archive(b'tampered'), False),
+                     (archive(b'#!/usr/bin/perl bug', link_first=True), False))  # an unknown target proves nothing
+            for data, expected in cases:
+                popen = lambda *a, **k: contextlib.nullcontext(types.SimpleNamespace(stdout=io.BytesIO(data)))
+                with tempfile.TemporaryDirectory() as scratch, \
+                     patch.object(integrity.subprocess, 'run', side_effect=fake_run), \
+                     patch.object(integrity.subprocess, 'Popen', side_effect=popen):
+                    self.assertEqual(integrity.package_matches('perl', [(str(live), '/usr/bin/perlthanks')], Path(scratch)), expected)
+
     def test_a_hatchkit_rewrite_is_accepted_only_with_its_recorded_hash(self):
         import hashlib
         with tempfile.TemporaryDirectory() as folder:
