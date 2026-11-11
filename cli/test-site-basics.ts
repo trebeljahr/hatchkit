@@ -525,6 +525,18 @@ await check("no <head> and no tracker: the tracker goes into <body>, the object 
   assert.deepEqual(syntaxErrors(content, "layout.tsx"), []);
 });
 
+await check("a layout with its own Plausible component gets no second tracker", () => {
+  const own = NO_HEAD_LAYOUT.replace(
+    "<AppShell>{children}</AppShell>",
+    "<PrivatePlausible />\n        <AppShell>{children}</AppShell>",
+  ).replace('import "./globals.css";', 'import "./globals.css";\nimport { PrivatePlausible } from "@/components/private-plausible";');
+  const { content, blocked } = wireSiteBasicsInLayout(own, WITH_DESCRIPTION);
+  assert.deepEqual(blocked, []);
+  assert.doesNotMatch(content, /PlausibleScript/);
+  assert.match(content, /<PrivatePlausible \/>/);
+  assert.deepEqual(syntaxErrors(content, "layout.tsx"), []);
+});
+
 const BARE_LAYOUT = `import "./globals.css";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

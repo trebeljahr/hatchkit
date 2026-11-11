@@ -22,6 +22,8 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 
 ### Fixed
 
+- `hatchkit update` no longer mounts `<PlausibleScript />` in a layout that already mounts its own Plausible component (for example one that redacts paths). The second tracker counted every visit twice and sent the unredacted URL.
+
 - `hatchkit create` wires a deploy trigger for every Coolify app it creates. An image-runtime project routes its client and server as two apps under `single-origin` too, but create looked the apps up by topology and wired only the server: the first deploy then timed out and the client answered 503. `hatchkit sync` repairs a project created before this fix.
 - An image-runtime project's client app is no longer missed after create. `secrets isolate`, `doctor`'s deploy-hook check, the credential isolation audit and the database network join found only `<name>-server`, because they looked the apps up by topology alone. They now read the project's routing plan for its runtime, as `sync` does.
 - The client app no longer receives the server's secrets. `create` and `sync` pushed all of `packages/server/.env.production` (auth secret, database URL, Listmonk token, …) to the client app as well. The client app now gets `NODE_ENV`, its `PORT` and `packages/client/.env.production`, if that file exists. `hatchkit sync` deletes the server keys an earlier push left on a client app, and `sync --dry-run` lists them. When Coolify refuses the delete, sync names the keys and the fix. Run `hatchkit sync --deploy` once on an existing project, so the client container restarts without them. An env file at the project root is still shared by every app.

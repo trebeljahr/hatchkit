@@ -252,8 +252,16 @@ export function wireSiteBasicsInLayout(
   }
 
   const blankedNow = blankComments(out);
+  // A layout that mounts its own Plausible component (one that redacts
+  // paths, say) already renders a tracker. A second <PlausibleScript />
+  // would count every visit twice and send the unredacted URL.
+  const ownTracker = /<[A-Z]\w*Plausible\w*[\s/>]/.test(blankedNow) && !/<PlausibleScript\b/.test(blankedNow);
   let plausible = false;
-  if (!/NEXT_PUBLIC_PLAUSIBLE_DOMAIN/.test(out) && !/\bPlausibleScript\b/.test(blankedNow)) {
+  if (
+    !ownTracker &&
+    !/NEXT_PUBLIC_PLAUSIBLE_DOMAIN/.test(out) &&
+    !/\bPlausibleScript\b/.test(blankedNow)
+  ) {
     const next =
       insertAfterOpenTag(out, "head", "<PlausibleScript />") ??
       insertAfterOpenTag(out, "body", "<PlausibleScript />");
