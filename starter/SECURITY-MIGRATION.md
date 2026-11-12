@@ -53,7 +53,7 @@ prefer fixing configuration or using the documented opt-ins.
 
 Use the manifests and lockfile from the same commit. The update advances Next,
 WebSocket, database, HTTP logging and mail dependencies to patched releases.
-Better Auth stays on its 1.6 patch line through a tilde range.
+Better Auth moved to its 1.7 patch line (tilde range) for GHSA-965c-763c-88jm, GHSA-r4xp-prcw-77qf and GHSA-q84f-53jg-9ppm. The starter uses only email and password on the MongoDB adapter, so no stored shape changes; projects that added magic link, device authorization or the OAuth proxy should follow the better-auth 1.7 upgrade guide.
 
 The workspace overrides patch transitive versions still pinned by upstream
 packages. Most stay within the same major. `serialize-javascript` moves from 6
