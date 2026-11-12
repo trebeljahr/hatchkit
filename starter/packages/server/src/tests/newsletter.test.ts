@@ -351,6 +351,51 @@ describe("GET /api/newsletter/confirm", () => {
     assert.equal(lm.membership("stray@example.com"), undefined);
     assert.match(errors.join("\n"), /Permission denied: subscriber: 42/);
   });
+
+  test("someone on another project's list confirms through the broker when one is set", async () => {
+    const lm = fakeListmonk([existing("both@example.com", [{ id: 3, subscription_status: "confirmed" }])]);
+    const BROKER = "https://broker.test";
+    const listmonkFetch = globalThis.fetch;
+    const brokerCalls: { auth: string; body: any }[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.origin !== BROKER) return listmonkFetch(input, init);
+      const body = JSON.parse(String(init.body));
+      brokerCalls.push({ auth: String((init.headers as Record<string, string>).Authorization), body });
+      lm.subscribers
+        .find((x) => x.email === body.email)
+        ?.lists.push({ id: body.list_id, subscription_status: "confirmed" });
+      return new Response(JSON.stringify({ ok: true, alreadyConfirmed: false }), { status: 200 });
+    }) as typeof fetch;
+
+    // Without a broker the confirm fails, as Listmonk refuses it.
+    const { result: refused } = await captureErrors(() => confirm("both@example.com"));
+    assert.equal(refused.headers.get("location"), `${base}/sub/error?reason=list_add_failed`);
+    assert.deepEqual(brokerCalls, []);
+
+    const res = await withEnv({ LISTMONK_CONFIRM_BROKER_URL: `${BROKER}/` }, () => confirm("both@example.com"));
+    assert.equal(res.headers.get("location"), `${base}/sub/confirmed`);
+    assert.deepEqual(brokerCalls, [
+      { auth: "token api-user:api-token", body: { email: "both@example.com", list_id: LIST_ID } },
+    ]);
+    assert.equal(lm.membership("both@example.com"), "confirmed");
+  });
+
+  test("a broker refusal still fails the confirm", async () => {
+    fakeListmonk([existing("both@example.com", [{ id: 3, subscription_status: "confirmed" }])]);
+    const listmonkFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.origin !== "https://broker.test") return listmonkFetch(input, init);
+      return new Response(JSON.stringify({ error: "list_not_permitted" }), { status: 403 });
+    }) as typeof fetch;
+
+    const { result: res, errors } = await captureErrors(() =>
+      withEnv({ LISTMONK_CONFIRM_BROKER_URL: "https://broker.test" }, () => confirm("both@example.com")),
+    );
+    assert.equal(res.headers.get("location"), `${base}/sub/error?reason=list_add_failed`);
+    assert.match(errors.join("\n"), /confirm broker: 403/);
+  });
 });
 
 describe("confirm link and redirects with the client and the API on different hosts", () => {

@@ -157,6 +157,9 @@ export const env = {
   LISTMONK_TEST_LIST_ID: getOptional("LISTMONK_TEST_LIST_ID"),
   LISTMONK_TX_TEMPLATE_ID: getOptional("LISTMONK_TX_TEMPLATE_ID"),
   LISTMONK_CAMPAIGN_TEMPLATE_ID: getOptional("LISTMONK_CAMPAIGN_TEMPLATE_ID"),
+  // `hatchkit listmonk broker` prints it. Lets a person already on another
+  // project's list confirm on this one (see confirmThroughBroker).
+  LISTMONK_CONFIRM_BROKER_URL: getOptional("LISTMONK_CONFIRM_BROKER_URL"),
   // Pre-filled into .env.development by `hatchkit add <project>
   // listmonk-ses` when a global default forwarding email is configured.
   // The bundled `pnpm newsletter:test-tx` / `newsletter:welcome` /

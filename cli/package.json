@@ -61,6 +61,7 @@
     "test:mac-runner": "node scripts/test.mjs test-mac-runner.ts",
     "test:routed-worker-site": "node scripts/test.mjs test-routed-worker-site.ts",
     "test:newsletter-worker": "node scripts/test.mjs test-newsletter-worker.ts",
+    "test:listmonk-broker": "node scripts/test.mjs test-listmonk-broker.ts",
     "test:lead-magnet": "node scripts/test.mjs test-lead-magnet.ts",
     "test:paid-unlock": "node scripts/test.mjs test-paid-unlock.ts",
     "test:stripe-config": "node scripts/test.mjs test-stripe-config.ts",

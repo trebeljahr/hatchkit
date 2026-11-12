@@ -362,6 +362,42 @@ await test("a record on none of the project's lists fails visibly (Listmonk 403)
   assert.match(errors.join("\n"), /Permission denied: subscriber: 7/);
 });
 
+await test("someone on another project's list confirms through the broker when one is set", async () => {
+  const lm = fakeListmonk([
+    {
+      id: 9,
+      email: "both@example.com",
+      name: "both@example.com",
+      status: "enabled",
+      lists: [{ id: 3, subscription_status: "confirmed" }],
+    },
+  ]);
+  const BROKER = "https://broker.test";
+  const listmonkFetch = globalThis.fetch;
+  const brokerCalls: { auth: string; body: any }[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.origin !== BROKER) return listmonkFetch(input, init);
+    const body = JSON.parse(String(init.body));
+    brokerCalls.push({ auth: String((init.headers as Record<string, string>).Authorization), body });
+    lm.subscribers.find((s) => s.email === body.email)?.lists.push({ id: body.list_id, subscription_status: "confirmed" });
+    return new Response(JSON.stringify({ ok: true, alreadyConfirmed: false }), { status: 200 });
+  }) as typeof fetch;
+  const token = await mintConfirmToken(SECRET, "both@example.com");
+  const confirmUrl = `${SITE}/api/newsletter/confirm?token=${encodeURIComponent(token)}`;
+
+  // Without a broker the confirm fails, as Listmonk refuses it.
+  const { result: refused } = await quietly(() => get(confirmUrl));
+  assert.equal(location(refused), `${SITE}/sub/error?reason=list_add_failed`);
+  assert.deepEqual(brokerCalls, []);
+
+  const withBroker: Env = { ...env, LISTMONK_CONFIRM_BROKER_URL: `${BROKER}/` };
+  const { result: res } = await quietly(() => handleRequest(new Request(confirmUrl), withBroker));
+  assert.equal(location(res), `${SITE}/sub/confirmed`);
+  assert.deepEqual(brokerCalls, [{ auth: "token project:token", body: { email: "both@example.com", list_id: LIST_ID } }]);
+  assert.equal(lm.membership("both@example.com"), "confirmed");
+});
+
 await test("download tokens expire and do not swap with confirm tokens", async () => {
   fakeListmonk();
   await quietly(async () => {

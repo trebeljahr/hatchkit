@@ -233,10 +233,12 @@ export async function signupState(email: string): Promise<SignupState> {
  *  becomes `confirmed`. A disabled or blocklisted subscriber is refused.
  *  The `PUT /api/subscribers/lists` path sends no Listmonk opt-in email.
  *
- *  A record none of this project's lists hold (left on no list by the
- *  signup flow before November 2026, or only on another project's lists)
+ *  A record none of this project's lists hold (only on another project's
+ *  lists, or left on no list by the signup flow before November 2026)
  *  cannot be changed by the project's API user: Listmonk answers 403
- *  "Permission denied: subscriber". Only an admin can add or delete it.
+ *  "Permission denied: subscriber". With LISTMONK_CONFIRM_BROKER_URL set,
+ *  the confirm broker adds this list to it instead (see
+ *  `confirmThroughBroker`); without it the confirm fails.
  *
  *  `alreadyConfirmed` is true when the membership was `confirmed` before
  *  this call: the link was clicked before, or a mail scanner opened it. */
@@ -252,16 +254,47 @@ export async function confirmSubscription(email: string): Promise<{ alreadyConfi
   }
   const alreadyConfirmed =
     existing.lists?.find((l) => l.id === listId)?.subscription_status === "confirmed";
-  await listmonkFetch("/api/subscribers/lists", {
-    method: "PUT",
-    body: JSON.stringify({
-      ids: [existing.id],
-      action: "add",
-      target_list_ids: [listId],
-      status: "confirmed",
-    }),
-  });
+  try {
+    await listmonkFetch("/api/subscribers/lists", {
+      method: "PUT",
+      body: JSON.stringify({
+        ids: [existing.id],
+        action: "add",
+        target_list_ids: [listId],
+        status: "confirmed",
+      }),
+    });
+  } catch (err) {
+    const broker = process.env.LISTMONK_CONFIRM_BROKER_URL;
+    if (!broker || !isSubscriberPermissionDenied(err)) throw err;
+    await confirmThroughBroker(broker, email, listId);
+  }
   return { alreadyConfirmed };
+}
+
+/** Listmonk's answer when the subscriber holds none of this project's
+ *  lists: it is on another project's list (or on no list). */
+function isSubscriberPermissionDenied(err: unknown): boolean {
+  return /: 403 .*Permission denied: subscriber/.test((err as Error).message);
+}
+
+/** Ask the confirm broker (`hatchkit listmonk broker`) to add the existing
+ *  subscriber to this project's list. One email is one Listmonk subscriber
+ *  across every project, and this project's API user may change only
+ *  subscribers already on one of its lists, so a person subscribed to
+ *  another project's list could otherwise never confirm here. The broker
+ *  checks with this project's own credential that the list is ours, and
+ *  does only that one add. */
+async function confirmThroughBroker(brokerUrl: string, email: string, listId: number): Promise<void> {
+  const res = await fetch(`${brokerUrl.replace(/\/$/, "")}/confirm`, {
+    method: "POST",
+    headers: { Authorization: authHeader(), "Content-Type": "application/json" },
+    body: JSON.stringify({ email: email.toLowerCase(), list_id: listId }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`listmonk confirm broker: ${res.status} ${(await res.text()).slice(0, 200)}`);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────

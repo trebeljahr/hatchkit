@@ -26,7 +26,10 @@
     "LISTMONK_FROM": "PROJECT <noreply@mail.example.com>",
     "SITE_URL": "https://example.com",
     "API_URL": "https://example.com",
-    "SITE_NAME": "PROJECT"
+    "SITE_NAME": "PROJECT",
+    // `hatchkit listmonk broker` prints it; lets a person already on another
+    // project's list confirm here. Leave out to fail those confirms instead.
+    "LISTMONK_CONFIRM_BROKER_URL": "https://hatchkit-listmonk-broker.ACCOUNT.workers.dev"
   },
   // Only when magnets.json has an `object` magnet: the bucket the
   // download route streams it from.

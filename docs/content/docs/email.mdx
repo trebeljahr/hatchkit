@@ -164,7 +164,16 @@ One Listmonk serves every project. If every project held the same token, a leak 
 
 The role needs `subscribers:get_all`, not `subscribers:get`. An address can already exist on the shared instance outside the project's lists, for example on another project's list. With `subscribers:get` alone, Listmonk limits subscriber queries to the user's own lists. The confirm step then cannot find the address, and creating it again fails with a 409. The cost: the token can read every subscriber on the instance. Listmonk also cannot limit a user to its own templates or senders.
 
-Reading every subscriber is not changing every subscriber. Without a blanket `lists:manage_all`, `subscribers:manage` lets the project's user change or delete only a subscriber that is already on one of the project's lists. For any other subscriber, Listmonk answers 403 `Permission denied: subscriber: <id>`. That is why the signup form writes nothing to Listmonk, and the confirm click creates the subscriber on the list (see [Double opt-in](#double-opt-in)). An address that exists only outside the project's lists cannot be confirmed with the project's token.
+Reading every subscriber is not changing every subscriber. Without a blanket `lists:manage_all`, `subscribers:manage` lets the project's user change or delete only a subscriber that is already on one of the project's lists. For any other subscriber, Listmonk answers 403 `Permission denied: subscriber: <id>`. That is why the signup form writes nothing to Listmonk, and the confirm click creates the subscriber on the list (see [Double opt-in](#double-opt-in)).
+
+One address is one subscriber across every project on the instance. So a person already on another project's list cannot be confirmed with this project's token: creating a second subscriber fails with a 409, and adding this project's list fails with the 403. The confirm broker handles that case:
+
+```bash
+hatchkit listmonk broker --dry-run
+hatchkit listmonk broker
+```
+
+It creates the Listmonk role and API user `hatchkit-confirm-broker` (`subscribers:get_all`, `subscribers:manage`, `lists:manage_all`) and deploys the Cloudflare Worker `hatchkit-listmonk-broker`, which holds that token. It needs the admin credential and the Cloudflare operator token, and prints the broker URL. Set `LISTMONK_CONFIRM_BROKER_URL` to it in each project (the starter server's env, or the newsletter Worker's vars). A project calls the broker only when its own confirm got the 403. The broker reads the caller's rights from Listmonk with the caller's own token, and then does one thing: it adds the existing, enabled subscriber to a list the caller manages, as `confirmed`. It never creates, deletes, blocklists or unsubscribes a subscriber, and never touches another list.
 
 The project token cannot read or change Listmonk's settings: `GET /api/settings` answers 403.
 

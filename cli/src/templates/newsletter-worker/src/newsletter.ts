@@ -59,6 +59,9 @@ export interface Env {
   SUBSCRIBE_LIMITER?: RateLimit;
   /** R2 bucket holding `object` magnets. Only needed when one exists. */
   MAGNETS?: MagnetBucket;
+  /** Origin of the confirm broker (`hatchkit listmonk broker`). Lets a
+   *  person already on another project's list confirm here. */
+  LISTMONK_CONFIRM_BROKER_URL?: string;
 }
 
 // 21 days, as in the starter: a mail that waits in a holiday inbox still
@@ -595,7 +598,8 @@ async function signupState(env: Env, email: string): Promise<"new" | "known" | "
  *  blocklisted subscriber is refused. A record none of this project's
  *  lists hold (left on no list before November 2026, or only on another
  *  project's lists) cannot be changed by the project's API user: Listmonk
- *  answers 403. */
+ *  answers 403. With LISTMONK_CONFIRM_BROKER_URL set, the confirm broker
+ *  adds the list instead (`confirmThroughBroker`). */
 async function confirmSubscription(env: Env, email: string): Promise<{ alreadyConfirmed: boolean }> {
   const id = listId(env);
   const existing = await findSubscriber(env, email);
@@ -607,11 +611,34 @@ async function confirmSubscription(env: Env, email: string): Promise<{ alreadyCo
     throw new Error("Subscriber is suppressed; subscription cannot be confirmed.");
   }
   const alreadyConfirmed = existing.lists?.find((l) => l.id === id)?.subscription_status === "confirmed";
-  await listmonkFetch(env, "/api/subscribers/lists", {
-    method: "PUT",
-    body: JSON.stringify({ ids: [existing.id], action: "add", target_list_ids: [id], status: "confirmed" }),
-  });
+  try {
+    await listmonkFetch(env, "/api/subscribers/lists", {
+      method: "PUT",
+      body: JSON.stringify({ ids: [existing.id], action: "add", target_list_ids: [id], status: "confirmed" }),
+    });
+  } catch (err) {
+    const denied = /: 403 .*Permission denied: subscriber/.test((err as Error).message);
+    if (!env.LISTMONK_CONFIRM_BROKER_URL || !denied) throw err;
+    await confirmThroughBroker(env, email, id);
+  }
   return { alreadyConfirmed };
+}
+
+/** One email is one Listmonk subscriber across every project, and this
+ *  project's API user may change only subscribers already on one of its
+ *  lists. For a person on another project's list, the confirm broker
+ *  checks with this project's own credential that the list is ours and
+ *  adds it, as `confirmed`; nothing else. */
+async function confirmThroughBroker(env: Env, email: string, id: number): Promise<void> {
+  const res = await fetch(`${trimSlash(env.LISTMONK_CONFIRM_BROKER_URL ?? "")}/confirm`, {
+    method: "POST",
+    headers: {
+      Authorization: `token ${env.LISTMONK_API_USER}:${env.LISTMONK_API_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ email, list_id: id }),
+  });
+  if (!res.ok) throw new Error(`listmonk confirm broker: ${res.status} ${(await res.text()).slice(0, 200)}`);
 }
 
 /** Send through Listmonk's passthrough tx template, which renders

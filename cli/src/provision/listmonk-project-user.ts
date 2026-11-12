@@ -34,8 +34,11 @@
  * confirmation goes out in tx `external` mode) and the confirm click
  * creates the subscriber on the list. Until 2026-11-11 the signup created
  * a subscriber on no list, and every confirm click answered 403. An
- * address that exists only outside the project's lists still cannot be
- * confirmed by the project's user; only an admin can change it.
+ * address that exists only outside the project's lists (on another
+ * project's list) still cannot be confirmed by the project's user; the
+ * confirm broker (`hatchkit listmonk broker`, src/listmonk-broker/) adds
+ * it for the project, after checking the project's rights with its own
+ * token.
  *
  * Listmonk returns an API user's token once, in the `POST /api/users`
  * response, and has no endpoint that regenerates it. `PUT /api/users/:id`
