@@ -10,7 +10,12 @@
  *      (`listmonk:confirm-broker:api-token`) before anything else.
  *   2. The Worker `hatchkit-listmonk-broker` on the operator's Cloudflare
  *      account: one module (the compiled worker.js), LISTMONK_URL as a
- *      plain var, the token as a secret, the workers.dev route on.
+ *      plain var, the token as a secret. With `--hostname`, a Custom
+ *      Domain in one of the account's zones serves it; otherwise its
+ *      workers.dev route. Use a hostname when Listmonk sits behind a WAF
+ *      rule that lets only Workers on your own zones reach `/api/*`
+ *      (`cf.worker.upstream_zone`): a workers.dev Worker reports none, and
+ *      every call then fails as 401.
  *   3. The broker URL in hatchkit's config, for LISTMONK_CONFIRM_BROKER_URL.
  *
  * Writes need the hatchkit-admin Listmonk credential and the Cloudflare
@@ -52,6 +57,8 @@ export interface BrokerDeployDeps {
   saveBrokerUrl(url: string): void;
   readModule?: () => string;
   dryRun?: boolean;
+  /** Serve the broker on this Custom Domain instead of workers.dev. */
+  hostname?: string;
   log?: (line: string) => void;
 }
 
@@ -155,7 +162,7 @@ export async function deployListmonkBroker(deps: BrokerDeployDeps): Promise<Brok
   const script = `${accountPath}/workers/scripts/${BROKER_WORKER_NAME}`;
   const source = (deps.readModule ?? defaultReadModule)();
   say(
-    `upload Worker ${BROKER_WORKER_NAME} (LISTMONK_URL=${deps.listmonkUrl}, BROKER_API_USER=${BROKER_NAME}), secret BROKER_API_TOKEN, workers.dev route on`,
+    `upload Worker ${BROKER_WORKER_NAME} (LISTMONK_URL=${deps.listmonkUrl}, BROKER_API_USER=${BROKER_NAME}), secret BROKER_API_TOKEN, ${deps.hostname ? `Custom Domain ${deps.hostname}` : "workers.dev route on"}`,
   );
   if (dry) return { steps, url: null };
 
@@ -190,19 +197,51 @@ export async function deployListmonkBroker(deps: BrokerDeployDeps): Promise<Brok
     JSON.stringify({ name: "BROKER_API_TOKEN", text: token, type: "secret_text" }),
     "application/json",
   );
-  await cf(
-    deps,
-    "POST",
-    `${script}/subdomain`,
-    JSON.stringify({ enabled: true }),
-    "application/json",
-  );
-  const sub = (await cf(deps, "GET", `${accountPath}/workers/subdomain`)) as { subdomain?: string };
-  if (!sub?.subdomain)
-    throw new Error(
-      "The account has no workers.dev subdomain; set one in the Cloudflare dashboard.",
+  let url: string;
+  if (deps.hostname) {
+    const host = deps.hostname.toLowerCase();
+    const zones = (await cf(
+      deps,
+      "GET",
+      `/zones?per_page=50&account.id=${deps.cloudflare.accountId}`,
+    )) as Array<{
+      id: string;
+      name: string;
+    }>;
+    const zone = zones
+      .filter((z) => host === z.name || host.endsWith(`.${z.name}`))
+      .sort((a, b) => b.name.length - a.name.length)[0];
+    if (!zone) throw new Error(`No zone on the Cloudflare account holds ${host}.`);
+    await cf(
+      deps,
+      "PUT",
+      `${accountPath}/workers/domains`,
+      JSON.stringify({
+        hostname: host,
+        service: BROKER_WORKER_NAME,
+        zone_id: zone.id,
+        environment: "production",
+      }),
+      "application/json",
     );
-  const url = `https://${BROKER_WORKER_NAME}.${sub.subdomain}.workers.dev`;
+    url = `https://${host}`;
+  } else {
+    await cf(
+      deps,
+      "POST",
+      `${script}/subdomain`,
+      JSON.stringify({ enabled: true }),
+      "application/json",
+    );
+    const sub = (await cf(deps, "GET", `${accountPath}/workers/subdomain`)) as {
+      subdomain?: string;
+    };
+    if (!sub?.subdomain)
+      throw new Error(
+        "The account has no workers.dev subdomain; set one in the Cloudflare dashboard.",
+      );
+    url = `https://${BROKER_WORKER_NAME}.${sub.subdomain}.workers.dev`;
+  }
   deps.saveBrokerUrl(url);
   say(`broker at ${url}`);
   return { steps, url };

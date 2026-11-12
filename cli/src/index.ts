@@ -4684,14 +4684,17 @@ function printListmonkUsage(): void {
                        --from <mailbox> pins the sender; --reply-to <mailbox> pins replies.
                        No credentials, subscribers, deployments or provider writes.
 
-    ${chalk.cyan("broker [--dry-run]")}
+    ${chalk.cyan("broker [--hostname <host>] [--dry-run]")}
                        Set up the confirm broker once per instance: Listmonk
                        role + API user ${chalk.cyan("hatchkit-confirm-broker")} (subscribers:get_all,
                        subscribers:manage, lists:manage_all) and the Cloudflare
                        Worker hatchkit-listmonk-broker. It adds an existing subscriber
                        to a list the calling project manages, as confirmed, when the
                        project's own add got 403 (the address is on another project's
-                       list). Set LISTMONK_CONFIRM_BROKER_URL in each project after.
+                       list). --hostname serves it on a Custom Domain in one of your
+                       zones (needed behind a WAF rule that admits only your zones'
+                       Workers to Listmonk /api/*). Set LISTMONK_CONFIRM_BROKER_URL in
+                       each project after.
                        Needs the admin credential and the Cloudflare operator token.
 
     ${chalk.cyan("user [<project>] [flags]")}

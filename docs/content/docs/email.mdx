@@ -169,9 +169,11 @@ Reading every subscriber is not changing every subscriber. Without a blanket `li
 One address is one subscriber across every project on the instance. So a person already on another project's list cannot be confirmed with this project's token: creating a second subscriber fails with a 409, and adding this project's list fails with the 403. The confirm broker handles that case:
 
 ```bash
-hatchkit listmonk broker --dry-run
-hatchkit listmonk broker
+hatchkit listmonk broker --hostname listmonk-broker.example.com --dry-run
+hatchkit listmonk broker --hostname listmonk-broker.example.com
 ```
+
+`--hostname` serves the broker on a Custom Domain in one of your Cloudflare zones. Without it the broker answers on its workers.dev address. Use a hostname when a WAF rule lets only Workers on your own zones reach Listmonk's `/api/*`: a workers.dev Worker belongs to no zone, so every call to the broker would fail with 401.
 
 It creates the Listmonk role and API user `hatchkit-confirm-broker` (`subscribers:get_all`, `subscribers:manage`, `lists:manage_all`) and deploys the Cloudflare Worker `hatchkit-listmonk-broker`, which holds that token. It needs the admin credential and the Cloudflare operator token, and prints the broker URL. Set `LISTMONK_CONFIRM_BROKER_URL` to it in each project (the starter server's env, or the newsletter Worker's vars). A project calls the broker only when its own confirm got the 403. The broker reads the caller's rights from Listmonk with the caller's own token, and then does one thing: it adds the existing, enabled subscriber to a list the caller manages, as `confirmed`. It never creates, deletes, blocklists or unsubscribes a subscriber, and never touches another list.
 

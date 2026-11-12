@@ -12,7 +12,8 @@ import {
 import { getSecret, setSecret } from "../utils/secrets.js";
 import { BROKER_NAME, deployListmonkBroker } from "./deploy.js";
 
-export const LISTMONK_BROKER_USAGE = "Usage: hatchkit listmonk broker [--dry-run]";
+export const LISTMONK_BROKER_USAGE =
+  "Usage: hatchkit listmonk broker [--hostname <host in one of your zones>] [--dry-run]";
 
 /** The deployed broker's URL, for a project's LISTMONK_CONFIRM_BROKER_URL. */
 export function getListmonkBrokerUrl(): string | undefined {
@@ -20,9 +21,14 @@ export function getListmonkBrokerUrl(): string | undefined {
 }
 
 export async function runListmonkBrokerCli(argv: string[]): Promise<void> {
-  const unknown = argv.filter((a) => a !== "--dry-run");
-  if (unknown.length) throw new Error(`Unknown argument ${unknown[0]}.\n${LISTMONK_BROKER_USAGE}`);
-  const dryRun = argv.includes("--dry-run");
+  let dryRun = false;
+  let hostname: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--dry-run") dryRun = true;
+    else if (a === "--hostname" && argv[i + 1]) hostname = argv[++i];
+    else throw new Error(`Unknown argument ${a}.\n${LISTMONK_BROKER_USAGE}`);
+  }
 
   const admin = await getListmonkAdminAuth();
   if (!admin) {
@@ -45,6 +51,7 @@ export async function runListmonkBrokerCli(argv: string[]): Promise<void> {
     listmonkUrl: admin.url,
     cloudflare: { token: op.token, accountId: op.accountId },
     dryRun,
+    hostname,
     getSecret,
     setSecret,
     saveBrokerUrl: (url) => getStore().set("listmonkBroker", { url, user: BROKER_NAME }),

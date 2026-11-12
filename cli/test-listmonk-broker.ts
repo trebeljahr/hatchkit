@@ -271,7 +271,14 @@ function fakeDeploy(opts: { roles?: any[]; users?: any[]; token?: string | null 
       const path = input.replace("https://api.cloudflare.com/client/v4", "");
       order.push(`cf ${init.method} ${path}`);
       cfCalls.push({ method: String(init.method), path, body: init.body });
-      const result = path.endsWith("/workers/subdomain") ? { subdomain: "acct" } : {};
+      const result = path.endsWith("/workers/subdomain")
+        ? { subdomain: "acct" }
+        : path.startsWith("/zones")
+          ? [
+              { id: "z1", name: "example.com" },
+              { id: "z2", name: "mail.example.com" },
+            ]
+          : {};
       return new Response(JSON.stringify({ success: true, result }), { status: 200 });
     },
   };
@@ -316,6 +323,28 @@ await test("deploy: least-privilege role + user once, token kept first, Worker u
   assert.equal(
     f.order.some((o) => !o.startsWith("cf ")),
     false,
+  );
+});
+
+await test("deploy: --hostname serves the broker on a Custom Domain in the deepest matching zone", async () => {
+  const f = fakeDeploy();
+  const res = await deployListmonkBroker({ ...f.deps, hostname: "Broker.Mail.Example.com" });
+  assert.equal(res.url, "https://broker.mail.example.com");
+  assert.equal(f.saved(), "https://broker.mail.example.com");
+  const domain = f.cfCalls.find((c) => c.path === "/accounts/acc/workers/domains");
+  assert.deepEqual(JSON.parse(String(domain?.body)), {
+    hostname: "broker.mail.example.com",
+    service: "hatchkit-listmonk-broker",
+    zone_id: "z2",
+    environment: "production",
+  });
+  assert.equal(
+    f.cfCalls.some((c) => c.path.endsWith("/subdomain")),
+    false,
+  );
+  await assert.rejects(
+    () => deployListmonkBroker({ ...fakeDeploy().deps, hostname: "broker.other.org" }),
+    /No zone on the Cloudflare account holds broker\.other\.org/,
   );
 });
 
