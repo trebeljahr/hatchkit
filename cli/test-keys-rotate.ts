@@ -43,7 +43,7 @@ interface Keypair {
 
 function mintKeypair(): Keypair {
   const sk = new PrivateKey();
-  return { privateKey: sk.secret.toString("hex"), publicKey: sk.publicKey.toHex() };
+  return { privateKey: Buffer.from(sk.secret).toString("hex"), publicKey: sk.publicKey.toHex() };
 }
 
 function makeProject(opts: { staleEntries?: number } = {}): {
