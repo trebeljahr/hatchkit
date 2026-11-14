@@ -78,7 +78,7 @@
     "@electron/asar": "^3.4.1",
     "@playwright/test": "^1.60.0",
     "@types/node": "^26.6.6",
-    "concurrently": "^9.2.1",
+    "concurrently": "^10.0.6",
     "electron": "^42.1.0",
     "electron-builder": "^26.8.1",
     "electron-updater": "6.8.9",
