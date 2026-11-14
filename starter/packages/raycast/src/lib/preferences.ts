@@ -65,18 +65,14 @@ const usesLocalOrigins = (): boolean => environment.isDevelopment && USE_LOCAL_D
 
 /** The API origin this install talks to: the preference, else the build's. */
 export function apiOrigin(): string {
-  const preference = trimOrigin(
-    getPreferenceValues<Preferences.ExtensionPreferences>().apiOrigin ?? "",
-  );
+  const preference = trimOrigin(getPreferenceValues<ExtensionPreferences>().apiOrigin ?? "");
   if (preference !== "") return preference;
   return usesLocalOrigins() ? LOCAL_API_ORIGIN : RELEASE_API_ORIGIN;
 }
 
 /** The web app this install opens, and where a pairing code is approved. */
 export function webOrigin(): string {
-  const preference = trimOrigin(
-    getPreferenceValues<Preferences.ExtensionPreferences>().webOrigin ?? "",
-  );
+  const preference = trimOrigin(getPreferenceValues<ExtensionPreferences>().webOrigin ?? "");
   if (preference !== "") return preference;
   return usesLocalOrigins() ? LOCAL_WEB_ORIGIN : RELEASE_WEB_ORIGIN;
 }

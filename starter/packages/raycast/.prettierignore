@@ -7,3 +7,8 @@
 # the exported copy has the same vendored tree and the same reason.
 src/vendor/
 dist/
+
+# Written by Raycast's own toolchain from the manifest: every `ray build` and
+# `ray develop` rewrites it in its own format, so formatting it here would show
+# up as drift after each build. It is committed anyway; see tsconfig.json.
+raycast-env.d.ts
