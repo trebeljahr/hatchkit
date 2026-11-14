@@ -46,6 +46,14 @@ export function warnStripeStatus(): void {
   );
 }
 
+/**
+ * The Stripe API version every request is pinned to. Set explicitly so that an
+ * SDK upgrade cannot change payment behaviour on its own: stripe 22 sent
+ * 2026-08-26.dahlia by default, stripe 23 sends 2026-10-28.endive. Move it on
+ * purpose, after reading Stripe's changelog for the versions in between.
+ */
+export const STRIPE_API_VERSION = "2026-08-26.dahlia";
+
 function getStripe(): Stripe {
   if (!_stripe) {
     if (isStripeUnconfigured()) {
@@ -54,7 +62,12 @@ function getStripe(): Stripe {
           "Set it in your env file and restart. See the [stripe] startup warning for details.",
       );
     }
-    _stripe = new Stripe(env.STRIPE_SECRET_KEY);
+    _stripe = new Stripe(env.STRIPE_SECRET_KEY, {
+      // stripe 23's types name only the version it defaults to; this one is
+      // what the SDK sent before, so checkout and webhook payloads stay the same.
+      // @ts-expect-error -- an older API version than the SDK's own, on purpose.
+      apiVersion: STRIPE_API_VERSION,
+    });
   }
   return _stripe;
 }
