@@ -48,6 +48,6 @@
     "@types/qs": "^6.15.0",
     "@types/ws": "^8.5.13",
     "tsx": "^4.22.0",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   }
 }

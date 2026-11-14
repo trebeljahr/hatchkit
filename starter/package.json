@@ -87,7 +87,7 @@
     "mongodb": "^7.7.0",
     "sharp": "^0.34.5",
     "tsx": "^4.22.0",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "wait-on": "^9.0.10"
   },
   "dependencies": {

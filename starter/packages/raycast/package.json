@@ -147,9 +147,10 @@
     "@raycast/eslint-config": "^2.2.0",
     "@types/node": "^26.6.6",
     "@types/react": "^19.2.14",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "eslint": "^9.39.4",
     "prettier": "^3.9.9",
-    "typescript": "^6.0.3"
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
   },
   "scripts": {
     "//scripts": "The store copy does NOT get these. scripts/export-store.mjs replaces the whole block with Raycast's own template scripts, because `pnpm`, the vendor step and the export itself do not exist outside this repository.",
