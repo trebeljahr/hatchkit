@@ -73,7 +73,7 @@
     "test:mcp": "pnpm --filter @starter/shared run build && pnpm --filter @starter/core run build && pnpm --filter @starter/mcp run test"
   },
   "devDependencies": {
-    "@capacitor/assets": "^3.0.5",
+    "@capacitor/assets": "^4.0.0",
     "@capacitor/cli": "^8.3.4",
     "@electron/asar": "^3.4.1",
     "@playwright/test": "^1.60.0",
