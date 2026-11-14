@@ -77,7 +77,7 @@
     "@capacitor/cli": "^8.3.4",
     "@electron/asar": "^3.4.1",
     "@playwright/test": "^1.60.0",
-    "@types/node": "^25.8.0",
+    "@types/node": "^26.6.6",
     "concurrently": "^9.2.1",
     "electron": "^42.1.0",
     "electron-builder": "^26.8.1",
