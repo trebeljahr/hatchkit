@@ -91,7 +91,7 @@
     "wait-on": "^9.0.10"
   },
   "dependencies": {
-    "@aparajita/capacitor-secure-storage": "^7.1.6",
+    "@aparajita/capacitor-secure-storage": "^8.0.1",
     "@capacitor/android": "^8.5.2",
     "@capacitor/app": "^8.1.1",
     "@capacitor/core": "^8.5.2",
