@@ -10,22 +10,22 @@
 import { readFileSync } from "node:fs";
 import chalk from "chalk";
 import { getConfiguredCloudflareAccountId } from "../config.js";
-import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { getSecret, SECRET_KEYS, setSecret } from "../utils/secrets.js";
 import {
   type AuditFinding,
+  addFindings,
+  auditFailed,
   type CloudflareAuditReport,
   type CloudflareExpected,
   CloudflareReader,
-  addFindings,
-  auditFailed,
   collectCloudflareSnapshot,
   diffCloudflareAccount,
   parseExpected,
   renderAuditText,
 } from "./cloudflare.js";
 import {
-  type DeployDeps,
   auditWorkerWatchdog,
+  type DeployDeps,
   deployAuditWorker,
   publishExpectedToWorker,
 } from "./deploy.js";

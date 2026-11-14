@@ -34,7 +34,7 @@ import { parse as dotenvxParse } from "@dotenvx/dotenvx";
 import { parseDotenv } from "../deploy/env-resolve.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { locateEnvFile } from "../utils/env-files.js";
-import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
+import { getSecret, SECRET_KEYS } from "../utils/secrets.js";
 
 /** Env entries that carry the sending address. */
 export const SES_FROM_ENV_KEYS = ["SES_FROM_EMAIL", "LISTMONK_FROM"] as const;

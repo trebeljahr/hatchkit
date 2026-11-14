@@ -32,7 +32,7 @@
  * different time and fails the check.
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CloudflareDeployTokenRecord, getConfigPath, getSesConfig } from "../config.js";
 import {
@@ -46,7 +46,7 @@ import {
 } from "../deploy/coolify-deploy-hook.js";
 import { deriveSesSmtpPassword } from "../provision/ses.js";
 import { exec } from "../utils/exec.js";
-import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
+import { getSecret, SECRET_KEYS } from "../utils/secrets.js";
 
 export type IsolationSeverity = "fail" | "warn";
 
@@ -115,7 +115,11 @@ export async function collectProvisionerValues(): Promise<ProvisionerValue[]> {
     "the shared Cloudflare Workers token older hatchkit pushed to every Worker repo",
     await getSecret(SECRET_KEYS.cloudflareWorkersToken),
   );
-  add("listmonk", "hatchkit's Listmonk admin token", await getSecret(SECRET_KEYS.listmonkAdminApiToken));
+  add(
+    "listmonk",
+    "hatchkit's Listmonk admin token",
+    await getSecret(SECRET_KEYS.listmonkAdminApiToken),
+  );
   const sesId = await getSecret(SECRET_KEYS.sesAccessKeyId);
   const sesSecret = await getSecret(SECRET_KEYS.sesSecretAccessKey);
   add("ses", "hatchkit's shared SES access key id", sesId);
@@ -123,7 +127,11 @@ export async function collectProvisionerValues(): Promise<ProvisionerValue[]> {
   if (sesSecret) {
     const region = (await getSesConfig().catch(() => null))?.region;
     if (region) {
-      add("ses", "the SMTP password of hatchkit's shared SES key", deriveSesSmtpPassword(sesSecret, region));
+      add(
+        "ses",
+        "the SMTP password of hatchkit's shared SES key",
+        deriveSesSmtpPassword(sesSecret, region),
+      );
     }
   }
   add(
@@ -146,7 +154,12 @@ export function findProvisionerValuesInEnv(
     if (typeof value !== "string" || value.length < 16) continue;
     for (const p of provisioners) {
       if (value === p.value || value.includes(p.value)) {
-        out.push({ severity: p.severity, provider: p.provider, where, what: `${key} holds ${p.label}` });
+        out.push({
+          severity: p.severity,
+          provider: p.provider,
+          where,
+          what: `${key} holds ${p.label}`,
+        });
       }
     }
   }
@@ -163,7 +176,8 @@ export function findProvisionerValuesInEnv(
   if (env.LISTMONK_API_TOKEN) {
     out.push({
       severity: env.SES_PROJECT_ACCESS_KEY_ID || env.EMAIL_TRANSPORT === "ses" ? "fail" : "warn",
-      provider: "listmonk", where,
+      provider: "listmonk",
+      where,
       what: "Listmonk credentials retain shared relay/subscriber authority; per-project API users do not enforce sender isolation. Migrate newsletters to a dedicated instance or project-bound gateway before claiming full isolation.",
     });
   }
@@ -171,7 +185,10 @@ export function findProvisionerValuesInEnv(
 }
 
 /** Findings for a project's GitHub Actions secret NAMES. Pure. */
-export function findProvisionerSecretNames(names: readonly string[], repo: string): IsolationFinding[] {
+export function findProvisionerSecretNames(
+  names: readonly string[],
+  repo: string,
+): IsolationFinding[] {
   const out: IsolationFinding[] = [];
   for (const name of PROVISIONER_DEPLOY_SECRET_NAMES) {
     if (names.includes(name)) {
@@ -282,10 +299,14 @@ export function findCloudflareDeployTokenFindings(input: {
       },
     ];
   }
-  return [{
-    severity: "warn", provider: "cloudflare", where,
-    what: `${name} is scoped to Worker ${input.worker}; this role can add bindings to other same-account KV namespaces and read their data. Other runtime bindings remain outside this audit`,
-  }];
+  return [
+    {
+      severity: "warn",
+      provider: "cloudflare",
+      where,
+      what: `${name} is scoped to Worker ${input.worker}; this role can add bindings to other same-account KV namespaces and read their data. Other runtime bindings remain outside this audit`,
+    },
+  ];
 }
 
 /** Workflows that read a provisioner-token secret. */
@@ -467,9 +488,11 @@ export async function auditProjectIsolation(
       }
     }
   }
-  if (senderEnvs.some(({ env }) => env.SES_PROJECT_ACCESS_KEY_ID || env.EMAIL_TRANSPORT === "ses")) {
+  if (
+    senderEnvs.some(({ env }) => env.SES_PROJECT_ACCESS_KEY_ID || env.EMAIL_TRANSPORT === "ses")
+  ) {
     const { auditProjectSenderEnvs } = await import("../provision/ses-sender-audit.js");
-    findings.push(...await auditProjectSenderEnvs(name, senderEnvs));
+    findings.push(...(await auditProjectSenderEnvs(name, senderEnvs)));
   }
   return { name, repo, findings };
 }

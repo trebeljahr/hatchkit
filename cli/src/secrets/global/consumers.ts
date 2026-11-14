@@ -31,7 +31,7 @@
  * the committed `.env.development`; a copy found there is moved out.
  */
 
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { parse as parseDotenv } from "@dotenvx/dotenvx";
@@ -52,7 +52,7 @@ import {
 } from "../../utils/dev-env-secrets.js";
 import { locateEnvFile } from "../../utils/env-files.js";
 import { execOk } from "../../utils/exec.js";
-import { SECRET_KEYS, getSecret } from "../../utils/secrets.js";
+import { getSecret, SECRET_KEYS } from "../../utils/secrets.js";
 import { redactErrorMessage } from "../audit.js";
 import { inspectEnvKeysHistory } from "../key-history.js";
 import { pushToGithub } from "../push.js";
@@ -298,10 +298,7 @@ export async function planProject(
 
   if (writeProd || writeDev) {
     entry.status = "planned";
-    const held = [
-      ...(writeProd ? [project.prodKeys] : []),
-      ...(writeDev ? [project.devKeys] : []),
-    ];
+    const held = [...(writeProd ? [project.prodKeys] : []), ...(writeDev ? [project.devKeys] : [])];
     const added = missingKeys(rotator, held);
     if (added) reasons.push(added);
   } else if (alreadyDone > 0 && reasons.length === 0) {
@@ -369,7 +366,10 @@ function pairsFor(rotator: GlobalRotator, fresh: NewCred): Array<{ key: string; 
 }
 
 /** "adds X" for consumer keys some written place does not hold yet. */
-export function missingKeys(rotator: GlobalRotator, held: ReadonlyArray<ReadonlySet<string>>): string | undefined {
+export function missingKeys(
+  rotator: GlobalRotator,
+  held: ReadonlyArray<ReadonlySet<string>>,
+): string | undefined {
   const missing = rotator.consumerKeys.filter((k) => held.some((h) => !h.has(k)));
   if (missing.length === 0) return undefined;
   return `adds ${missing.join(", ")}: the new values work only together`;

@@ -26,7 +26,7 @@
 
 import chalk from "chalk";
 import { patchManifest, readManifest } from "../scaffold/manifest.js";
-import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { getSecret, SECRET_KEYS, setSecret } from "../utils/secrets.js";
 
 export type StripeMode = "test" | "live";
 export const STRIPE_MODES: readonly StripeMode[] = ["test", "live"];

@@ -19,8 +19,8 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -62,8 +62,8 @@ import { applyE2eS3Gate } from "./e2e-s3.js";
 import { applyE2eStack } from "./e2e-stack.js";
 import { collectIdentifierMismatches, formatIdentifierMismatches } from "./identifier-agreement.js";
 import {
-  type ProjectIdentifiers,
   assertIdentifiers,
+  type ProjectIdentifiers,
   resolveIdentifiers,
   substituteIdentifierTokens,
 } from "./identifiers.js";

@@ -364,7 +364,7 @@ export function renderRollbackWorkflow(plan: VerifiedDeployPlan): string {
 # firing it and walking away:
 #
 #   sleep 5   # the run appears in the list a moment after the dispatch
-#   gh run watch --exit-status "\$(gh run list --workflow hosted-rollback.yml \\
+#   gh run watch --exit-status "$(gh run list --workflow hosted-rollback.yml \\
 #     --limit 1 --json databaseId --jq '.[0].databaseId')"
 #
 # The server is refused when the database it would start on carries a
@@ -431,20 +431,20 @@ jobs:
           DEFAULT_BRANCH: \${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          if ! printf '%s' "\$INPUT_SHA" | grep -Eq '^[0-9a-fA-F]{7,40}\$'; then
-            echo "::error::'\$INPUT_SHA' is not a commit sha."
+          if ! printf '%s' "$INPUT_SHA" | grep -Eq '^[0-9a-fA-F]{7,40}$'; then
+            echo "::error::'$INPUT_SHA' is not a commit sha."
             exit 1
           fi
-          if ! sha=\$(git rev-parse --verify --quiet "\${INPUT_SHA}^{commit}"); then
-            echo "::error::\$INPUT_SHA is not a commit in this repository."
+          if ! sha=$(git rev-parse --verify --quiet "\${INPUT_SHA}^{commit}"); then
+            echo "::error::$INPUT_SHA is not a commit in this repository."
             exit 1
           fi
-          if ! git merge-base --is-ancestor "\$sha" "origin/\$DEFAULT_BRANCH"; then
-            echo "::error::\$sha is not on \$DEFAULT_BRANCH, so no images were ever built for it."
+          if ! git merge-base --is-ancestor "$sha" "origin/$DEFAULT_BRANCH"; then
+            echo "::error::$sha is not on $DEFAULT_BRANCH, so no images were ever built for it."
             exit 1
           fi
-          echo "sha=\$sha" >> "\$GITHUB_OUTPUT"
-          echo "Deploying \$sha: \$(git log -1 --format='%s (%cs)' "\$sha")"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Deploying $sha: $(git log -1 --format='%s (%cs)' "$sha")"
 
       # The script prints a notice and does nothing when no platform
       # credential is set, and fails when only some of them are.
@@ -462,9 +462,9 @@ ${deployHookEnvLines().join("\n")}
           RESTORE_ON_FAILURE: \${{ inputs.restore_on_failure }}
         run: |
           set -euo pipefail
-          args=(deploy --sha "\$SHA" --which "\$WHICH" --guard-server-downgrade)
-          if [ "\$FORCE_SERVER" = "true" ]; then args+=(--force-server); fi
-          if [ "\$RESTORE_ON_FAILURE" = "true" ]; then args+=(--rollback); fi
+          args=(deploy --sha "$SHA" --which "$WHICH" --guard-server-downgrade)
+          if [ "$FORCE_SERVER" = "true" ]; then args+=(--force-server); fi
+          if [ "$RESTORE_ON_FAILURE" = "true" ]; then args+=(--rollback); fi
           node ${DEPLOY_ENTRY_REL_PATH} "\${args[@]}"
 `;
 }

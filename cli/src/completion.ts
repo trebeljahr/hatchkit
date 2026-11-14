@@ -104,7 +104,7 @@ function zsh(): string {
 # zsh completion for hatchkit
 # Install:
 #   hatchkit completion zsh > ~/.zsh/completions/_hatchkit
-#   (ensure that dir is in your \$fpath, then \`compinit\`)
+#   (ensure that dir is in your $fpath, then \`compinit\`)
 
 _hatchkit() {
   local -a commands

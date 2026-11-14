@@ -5,14 +5,14 @@ import { readManifestWithMigrationInfo } from "../scaffold/manifest.js";
 import { configureBackupAlerts } from "./alerts.js";
 import { installBackupHost } from "./install.js";
 import {
-  type BackupHost,
-  DEFAULT_BACKUP_SCHEDULE,
   addBackupHost,
+  type BackupHost,
   backupHost,
   backupHostExec,
   backupHosts,
   backupProvider,
   configureBackupProvider,
+  DEFAULT_BACKUP_SCHEDULE,
   forgetBackupHost,
 } from "./provider.js";
 import { backupSnapshots, restoreBackup } from "./recovery.js";

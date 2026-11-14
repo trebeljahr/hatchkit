@@ -70,7 +70,7 @@
  * GitHub rename.
  */
 
-import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";

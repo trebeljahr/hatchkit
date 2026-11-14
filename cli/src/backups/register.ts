@@ -3,10 +3,10 @@ import { dirname, join } from "node:path";
 import { getConfig, getConfigPath } from "../config.js";
 import { type BackupHost, backupHost, backupHostForServer, backupHosts } from "./provider.js";
 import {
-  type ProjectLocation,
   applyPolicyChange,
   hostRegisterProject,
   locateBackupProject,
+  type ProjectLocation,
   policyWithout,
 } from "./sources.js";
 

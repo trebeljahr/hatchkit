@@ -19,10 +19,10 @@
  */
 
 import { relative } from "node:path";
-import { readEnvKeys } from "../provision/write-env.js";
 import type { EnvPair } from "../provision/write-env.js";
-import { readManifest } from "../scaffold/manifest.js";
+import { readEnvKeys } from "../provision/write-env.js";
 import type { ProjectManifest } from "../scaffold/manifest.js";
+import { readManifest } from "../scaffold/manifest.js";
 import { buildAudit, printAudit, redactErrorMessage } from "./audit.js";
 import {
   assertEnvKeysNotTracked,
@@ -35,7 +35,7 @@ import {
 } from "./env-writer.js";
 import { SHARED_CREDENTIAL_KEYS } from "./global/types.js";
 import { assertKeysNotLeaked, inspectEnvKeysHistory, keyHistoryRefusal } from "./key-history.js";
-import { type PushPair, type PushResult, detectRepoSlug, push } from "./push.js";
+import { detectRepoSlug, type PushPair, type PushResult, push } from "./push.js";
 import { all as listAdapters } from "./registry.js";
 import { clearRollback, saveRollback } from "./rollback-store.js";
 import type {
@@ -92,9 +92,7 @@ export interface RunSecretsRotateOptions {
 }
 
 /** Top-level entry. Returns the same audit it printed. */
-export async function runSecretsRotate(
-  opts: RunSecretsRotateOptions,
-): Promise<RotationAudit> {
+export async function runSecretsRotate(opts: RunSecretsRotateOptions): Promise<RotationAudit> {
   const projectDir = opts.projectDir ?? process.cwd();
   const startedAt = new Date().toISOString();
 

@@ -15,7 +15,7 @@
  * few milliseconds.
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getCliVersion } from "../../utils/version.js";
 import { deriveChannels } from "./channels.js";

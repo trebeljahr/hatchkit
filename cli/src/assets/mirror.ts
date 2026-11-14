@@ -23,8 +23,8 @@
 import { createReadStream, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
-import type { Readable } from "node:stream";
-import type { Readable as NodeReadable } from "node:stream";
+import type { Readable as NodeReadable, Readable } from "node:stream";
+import type { S3ClientConfig } from "@aws-sdk/client-s3";
 import {
   GetObjectCommand,
   HeadObjectCommand,
@@ -32,7 +32,6 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import type { S3ClientConfig } from "@aws-sdk/client-s3";
 import type { ResolvedS3Config } from "./env.js";
 
 /** Build an SDK client from our normalised config. */

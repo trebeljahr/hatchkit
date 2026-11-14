@@ -1,5 +1,5 @@
 /** Offline staging bundle only. Never reads credentials or changes deployments. */
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readManifest } from "../scaffold/manifest.js";
@@ -38,7 +38,7 @@ export async function runListmonkIsolationPlan(argv: string[]): Promise<void> {
   const manifest = readManifest(projectDir || process.cwd());
   if (!manifest?.name || !manifest.domain)
     throw new Error("A Hatchkit project manifest is required.");
-  if (replyTo && !/^[a-zA-Z0-9._+\-]+@(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,63}$/.test(replyTo))
+  if (replyTo && !/^[a-zA-Z0-9._+-]+@(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,63}$/.test(replyTo))
     throw new Error("--reply-to must be one bare email address.");
   const spec = senderSpec(manifest.name, manifest.domain, account, region, from);
   const publicUrl = new URL(url);

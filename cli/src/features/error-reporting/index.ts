@@ -24,10 +24,10 @@
 
 import { dirname } from "node:path";
 import {
-  type OperationalContext,
-  type OperationalOutcome,
   applied,
   hasClientHalf,
+  type OperationalContext,
+  type OperationalOutcome,
   resolveClientSourceRoot,
   skipped,
 } from "../operational-context.js";

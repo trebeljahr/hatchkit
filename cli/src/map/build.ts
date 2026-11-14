@@ -15,6 +15,7 @@
 
 import type { MapExtras } from "./extras.js";
 import {
+  countTiers,
   type FleetFacts,
   type FleetMap,
   type Health,
@@ -31,7 +32,6 @@ import {
   RELATION_ORDER,
   type Tier,
   type Zone,
-  countTiers,
 } from "./model.js";
 import { humanizeCron } from "./schedule.js";
 

@@ -143,4 +143,4 @@ export function validateOrgPlatform(platform: SigningPlatform): OrgValidationRes
   return { ok: reasons.length === 0, reasons };
 }
 
-export type { OrgApple, OrgGoogle, OrgAzure, SigningOrgConfig };
+export type { OrgApple, OrgAzure, OrgGoogle, SigningOrgConfig };

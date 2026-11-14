@@ -47,7 +47,7 @@ import {
 import { deployVerificationRetrofits } from "../scaffold/deploy-verification.js";
 import { e2eS3Retrofits } from "../scaffold/e2e-s3.js";
 import { generateCoolifyEnv, generateTfvars, resolveStackDir } from "../scaffold/infra.js";
-import { type ProjectManifest, findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
+import { findManifestDirUpward, type ProjectManifest, readManifest } from "../scaffold/manifest.js";
 import { parseDomain } from "../utils/validate.js";
 
 interface RegenArgs {

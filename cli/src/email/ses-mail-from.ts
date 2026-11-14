@@ -28,13 +28,13 @@ import { ensureDns, ensureSes, getDnsConfig, getSesConfig } from "../config.js";
 import { publishDnsRecordsToCloudflare } from "../provision/cloudflare-dns-publish.js";
 import { sesSendingSubdomain } from "../provision/listmonk-ses.js";
 import {
+  clearSesMailFromDomain,
+  decideMailFromPlan,
+  getSesMailFromDomain,
   SES_MAIL_FROM_SPF,
   type SesAuth,
   type SesMailFromBehaviorOnMxFailure,
   type SesMailFromState,
-  clearSesMailFromDomain,
-  decideMailFromPlan,
-  getSesMailFromDomain,
   sesMailFromMxTarget,
   sesMailFromSubdomain,
   setSesMailFromDomain,

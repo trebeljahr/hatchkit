@@ -15,7 +15,7 @@
  */
 
 import { dirname, join } from "node:path";
-import { type SetOptions, type SetOutput, set as rawSet } from "@dotenvx/dotenvx";
+import { set as rawSet, type SetOptions, type SetOutput } from "@dotenvx/dotenvx";
 import { ensureIgnoredOnEveryClone } from "./gitignore.js";
 
 /** `@dotenvx/dotenvx`'s `set`, with `.env.keys` gitignored first.

@@ -33,19 +33,19 @@ import { join } from "node:path";
 import {
   CADDYFILE_PATH,
   DEV_CONFIG_DIR,
+  isLocalDevActive,
   LOCAL_DEV_DOMAIN,
   LOCAL_DEV_DOMAIN_WILDCARD,
-  MANAGED_MARKER,
-  PROJECTS_DIR,
-  type TailscaleIdentity,
-  isLocalDevActive,
   localDevDomainFromProjectDomain,
   localDevUrl,
+  MANAGED_MARKER,
   normaliseLocalDevDomain,
+  PROJECTS_DIR,
   projectFragmentPath,
   readCaddyLocalDevDomain,
   readCaddyPort,
   removeProjectFragment,
+  type TailscaleIdentity,
   tailscaleIdentity,
   tailscaleServeTcpTarget,
   writeProjectFragment,
@@ -53,20 +53,20 @@ import {
 import { exec, execOk } from "./utils/exec.js";
 import { assertKeychainAccess } from "./utils/keychain-access.js";
 
+export type { TailscaleIdentity };
 export {
   CADDYFILE_PATH,
   DEV_CONFIG_DIR,
+  isLocalDevActive,
   LOCAL_DEV_DOMAIN,
   LOCAL_DEV_DOMAIN_WILDCARD,
   MANAGED_MARKER,
   PROJECTS_DIR,
-  isLocalDevActive,
   readCaddyLocalDevDomain,
   readCaddyPort,
   tailscaleIdentity,
   tailscaleServeTcpTarget,
 };
-export type { TailscaleIdentity };
 
 export const CADDY_LOG_PATH = join(DEV_CONFIG_DIR, "caddy.log");
 export const CADDY_ERR_LOG_PATH = join(DEV_CONFIG_DIR, "caddy.err.log");

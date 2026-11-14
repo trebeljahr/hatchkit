@@ -59,16 +59,16 @@ import {
 } from "../contract.js";
 import { applyRaycast, raycastPlannedFiles } from "./apply.js";
 
-export * from "./types.js";
 export { applyRaycast, raycastPlannedFiles, raycastResidue } from "./apply.js";
 export {
   findRaycastIdentifierLiterals,
+  type RaycastNames,
   raycastNamesFrom,
   renameRaycastIdentifiers,
   renameRaycastTree,
-  type RaycastNames,
 } from "./rename.js";
 export { stripRaycast, stripRaycastScripts } from "./strip.js";
+export * from "./types.js";
 
 /** What the feature needs, in the words the CLI shows people. */
 export const RAYCAST_PREREQUISITE =

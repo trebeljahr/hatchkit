@@ -19,17 +19,17 @@
  * the manifest's own domain, topology and ports.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Topology } from "../../deploy/routing.js";
 import { clientBuildArgUrls } from "../../scaffold/client-build-args.js";
 import type { ProjectIdentifiers } from "../../scaffold/identifiers.js";
 import { renameStarterIdentifiersAcross } from "../client-core/index.js";
 import {
+  isBinaryAsset,
   RAYCAST_IDENTIFIER_RENAMES,
   RAYCAST_OWNED_PATHS,
   type RaycastRenameTarget,
-  isBinaryAsset,
   raycastRootScripts,
 } from "./types.js";
 

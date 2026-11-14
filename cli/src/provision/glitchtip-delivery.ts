@@ -71,7 +71,7 @@
  * DSN, because create persists it in `.hatchkit.json`.
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { parse as parseDotenv } from "@dotenvx/dotenvx";
 import chalk from "chalk";
@@ -79,17 +79,17 @@ import { getCoolifyConfig, getGlitchtipConfig } from "../config.js";
 import { locateEnvKeysFile, parsePrivateKeyValue } from "../deploy/keys.js";
 import { findServerAppsForProject } from "../deploy/trusted-origins.js";
 import {
-  type ProjectManifest,
   findManifestDirUpward,
+  type ProjectManifest,
   readManifest,
   resolveProjectDir,
 } from "../scaffold/manifest.js";
 import { detectRepoSlug } from "../secrets/push.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { exec } from "../utils/exec.js";
-import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
+import { getSecret, SECRET_KEYS } from "../utils/secrets.js";
 import { type DeferralKind, resolveDeferredSteps } from "./deferrals.js";
-import { CLIENT_DSN_VAR, SENTRY_DSN_KEY, dsnHostMismatch } from "./glitchtip.js";
+import { CLIENT_DSN_VAR, dsnHostMismatch, SENTRY_DSN_KEY } from "./glitchtip.js";
 
 /** What a target holds right now. `hidden` = the key exists but the
  *  credential can't read its value. */

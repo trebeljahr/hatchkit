@@ -74,10 +74,10 @@ import {
   UnsubscribeCommand,
 } from "@aws-sdk/client-sns";
 import bcrypt from "bcryptjs";
-import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { getSecret, SECRET_KEYS, setSecret } from "../utils/secrets.js";
 import {
-  type ListmonkAuth,
   getListmonkSettings,
+  type ListmonkAuth,
   normalizeListmonkUrl,
   putListmonkSetting,
   waitForListmonk,

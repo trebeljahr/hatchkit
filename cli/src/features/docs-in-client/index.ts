@@ -58,11 +58,11 @@
  */
 
 import {
-  type OperationalContext,
-  type OperationalOutcome,
   applied,
   hasClientHalf,
   notDeployedToCoolify,
+  type OperationalContext,
+  type OperationalOutcome,
   skipped,
 } from "../operational-context.js";
 import { renderSiteBasicsRobotsRoute } from "../site-basics/index.js";
@@ -74,9 +74,9 @@ import {
   DOCS_SCRIPT_REL_PATH,
   DOCS_WORKFLOW_REL_PATH,
   type DocsLayout,
-  ROBOTS_ROUTE_REL_PATH,
   docsConfigRelPath,
   docsLayout,
+  ROBOTS_ROUTE_REL_PATH,
 } from "./paths.js";
 import {
   renderDocsBuildScript,
@@ -94,9 +94,8 @@ import {
   workflowHasDocsCheck,
 } from "./retrofit.js";
 
-export { auditDocsOutput, formatDocsViolations } from "./audit.js";
 export type { DocsAuditInput, DocsAuditResult, DocsViolation, DocsViolationCode } from "./audit.js";
-export { DOCS_AUDIT_RULES, DOCS_VIOLATION_CODES, cleanDocsTree } from "./rules.js";
+export { auditDocsOutput, formatDocsViolations } from "./audit.js";
 export * from "./paths.js";
 export {
   docsVerifyWorkflowStep,
@@ -106,6 +105,7 @@ export {
   renderRobotsRoute,
   sitemapsInRobotsRoute,
 } from "./render.js";
+export type { DocsSiteConfigAddress } from "./retrofit.js";
 export {
   dockerfileHasDocsStep,
   docsSiteConfigAddress,
@@ -114,7 +114,7 @@ export {
   upgradeWorkflowDocsCheck,
   workflowHasDocsCheck,
 } from "./retrofit.js";
-export type { DocsSiteConfigAddress } from "./retrofit.js";
+export { cleanDocsTree, DOCS_AUDIT_RULES, DOCS_VIOLATION_CODES } from "./rules.js";
 
 /** Where the docs go, for a caller that does not want the defaults.
  *

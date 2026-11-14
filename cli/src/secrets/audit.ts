@@ -18,14 +18,7 @@ import type { AdapterAuditEntry, RotationAudit } from "./types.js";
 /** Suffix patterns commonly used for credential env-var names. Used
  *  by `redactValues` to mark anything keyed under one of these as a
  *  secret, regardless of how its value looks. */
-const CREDENTIAL_KEY_SUFFIXES = [
-  "_SECRET",
-  "_KEY",
-  "_TOKEN",
-  "_PASSWORD",
-  "_DSN",
-  "_PRIVATE_KEY",
-];
+const CREDENTIAL_KEY_SUFFIXES = ["_SECRET", "_KEY", "_TOKEN", "_PASSWORD", "_DSN", "_PRIVATE_KEY"];
 
 /** Probably-a-secret value heuristics, applied to ANY string value
  *  (not just credential-named keys). The bar is intentionally loose —
@@ -192,7 +185,9 @@ function renderEntry(entry: AdapterAuditEntry, dryRun: boolean): void {
 
   const revokeText =
     entry.oldRevoked === "not-applicable"
-      ? chalk.dim("n/a (no upstream credential; the old value stops working once the app redeploys)")
+      ? chalk.dim(
+          "n/a (no upstream credential; the old value stops working once the app redeploys)",
+        )
       : dryRun
         ? chalk.dim("not run (dry run)")
         : entry.oldRevoked === true

@@ -34,8 +34,8 @@ import {
   patchManifest,
   readManifestWithMigrationInfo,
 } from "../../scaffold/manifest.js";
-import { CloudflareApi, type CfTokenPolicy } from "../../utils/cloudflare-api.js";
-import { SECRET_KEYS, getCloudflareTokenValue, getSecret } from "../../utils/secrets.js";
+import { type CfTokenPolicy, CloudflareApi } from "../../utils/cloudflare-api.js";
+import { getCloudflareTokenValue, getSecret, SECRET_KEYS } from "../../utils/secrets.js";
 import { readEncryptedProd } from "../env-writer.js";
 import { register } from "../registry.js";
 import type {
@@ -141,7 +141,11 @@ function resolveAccountId(ctx: RotationContext, env: Record<string, string>): st
 
 /** The project's own S3 endpoint (what the runtime talks to), else the
  *  account endpoint for the token's jurisdiction. */
-function endpointFor(accountId: string, jurisdiction: Jurisdiction, projectEndpoint?: string): string {
+function endpointFor(
+  accountId: string,
+  jurisdiction: Jurisdiction,
+  projectEndpoint?: string,
+): string {
   if (projectEndpoint) return projectEndpoint;
   const sub = jurisdiction === "default" ? "" : `.${jurisdiction}`;
   return `https://${accountId}${sub}.r2.cloudflarestorage.com`;
@@ -152,7 +156,9 @@ function endpointFor(accountId: string, jurisdiction: Jurisdiction, projectEndpo
 function scopeFromPolicies(
   policies: CfTokenPolicy[] | undefined,
   accountId: string,
-): { buckets: string[]; jurisdiction: Jurisdiction; permissions: "read" | "read-write" } | undefined {
+):
+  | { buckets: string[]; jurisdiction: Jurisdiction; permissions: "read" | "read-write" }
+  | undefined {
   if (!policies || policies.length === 0) return undefined;
   const buckets: string[] = [];
   let jurisdiction: Jurisdiction = "default";
@@ -173,7 +179,11 @@ function scopeFromPolicies(
     }
   }
   if (buckets.length === 0) return undefined;
-  return { buckets: [...new Set(buckets)].sort(), jurisdiction, permissions: write ? "read-write" : "read" };
+  return {
+    buckets: [...new Set(buckets)].sort(),
+    jurisdiction,
+    permissions: write ? "read-write" : "read",
+  };
 }
 
 /** Manifest-derived scope: the per-bucket entry a `R2_<KEY>_*` name

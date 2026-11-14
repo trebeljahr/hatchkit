@@ -19,13 +19,13 @@ import { resolve } from "node:path";
 import { ListObjectsV2Command } from "@aws-sdk/client-s3";
 import chalk from "chalk";
 import ora from "../utils/spinner.js";
-import { type AssetsMode, type BucketKind, type ResolvedS3Config, loadS3Config } from "./env.js";
+import { type AssetsMode, type BucketKind, loadS3Config, type ResolvedS3Config } from "./env.js";
 import {
-  type MirrorEndpointS3,
-  type MirrorResult,
   buildS3Client,
   ensureBucket,
   formatBytes,
+  type MirrorEndpointS3,
+  type MirrorResult,
   mirror,
 } from "./mirror.js";
 

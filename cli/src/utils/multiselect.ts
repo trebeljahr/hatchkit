@@ -14,8 +14,6 @@
  * next prompt, which is the same convention as web forms.
  */
 import {
-  Separator,
-  ValidationError,
   createPrompt,
   isDownKey,
   isEnterKey,
@@ -24,11 +22,13 @@ import {
   isTabKey,
   isUpKey,
   makeTheme,
+  Separator,
   useKeypress,
   useMemo,
   usePagination,
   usePrefix,
   useState,
+  ValidationError,
 } from "@inquirer/core";
 import figures from "@inquirer/figures";
 import chalk from "chalk";

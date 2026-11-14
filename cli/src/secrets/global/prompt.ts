@@ -111,11 +111,15 @@ export function checkPasteShape(value: string, shape: PasteShape): { ok: boolean
   if (inner > 0) problems.push(`${count(inner, "space")} inside`);
   const quotes = [...core].filter((c) => QUOTES.test(c)).length;
   if (quotes > 0) problems.push(`${count(quotes, "quote character")}`);
-  const others = [...new Set([...core].filter((c) => !/\s/.test(c) && !QUOTES.test(c) && !shape.chars.test(c)))];
+  const others = [
+    ...new Set([...core].filter((c) => !/\s/.test(c) && !QUOTES.test(c) && !shape.chars.test(c))),
+  ];
   if (others.length > 0) {
     // Characters outside the alphabet are never part of a valid value,
     // so naming them reveals nothing; a letter or digit is never named.
-    problems.push(`characters outside ${shape.charsIn}: ${others.map((c) => JSON.stringify(c)).join(" ")}`);
+    problems.push(
+      `characters outside ${shape.charsIn}: ${others.map((c) => JSON.stringify(c)).join(" ")}`,
+    );
   }
   if (shape.length !== undefined && value.length !== shape.length) {
     problems.push(`${value.length} characters, expected ${shape.length}`);
@@ -130,7 +134,10 @@ export function checkPasteShape(value: string, shape: PasteShape): { ok: boolean
   const label = shape.echo && problems.length === 0 ? `${shape.what} ${value}` : shape.what;
   if (value.length === 0) return { ok: false, line: `${chalk.red("✘")} ${shape.what}: empty` };
   if (problems.length === 0) {
-    return { ok: true, line: `${chalk.green("✔")} ${label}: ${count(value.length, "character")}, ${shape.charsIn}` };
+    return {
+      ok: true,
+      line: `${chalk.green("✔")} ${label}: ${count(value.length, "character")}, ${shape.charsIn}`,
+    };
   }
   const expected =
     shape.length !== undefined ? `${shape.length} ${shape.charsIn}` : `${shape.charsIn} only`;

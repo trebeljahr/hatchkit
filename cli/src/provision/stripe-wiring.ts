@@ -23,7 +23,7 @@
 import { join } from "node:path";
 import chalk from "chalk";
 import type { LedgerStep } from "../utils/run-ledger.js";
-import { type DeferredStep, classifyOptionalStepError, deferralForStripe } from "./deferrals.js";
+import { classifyOptionalStepError, type DeferredStep, deferralForStripe } from "./deferrals.js";
 
 export interface WireStripeArgs {
   projectName: string;

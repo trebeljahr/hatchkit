@@ -29,7 +29,7 @@ import { renameStarterIdentifiers, starterFilesUnder } from "../client-core/inde
 import type { FeatureContext, FeaturePlanContext } from "../contract.js";
 import { applyDeviceGrant } from "../device-grant/index.js";
 import { type RaycastNames, raycastNamesFrom, renameRaycastIdentifiers } from "./rename.js";
-import { RAYCAST_OWNED_PATHS, isBinaryAsset, raycastRootScripts } from "./types.js";
+import { isBinaryAsset, RAYCAST_OWNED_PATHS, raycastRootScripts } from "./types.js";
 
 /** Monorepo root → the starter template, four hops up from the compiled file. */
 const MONOREPO_ROOT = resolveAssetRoot();

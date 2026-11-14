@@ -37,7 +37,7 @@
  * Neither value is a secret: both ship in every page the site serves.
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import { findManifestDirUpward } from "../scaffold/manifest.js";

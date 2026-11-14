@@ -45,14 +45,14 @@ import { confirmPastedSecret } from "../config.js";
 import { type StripeClient, StripeError, stripeRequest } from "../paid-unlock/core.js";
 import type { LedgerStep } from "../utils/run-ledger.js";
 import {
-  SECRET_KEYS,
-  type StripeWebhookEndpoint,
   deleteSecret,
   getSecret,
+  SECRET_KEYS,
+  type StripeWebhookEndpoint,
   setSecret,
 } from "../utils/secrets.js";
-import { type Step, runSteps } from "../utils/step-runner.js";
-import { type StripeAccounts, ensureStripeForProject } from "./stripe-setup.js";
+import { runSteps, type Step } from "../utils/step-runner.js";
+import { ensureStripeForProject, type StripeAccounts } from "./stripe-setup.js";
 import { resolveSyncClient, resolveWebhookClients } from "./stripe-sync-cli.js";
 
 /** CHANGE_ME_<KEY> values the starter looks for to log a "Stripe is

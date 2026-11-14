@@ -18,8 +18,8 @@ import chalk from "chalk";
 import { loadProjectEnv } from "../assets/env.js";
 import { locateEnvKeysFile, locateEnvProductionFile } from "../deploy/keys.js";
 import {
-  type EnvPair,
   devLocalEnvPath,
+  type EnvPair,
   resolveEnvTarget,
   writeDevEnv,
   writeProdEnv,

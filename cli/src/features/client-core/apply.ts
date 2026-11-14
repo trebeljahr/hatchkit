@@ -30,15 +30,15 @@ import { resolveAssetRoot } from "../../utils/asset-root.js";
  * replaced wholesale, so a later CLI version cannot rewrite it in place.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, posix, relative, sep } from "node:path";
 import { substituteIdentifierTokens } from "../../scaffold/identifiers.js";
 import type { FeatureContext } from "../contract.js";
 import {
-  CLIENT_CORE_CHECKLIST_PATH,
-  type ManualWiring,
   anchoredBlocks,
+  CLIENT_CORE_CHECKLIST_PATH,
   insertAfter,
+  type ManualWiring,
   renderClientCoreChecklist,
 } from "./add.js";
 import { hasMarkedBlocks, stripMarkedBlocks } from "./markers.js";

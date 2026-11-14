@@ -46,11 +46,7 @@ export function rollbackAccount(project: string, adapter: string): string {
  *  `adapter.captureOld(ctx)` returns and BEFORE any mutation, so a
  *  crash between capture and createNew leaves an authoritative
  *  recovery blob. Overwrites any prior blob for the same key. */
-export async function saveRollback(
-  project: string,
-  adapter: string,
-  old: OldCred,
-): Promise<void> {
+export async function saveRollback(project: string, adapter: string, old: OldCred): Promise<void> {
   const blob: RollbackBlob = {
     version: ROLLBACK_VERSION,
     timestamp: new Date().toISOString(),

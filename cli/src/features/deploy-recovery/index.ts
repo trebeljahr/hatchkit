@@ -24,15 +24,16 @@
  */
 
 import {
+  applied,
+  hasClientHalf,
   type OperationalContext,
   type OperationalOutcome,
   type PathExists,
-  applied,
-  hasClientHalf,
   resolveClientDir,
   resolveSourceRoot,
   skipped,
 } from "../operational-context.js";
+import type { ClientSourceOptions } from "./client-sources.js";
 import {
   buildInfoWriterSource,
   chunkReloadSource,
@@ -43,7 +44,6 @@ import {
   globalErrorBoundarySource,
   versionCheckSource,
 } from "./client-sources.js";
-import type { ClientSourceOptions } from "./client-sources.js";
 import { applyLayoutMount } from "./layout.js";
 import {
   CHUNK_RELOAD_STORAGE_KEY,

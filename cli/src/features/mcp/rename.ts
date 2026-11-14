@@ -11,7 +11,7 @@
  * table from drifting away from the files it renames.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectIdentifiers } from "../../scaffold/identifiers.js";
 import {

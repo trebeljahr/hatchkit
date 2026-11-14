@@ -43,20 +43,20 @@
  */
 
 import { readWranglerConfig } from "../scaffold/cloudflare-mode.js";
-import { type ProjectManifest, manifestHostnames } from "../scaffold/manifest.js";
+import { manifestHostnames, type ProjectManifest } from "../scaffold/manifest.js";
 import type { CfWorkerRoute, CloudflareApi } from "../utils/cloudflare-api.js";
 import {
-  type EdgeContext,
   diffEdge,
+  type EdgeContext,
   findHostRedirectRule,
   patternHost,
   preflightEdge,
 } from "./client-host.js";
 import {
   ACME_CHALLENGE_PATH,
+  defaultClientWorkerName,
   type EdgePlan,
   type EdgeRoute,
-  defaultClientWorkerName,
   normaliseOriginPaths,
   originRoutePattern,
 } from "./routing.js";

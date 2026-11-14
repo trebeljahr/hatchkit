@@ -31,20 +31,20 @@
 
 import { getListmonkConfig, getStore } from "../../config.js";
 import {
-  type ListmonkAuth,
-  type ListmonkProfile,
   createListmonkApiUser,
   deleteListmonkUser,
   getListmonkProfile,
+  type ListmonkAuth,
+  type ListmonkProfile,
   normalizeListmonkUrl,
 } from "../../provision/listmonk.js";
 import { SECRET_KEYS, setSecret } from "../../utils/secrets.js";
 import { redactErrorMessage } from "../audit.js";
 import type { NewCred, OldCred, VerifyOutcome } from "../types.js";
 import {
+  authenticatedLine,
   LISTMONK_TOKEN_SHAPE,
   LISTMONK_USER_SHAPE,
-  authenticatedLine,
   promptPasted,
   promptYesNo,
   rejectedLine,
@@ -145,7 +145,9 @@ async function probeOnce(auth: ListmonkAuth): Promise<Probe> {
     return { kind: "accepted", profile: await getListmonkProfile(auth) };
   } catch (err) {
     const detail = redactErrorMessage((err as Error).message);
-    return /HTTP 40[13]\b/.test(detail) ? { kind: "rejected", detail } : { kind: "unreachable", detail };
+    return /HTTP 40[13]\b/.test(detail)
+      ? { kind: "rejected", detail }
+      : { kind: "unreachable", detail };
   }
 }
 
@@ -162,7 +164,9 @@ async function probeUntil(auth: ListmonkAuth, want: "accepted" | "rejected"): Pr
 }
 
 function remedy(profile: ListmonkProfile | undefined): string[] {
-  const who = profile ? `API user ${profile.username} (role ${profile.userRoleName || "?"})` : "The API user";
+  const who = profile
+    ? `API user ${profile.username} (role ${profile.userRoleName || "?"})`
+    : "The API user";
   return [
     `${who} lacks users:get and users:manage, so it cannot create its replacement. Do not add those to its role: a leaked token could then create admins. Instead:`,
     "  1. ListMonk → Admin → Users → New: type API, role Super Admin (or one with users:get + users:manage).",
@@ -192,12 +196,16 @@ function storedPairRemedy(
   probe: Exclude<Probe, { kind: "accepted" }>,
 ): string[] {
   if (probe.kind === "unreachable") {
-    return [`ListMonk ${url} did not answer GET /api/profile: ${probe.detail}. Nothing was changed; run the command again once it answers.`];
+    return [
+      `ListMonk ${url} did not answer GET /api/profile: ${probe.detail}. Nothing was changed; run the command again once it answers.`,
+    ];
   }
   const head = `The stored ListMonk pair (user ${apiUser}) does not authenticate: ${probe.detail}.`;
   const old = ctx.resumeOld?.handle;
   if (!old) {
-    return [`${head} Store a working API user with \`hatchkit config add listmonk\`, then run the rotation.`];
+    return [
+      `${head} Store a working API user with \`hatchkit config add listmonk\`, then run the rotation.`,
+    ];
   }
   const who = old.username || "the old user";
   return [
@@ -227,17 +235,27 @@ export const listmonkRotator: GlobalRotator = {
     const s = scratch(ctx);
     const cfg = await getListmonkConfig();
     if (!cfg) {
-      return { ready: false, notes: [], remedy: ["ListMonk is not configured. Run `hatchkit config add listmonk`."] };
+      return {
+        ready: false,
+        notes: [],
+        remedy: ["ListMonk is not configured. Run `hatchkit config add listmonk`."],
+      };
     }
     s.url = cfg.url;
     s.oldToken = cfg.apiToken;
     const stored = await probeOnce(cfg);
     if (stored.kind !== "accepted") {
-      return { ready: false, notes: [], remedy: storedPairRemedy(ctx, cfg.url, cfg.apiUser, stored) };
+      return {
+        ready: false,
+        notes: [],
+        remedy: storedPairRemedy(ctx, cfg.url, cfg.apiUser, stored),
+      };
     }
     const profile = stored.profile;
     s.old = profile;
-    const notes = [`ListMonk ${cfg.url}: API user ${profile.username}, role ${profile.userRoleName || profile.userRoleId}.`];
+    const notes = [
+      `ListMonk ${cfg.url}: API user ${profile.username}, role ${profile.userRoleName || profile.userRoleId}.`,
+    ];
     if (canManageUsers(profile)) {
       notes.push("The API user's role can manage users; no admin credential needed.");
       return { ready: true, notes };
@@ -255,14 +273,18 @@ export const listmonkRotator: GlobalRotator = {
       remedy: [why, ...remedy(profile).slice(1)],
     });
     const apiUser = await promptPasted("One-off ListMonk admin API user name", LISTMONK_USER_SHAPE);
-    if (apiUser === undefined) return refuse("The pasted user name did not have the expected shape (see above).");
+    if (apiUser === undefined)
+      return refuse("The pasted user name did not have the expected shape (see above).");
     const apiToken = await promptPasted("One-off ListMonk admin API token", LISTMONK_TOKEN_SHAPE);
-    if (apiToken === undefined) return refuse("The pasted token did not have the expected shape (see above).");
+    if (apiToken === undefined)
+      return refuse("The pasted token did not have the expected shape (see above).");
 
     const admin: ListmonkAuth = { url: cfg.url, apiUser, apiToken };
     const probe = await probeOnce(admin);
     if (probe.kind !== "accepted") {
-      console.log(`  ${rejectedLine(`ListMonk did not accept ${apiUser} with that token: ${probe.detail}`)}`);
+      console.log(
+        `  ${rejectedLine(`ListMonk did not accept ${apiUser} with that token: ${probe.detail}`)}`,
+      );
       return refuse(
         probe.kind === "rejected"
           ? `ListMonk rejected ${apiUser} with the pasted token. Paste the token that ListMonk showed when it created ${apiUser}.`
@@ -326,12 +348,19 @@ export const listmonkRotator: GlobalRotator = {
   async verify(ctx): Promise<VerifyOutcome> {
     const s = scratch(ctx);
     if (!s.fresh || !s.url) return "failed";
-    const probe = await probeUntil({ url: s.url, apiUser: s.fresh.username, apiToken: s.fresh.token }, "accepted");
+    const probe = await probeUntil(
+      { url: s.url, apiUser: s.fresh.username, apiToken: s.fresh.token },
+      "accepted",
+    );
     if (probe.kind !== "accepted") {
-      console.error(`  · listmonk verify: ${s.fresh.username} does not authenticate: ${probe.detail}`);
+      console.error(
+        `  · listmonk verify: ${s.fresh.username} does not authenticate: ${probe.detail}`,
+      );
       return "failed";
     }
-    return probe.profile.id === s.fresh.id && probe.profile.userRoleId === s.old?.userRoleId ? "ok" : "failed";
+    return probe.profile.id === s.fresh.id && probe.profile.userRoleId === s.old?.userRoleId
+      ? "ok"
+      : "failed";
   },
 
   async discard(ctx, fresh) {
@@ -339,9 +368,11 @@ export const listmonkRotator: GlobalRotator = {
     const id = Number(fresh.handle.userId);
     // The replacement cannot be trusted to delete itself; use the admin,
     // or the old user, which is still alive at this point.
-    const auth = s.admin ?? (s.old && s.url && s.oldToken
-      ? { url: s.url, apiUser: s.old.username, apiToken: s.oldToken }
-      : undefined);
+    const auth =
+      s.admin ??
+      (s.old && s.url && s.oldToken
+        ? { url: s.url, apiUser: s.old.username, apiToken: s.oldToken }
+        : undefined);
     if (!auth || !Number.isFinite(id)) return;
     await deleteListmonkUser(auth, id);
   },
@@ -386,7 +417,10 @@ export const listmonkRotator: GlobalRotator = {
     s.url = cfg.url;
     s.fresh = { id: p.id, username: p.username, token: cfg.apiToken };
     if (newHandle.userId && String(p.id) !== newHandle.userId) {
-      s.adopted = { id: newHandle.userId, username: newHandle.username || `id ${newHandle.userId}` };
+      s.adopted = {
+        id: newHandle.userId,
+        username: newHandle.username || `id ${newHandle.userId}`,
+      };
     }
     return {
       values: { LISTMONK_API_USER: p.username, LISTMONK_API_TOKEN: cfg.apiToken },
@@ -416,13 +450,22 @@ export const listmonkRotator: GlobalRotator = {
     }
 
     // A delete changes ListMonk's API-user cache: prove both sides.
-    const freshProbe = await probeUntil({ url: s.url, apiUser: fresh.username, apiToken: fresh.token }, "accepted");
+    const freshProbe = await probeUntil(
+      { url: s.url, apiUser: fresh.username, apiToken: fresh.token },
+      "accepted",
+    );
     const oldToken = old.values.LISTMONK_API_TOKEN;
-    const oldProbe = oldToken && old.handle.username
-      ? await probeUntil({ url: s.url, apiUser: old.handle.username, apiToken: oldToken }, "rejected")
-      : undefined;
+    const oldProbe =
+      oldToken && old.handle.username
+        ? await probeUntil(
+            { url: s.url, apiUser: old.handle.username, apiToken: oldToken },
+            "rejected",
+          )
+        : undefined;
     const newWorks = freshProbe.kind === "accepted" && freshProbe.profile.id === fresh.id;
-    const oldRevoked = oldProbe ? oldProbe.kind === "rejected" || (deleted && oldProbe.kind === "unreachable") : deleted;
+    const oldRevoked = oldProbe
+      ? oldProbe.kind === "rejected" || (deleted && oldProbe.kind === "unreachable")
+      : deleted;
     if (newWorks && oldRevoked) {
       if (deleteError) s.orphan = { name: oldName, id: old.handle.userId, error: deleteError };
       return;
@@ -453,7 +496,9 @@ export const listmonkRotator: GlobalRotator = {
         newWorks: true,
         oldStatus,
         newStatus,
-        recovery: [`ListMonk did not answer the check. Run \`${RESUME}\` to check again${oldRevoked ? "" : " and delete the old user"}.`],
+        recovery: [
+          `ListMonk did not answer the check. Run \`${RESUME}\` to check again${oldRevoked ? "" : " and delete the old user"}.`,
+        ],
       });
     }
     if (newWorks) {
@@ -480,7 +525,11 @@ export const listmonkRotator: GlobalRotator = {
           role,
           `writes that pair into every consumer that holds ${fresh.username} and deletes ${fresh.username} (id ${fresh.id}).`,
         ),
-        ...(oldRevoked ? [] : [`  5. Then delete ${oldName} (id ${old.handle.userId}) in ListMonk → Admin → Users: it still exists.`]),
+        ...(oldRevoked
+          ? []
+          : [
+              `  5. Then delete ${oldName} (id ${old.handle.userId}) in ListMonk → Admin → Users: it still exists.`,
+            ]),
       ],
       // --resume swaps the dead pair for the keychain's working one.
       consumersHold: {
@@ -513,8 +562,14 @@ export const listmonkRotator: GlobalRotator = {
     }
     if (!s.admin || !s.adminProfile) return lines;
     const name = s.adminProfile.username;
-    if (!ctx.interactive || !(await promptYesNo(`Delete the one-off ListMonk admin user ${name} now?`, true))) {
-      return [...lines, `Delete the one-off ListMonk admin user ${name} in ListMonk → Admin → Users.`];
+    if (
+      !ctx.interactive ||
+      !(await promptYesNo(`Delete the one-off ListMonk admin user ${name} now?`, true))
+    ) {
+      return [
+        ...lines,
+        `Delete the one-off ListMonk admin user ${name} in ListMonk → Admin → Users.`,
+      ];
     }
     try {
       await deleteListmonkUser(s.admin, s.adminProfile.id);
@@ -527,7 +582,10 @@ export const listmonkRotator: GlobalRotator = {
     }
     // Deleting a user rebuilds ListMonk's API-user cache: check again.
     if (s.fresh && s.url) {
-      const probe = await probeUntil({ url: s.url, apiUser: s.fresh.username, apiToken: s.fresh.token }, "accepted");
+      const probe = await probeUntil(
+        { url: s.url, apiUser: s.fresh.username, apiToken: s.fresh.token },
+        "accepted",
+      );
       if (probe.kind !== "accepted" || probe.profile.id !== s.fresh.id) {
         lines.push(
           `After deleting ${name}, ${s.fresh.username} (id ${s.fresh.id}) no longer authenticates (${probe.kind === "accepted" ? `answers as id ${probe.profile.id}` : probe.detail}). Check ListMonk → Admin → Users before redeploying.`,

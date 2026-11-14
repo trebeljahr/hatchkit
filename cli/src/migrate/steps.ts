@@ -29,13 +29,13 @@ import {
 import { resolveCarriedForwarding } from "../email/presets.js";
 import { probeEmailRouting, summarizeEmailRoutingProbe } from "../email/routing-access.js";
 import { publishDnsRecordsToCloudflare } from "../provision/cloudflare-dns-publish.js";
-import { sesSendingSubdomain } from "../provision/listmonk-ses.js";
 import {
-  type ListmonkAuth,
   getListmonkSettings,
+  type ListmonkAuth,
   putListmonkSetting,
   waitForListmonk,
 } from "../provision/listmonk.js";
+import { sesSendingSubdomain } from "../provision/listmonk-ses.js";
 import {
   accountIdFromR2Endpoint,
   defaultBucketHostname,
@@ -45,35 +45,35 @@ import {
   reconcileAssetsCorsFromManifest,
 } from "../provision/s3-buckets.js";
 import {
-  type ManualNotificationTopic,
-  SES_FEEDBACK_TYPES,
-  type SesFeedbackAws,
-  type SesFeedbackListmonk,
-  type SesFeedbackType,
-  type WebhookCredentials,
+  createSesDomain,
+  deleteSesDomain,
+  getSesDomain,
+  SES_MAIL_FROM_SPF,
+  type SesAuth,
+  sesMailFromMxTarget,
+  sesMailFromSubdomain,
+  setSesMailFromDomain,
+} from "../provision/ses.js";
+import {
   copyIdentityNotificationTopics,
   createSesFeedbackAws,
   createSesFeedbackListmonk,
   ensureSesFeedback,
   ensureWebhookCredentials,
   getNotificationAttributesCommand,
+  type ManualNotificationTopic,
   renderCopyTopicsLines,
   renderSesFeedbackLines,
+  SES_FEEDBACK_TYPES,
+  type SesFeedbackAws,
+  type SesFeedbackListmonk,
+  type SesFeedbackType,
   setNotificationTopicCommand,
+  type WebhookCredentials,
 } from "../provision/ses-feedback.js";
-import {
-  SES_MAIL_FROM_SPF,
-  type SesAuth,
-  createSesDomain,
-  deleteSesDomain,
-  getSesDomain,
-  sesMailFromMxTarget,
-  sesMailFromSubdomain,
-  setSesMailFromDomain,
-} from "../provision/ses.js";
 import { type ProjectManifest, patchManifest, readManifest } from "../scaffold/manifest.js";
 import { CloudflareApi, isEmailDestinationVerified } from "../utils/cloudflare-api.js";
-import { type StripeWebhookEndpoint, getCloudflareTokenValue } from "../utils/secrets.js";
+import { getCloudflareTokenValue, type StripeWebhookEndpoint } from "../utils/secrets.js";
 import { readSesFromEnv, rewriteFromAddress, rewriteSesFromEnv } from "./ses-env.js";
 
 // ---------------------------------------------------------------------------

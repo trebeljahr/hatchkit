@@ -57,7 +57,7 @@ import {
 import { CloudflareApi, type R2CorsRule } from "../utils/cloudflare-api.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { locateEnvFile, resolveEnvFileTarget, resolveEnvSearchRoot } from "../utils/env-files.js";
-import { SECRET_KEYS, deleteSecret, getCloudflareTokenValue, getSecret } from "../utils/secrets.js";
+import { deleteSecret, getCloudflareTokenValue, getSecret, SECRET_KEYS } from "../utils/secrets.js";
 import ora from "../utils/spinner.js";
 import { readEnvKeys } from "./write-env.js";
 

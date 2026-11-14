@@ -21,10 +21,10 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import {
-  type TerraformTokenApi,
-  type TerraformTokenGrant,
   accountResource,
   mintTerraformToken,
+  type TerraformTokenApi,
+  type TerraformTokenGrant,
   zoneResource,
 } from "../deploy/terraform-token.js";
 import { exec, execStream } from "../utils/exec.js";

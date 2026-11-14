@@ -107,7 +107,8 @@ const localSecretsRotator: ProviderRotator = {
     const fresh = new Map<string, string>();
     const values: Record<string, string> = {};
     for (const name of presentKeys(ctx)) {
-      const group = old[name] !== undefined ? `value:${old[name]}` : AUTH_ALIASES.has(name) ? "auth" : name;
+      const group =
+        old[name] !== undefined ? `value:${old[name]}` : AUTH_ALIASES.has(name) ? "auth" : name;
       let value = fresh.get(group);
       if (!value) {
         value = randomBytes(32).toString("hex");

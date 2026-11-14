@@ -28,8 +28,8 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   statSync,
   writeFileSync,
@@ -84,16 +84,16 @@ import {
   DESKTOP_SCRIPTS,
   substituteDesktopFiles,
 } from "./desktop.js";
-import { DEV_LAUNCHER_LIB_FILES, applyDevLauncher } from "./dev-launcher.js";
-import { type ProjectIdentifiers, legacyIdentifiers } from "./identifiers.js";
-import { LINT_GATE_FILES, applyLintGate } from "./lint-gate.js";
+import { applyDevLauncher, DEV_LAUNCHER_LIB_FILES } from "./dev-launcher.js";
+import { legacyIdentifiers, type ProjectIdentifiers } from "./identifiers.js";
+import { applyLintGate, LINT_GATE_FILES } from "./lint-gate.js";
 import { NEWSLETTER_LISTMONK_REL_PATH, retrofitListmonkTxFrom } from "./listmonk-tx-from.js";
 import { EMAIL_SERVICE_REL_PATH, retrofitListmonkTxMode } from "./listmonk-tx-mode.js";
 import {
-  MANIFEST_FILENAME,
-  type ProjectManifest,
   findManifestDirUpward,
   logManifestMigrationNotes,
+  MANIFEST_FILENAME,
+  type ProjectManifest,
   readManifestWithMigrationInfo,
   writeManifest,
 } from "./manifest.js";
@@ -105,16 +105,16 @@ import {
 import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import { setPackageJsonScript } from "./pkg-json.js";
 import {
+  retrofitServerErrorScrub,
   SENTRY_OPTIONS_REL_PATH,
   SENTRY_OPTIONS_SDK_MAJOR,
   SERVER_INSTRUMENT_REL_PATH,
-  retrofitServerErrorScrub,
 } from "./server-error-scrub.js";
 import {
-  STATIC_EXPORT_MARKER,
   applyPorts,
   flipNextConfigToStaticExport,
   rewriteFile,
+  STATIC_EXPORT_MARKER,
 } from "./starter-files.js";
 
 // Same derivation as scaffold/app.ts — STARTER_ROOT lives next to the
@@ -138,6 +138,7 @@ function identifiersFor(manifest: ProjectManifest): ProjectIdentifiers {
 }
 
 export { SUPPORTED_ADDITIONS } from "../features/additions.js";
+
 import { SUPPORTED_ADDITIONS } from "../features/additions.js";
 
 /**

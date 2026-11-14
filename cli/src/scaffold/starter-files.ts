@@ -10,7 +10,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectConfig } from "../prompts.js";
 import type { ProjectPorts } from "../utils/ports.js";
-import { DEV_LAUNCHER_REL_PATH, applyDevLauncherPorts } from "./dev-launcher.js";
+import { applyDevLauncherPorts, DEV_LAUNCHER_REL_PATH } from "./dev-launcher.js";
 import { nativeClientOrigins } from "./native-origins.js";
 import {
   readPackageJsonScript,

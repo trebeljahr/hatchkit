@@ -14,9 +14,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import chalk from "chalk";
-import { type StripeClient, parseUnlockConfig } from "../paid-unlock/core.js";
+import { parseUnlockConfig, type StripeClient } from "../paid-unlock/core.js";
 import { MANIFEST_FILENAME, patchManifest, readManifest } from "../scaffold/manifest.js";
-import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { getSecret, SECRET_KEYS, setSecret } from "../utils/secrets.js";
 import { type StripeMode, type StripeSyncResult, syncStripe } from "./stripe-sync.js";
 import { STRIPE_USAGE } from "./stripe-usage.js";
 

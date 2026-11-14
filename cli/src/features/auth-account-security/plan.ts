@@ -14,8 +14,8 @@
 import { optionsNeedingEmail, specFor } from "./options.js";
 import { assertPluginOrder, clientPluginsFor, serverPluginsFor } from "./plugin-order.js";
 import {
-  AUTH_SECURITY_OPTIONS,
   type ApplyAuthSecurityOptions,
+  AUTH_SECURITY_OPTIONS,
   type AuthSecurityOption,
   type AuthSecurityPlan,
 } from "./types.js";

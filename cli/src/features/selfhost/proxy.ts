@@ -34,9 +34,9 @@
 import type { OperationalProject } from "../operational-context.js";
 import { hasServerHalf } from "../operational-context.js";
 import {
+  ownedFileHeader,
   PROXY_CONFIG_REL,
   type SelfHostOptions,
-  ownedFileHeader,
   selfHostPlan,
 } from "./compose.js";
 

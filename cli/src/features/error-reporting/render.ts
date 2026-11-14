@@ -35,13 +35,13 @@
 
 import type { OperationalProject } from "../operational-context.js";
 import {
-  REPORT_FIELDS,
-  type ReportField,
   allowedBreadcrumbs,
   allowedContexts,
   allowedEventKeys,
   allowedRequestHeaders,
   allowedTags,
+  REPORT_FIELDS,
+  type ReportField,
 } from "./allowlist.js";
 
 /**

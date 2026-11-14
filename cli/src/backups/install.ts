@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  DEFAULT_BACKUP_SCHEDULE,
   backupCredentials,
   backupHost,
   backupHostExec,
   backupProvider,
+  DEFAULT_BACKUP_SCHEDULE,
 } from "./provider.js";
 
 // The payload travels only over Tailscale SSH stdin. Secrets never become argv,

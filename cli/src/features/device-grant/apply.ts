@@ -39,7 +39,7 @@
 
 import type { FeatureContext } from "../contract.js";
 import { renderFeatureTemplate } from "../templates.js";
-import { type PatchResult, addDeviceClientPlugin, wireDeviceGrant } from "./patches.js";
+import { addDeviceClientPlugin, type PatchResult, wireDeviceGrant } from "./patches.js";
 import { DEVICE_GRANT_TEMPLATES, deviceGrantClientHosts } from "./types.js";
 
 /**

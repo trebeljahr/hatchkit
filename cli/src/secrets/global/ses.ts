@@ -31,7 +31,7 @@ import {
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { getListmonkConfig, getSesConfig, getStore } from "../../config.js";
 import { planListmonkSmtpSwap, swapListmonkSmtpCredentials } from "../../provision/listmonk.js";
-import { type SesAuth, deriveSesSmtpPassword, probeSes } from "../../provision/ses.js";
+import { deriveSesSmtpPassword, probeSes, type SesAuth } from "../../provision/ses.js";
 import { SECRET_KEYS, setSecret } from "../../utils/secrets.js";
 import { redactErrorMessage } from "../audit.js";
 import type { NewCred, OldCred, VerifyOutcome } from "../types.js";
@@ -43,7 +43,7 @@ import {
   promptPasted,
   rejectedLine,
 } from "./prompt.js";
-import { type SmtpAuthOptions, type SmtpAuthResult, checkSmtpAuth } from "./smtp-auth.js";
+import { checkSmtpAuth, type SmtpAuthOptions, type SmtpAuthResult } from "./smtp-auth.js";
 import type {
   ConsumerAuditEntry,
   GlobalPreflight,
@@ -105,7 +105,9 @@ export function createAwsIamOps(creds: AwsCreds, opts: { endpoint?: string } = {
   });
   return {
     async listKeys(userName) {
-      const res = await client.send(new ListAccessKeysCommand(userName ? { UserName: userName } : {}));
+      const res = await client.send(
+        new ListAccessKeysCommand(userName ? { UserName: userName } : {}),
+      );
       return (res.AccessKeyMetadata ?? []).map((k) => ({
         id: k.AccessKeyId ?? "",
         status: k.Status ?? "",
@@ -113,7 +115,9 @@ export function createAwsIamOps(creds: AwsCreds, opts: { endpoint?: string } = {
       }));
     },
     async createKey(userName) {
-      const res = await client.send(new CreateAccessKeyCommand(userName ? { UserName: userName } : {}));
+      const res = await client.send(
+        new CreateAccessKeyCommand(userName ? { UserName: userName } : {}),
+      );
       const key = res.AccessKey;
       if (!key?.AccessKeyId || !key.SecretAccessKey) {
         throw new Error("IAM CreateAccessKey returned no key");
@@ -132,7 +136,10 @@ export function createAwsIamOps(creds: AwsCreds, opts: { endpoint?: string } = {
     async deleteKey(id, userName) {
       try {
         await client.send(
-          new DeleteAccessKeyCommand({ AccessKeyId: id, ...(userName ? { UserName: userName } : {}) }),
+          new DeleteAccessKeyCommand({
+            AccessKeyId: id,
+            ...(userName ? { UserName: userName } : {}),
+          }),
         );
         return "deleted";
       } catch (err) {
@@ -263,7 +270,11 @@ export const sesRotator: GlobalRotator = {
     const s = scratch(ctx);
     const cfg = await getSesConfig();
     if (!cfg) {
-      return { ready: false, notes: [], remedy: ["SES is not configured. Run `hatchkit config add ses`."] };
+      return {
+        ready: false,
+        notes: [],
+        remedy: ["SES is not configured. Run `hatchkit config add ses`."],
+      };
     }
     s.region = cfg.region;
     s.oldKey = { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey };
@@ -296,19 +307,31 @@ export const sesRotator: GlobalRotator = {
       for (const line of remedy(who)) console.log(`  ${line}`);
       console.log("");
       const refuse = (why: string): GlobalPreflight => ({ ready: false, notes: [], remedy: [why] });
-      const accessKeyId = await promptPasted("One-off admin AWS access key id", AWS_ACCESS_KEY_ID_SHAPE);
-      if (accessKeyId === undefined) return refuse("The pasted access key id did not have the expected shape (see above).");
-      const secretAccessKey = await promptPasted("One-off admin AWS secret access key", AWS_SECRET_KEY_SHAPE);
-      if (secretAccessKey === undefined) return refuse("The pasted secret access key did not have the expected shape (see above).");
+      const accessKeyId = await promptPasted(
+        "One-off admin AWS access key id",
+        AWS_ACCESS_KEY_ID_SHAPE,
+      );
+      if (accessKeyId === undefined)
+        return refuse("The pasted access key id did not have the expected shape (see above).");
+      const secretAccessKey = await promptPasted(
+        "One-off admin AWS secret access key",
+        AWS_SECRET_KEY_SHAPE,
+      );
+      if (secretAccessKey === undefined)
+        return refuse("The pasted secret access key did not have the expected shape (see above).");
       let caller: AwsIdentity;
       try {
         caller = await deps.whoami({ accessKeyId, secretAccessKey });
       } catch (err) {
         const detail = redactErrorMessage((err as Error).message);
         console.log(`  ${rejectedLine(`AWS did not accept the pasted key: ${detail}`)}`);
-        return refuse(`AWS rejected the pasted key ${mask(accessKeyId)} (STS GetCallerIdentity: ${detail}). Check that the secret belongs to that access key id.`);
+        return refuse(
+          `AWS rejected the pasted key ${mask(accessKeyId)} (STS GetCallerIdentity: ${detail}). Check that the secret belongs to that access key id.`,
+        );
       }
-      console.log(`  ${authenticatedLine(caller.arn, [`account ${caller.account}`, `user id ${caller.userId}`])}`);
+      console.log(
+        `  ${authenticatedLine(caller.arn, [`account ${caller.account}`, `user id ${caller.userId}`])}`,
+      );
       // The SES key's own identity needs no rights either.
       const ses = await deps.whoami(s.oldKey).catch(() => undefined);
       if (ses && ses.account !== caller.account) {
@@ -317,7 +340,9 @@ export const sesRotator: GlobalRotator = {
         );
       }
       if (ses && ses.arn === caller.arn) {
-        return refuse(`The pasted key belongs to ${caller.arn}, the SES user itself, which has no IAM rights. Paste an admin key.`);
+        return refuse(
+          `The pasted key belongs to ${caller.arn}, the SES user itself, which has no IAM rights. Paste an admin key.`,
+        );
       }
       s.admin = { accessKeyId, secretAccessKey };
       s.mode = "admin";
@@ -481,7 +506,9 @@ export const sesRotator: GlobalRotator = {
     try {
       const plan = await planListmonkSmtpSwap(oldId, auth);
       if (plan.matched === 0) {
-        return [{ ...base, status: "unchanged", reason: "no SMTP server logs in with the old key" }];
+        return [
+          { ...base, status: "unchanged", reason: "no SMTP server logs in with the old key" },
+        ];
       }
       return [
         {
@@ -516,7 +543,9 @@ export const sesRotator: GlobalRotator = {
         { reloadDelayMs: deps.timing.delayMs },
       );
       if (res.matched === 0) {
-        return [{ ...base, status: "unchanged", reason: "no SMTP server logs in with the old key" }];
+        return [
+          { ...base, status: "unchanged", reason: "no SMTP server logs in with the old key" },
+        ];
       }
       // Blocked: ListMonk still sends with the old key, so this must hold
       // the revoke until the operator pastes the new login by hand.
@@ -561,7 +590,9 @@ export const sesRotator: GlobalRotator = {
   async finish(ctx) {
     const s = scratch(ctx);
     return s.mode === "admin"
-      ? ["The one-off admin AWS key was used for this run only. If you created it for this rotation, deactivate and delete it in IAM now."]
+      ? [
+          "The one-off admin AWS key was used for this run only. If you created it for this rotation, deactivate and delete it in IAM now.",
+        ]
       : [];
   },
 };

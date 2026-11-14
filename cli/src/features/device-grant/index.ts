@@ -36,8 +36,8 @@ export {
   deviceGrantPlannedFiles,
 } from "./apply.js";
 export {
-  type PatchResult,
   addDeviceClientPlugin,
+  type PatchResult,
   validateClientExpression,
   wireDeviceGrant,
 } from "./patches.js";

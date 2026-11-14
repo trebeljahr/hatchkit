@@ -21,8 +21,8 @@ import { findManifestDirUpward, patchManifest, readManifest } from "../scaffold/
 import { appendLedgerStep } from "../utils/run-ledger.js";
 import { provisionSesSendingDomain, sesSendingSubdomain } from "./listmonk-ses.js";
 import {
-  SES_MAIL_FROM_SPF,
   getSesDomain,
+  SES_MAIL_FROM_SPF,
   sesMailFromMxTarget,
   sesMailFromSubdomain,
 } from "./ses.js";

@@ -32,8 +32,8 @@ import {
 } from "../scaffold/client-build-args.js";
 import { setWorkflowDeployVerifyUrls } from "../scaffold/deploy-verification.js";
 import {
-  type ProjectManifest,
   findManifestDirUpward,
+  type ProjectManifest,
   patchedManifestText,
   readManifest,
 } from "../scaffold/manifest.js";

@@ -82,8 +82,8 @@
 import { parse } from "yaml";
 import {
   type HealthCheckSpec,
-  type ImageRef,
   healthCheckFor,
+  type ImageRef,
   parseImageRef,
 } from "./image-runtime.js";
 import { splitDomainString } from "./routing.js";

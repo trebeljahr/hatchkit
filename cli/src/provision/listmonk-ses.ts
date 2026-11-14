@@ -50,46 +50,46 @@ import {
   publishDnsRecordsToCloudflare,
 } from "./cloudflare-dns-publish.js";
 import {
-  type EnsureListmonkProjectUserOptions,
-  type ListmonkProjectUserResult,
-  ensureListmonkProjectUser,
-} from "./listmonk-project-user.js";
-import {
   type ApplySesSmtpResult,
-  type ListmonkAuth,
-  type ListmonkList,
-  type ListmonkTemplate,
   addListmonkSubscriberToList,
   applySesSmtpToListmonk,
   createListmonkList,
   createListmonkTemplate,
   getListmonkTemplate,
+  type ListmonkAuth,
+  type ListmonkList,
+  type ListmonkTemplate,
   listListmonkLists,
   listListmonkTemplates,
   updateListmonkTemplate,
 } from "./listmonk.js";
 import {
-  type SesFeedbackResult,
-  type WebhookCredentials,
-  createSesFeedbackAws,
-  createSesFeedbackListmonk,
-  ensureSesFeedback,
-  ensureWebhookCredentials,
-} from "./ses-feedback.js";
+  type EnsureListmonkProjectUserOptions,
+  ensureListmonkProjectUser,
+  type ListmonkProjectUserResult,
+} from "./listmonk-project-user.js";
 import {
+  createSesDomain,
+  decideMailFromPlan,
+  getSesMailFromDomain,
   SES_MAIL_FROM_SPF,
   type SesAuth,
   type SesIdentity,
   type SesMailFromBehaviorOnMxFailure,
   type SesMailFromState,
-  createSesDomain,
-  decideMailFromPlan,
-  getSesMailFromDomain,
   sesMailFromMxTarget,
   sesMailFromSubdomain,
   sesSmtpCredentials,
   setSesMailFromDomain,
 } from "./ses.js";
+import {
+  createSesFeedbackAws,
+  createSesFeedbackListmonk,
+  ensureSesFeedback,
+  ensureWebhookCredentials,
+  type SesFeedbackResult,
+  type WebhookCredentials,
+} from "./ses-feedback.js";
 
 export interface ListmonkSesProvisionOptions {
   /** Project base name — used to name the live + test Listmonk lists

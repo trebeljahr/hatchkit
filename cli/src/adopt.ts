@@ -35,7 +35,7 @@ import { adoptRepositoryIsPrivate } from "./utils/command-input.js";
  * exits early with a "use `hatchkit update` instead" hint.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { confirm, input, select } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -58,9 +58,9 @@ import {
 import { handleAdoptFailure } from "./deploy/rollback.js";
 import { computeRoutingPlan, inferTopology } from "./deploy/routing.js";
 import {
-  type ProjectOnboardingPlan,
   adoptPlanToOnboardingPlan,
   onboardingPlanToAdoptPlan,
+  type ProjectOnboardingPlan,
   renderOnboardingDeploymentModeSummary,
   renderOnboardingSurfaceSummary,
   summarizeOnboardingDomain,
@@ -72,15 +72,15 @@ import {
   runProjectOnboardingReview,
 } from "./onboarding/review.js";
 import {
+  askEmailIntent,
   type DeploymentMode,
   EMAIL_INTENT_NONE,
   type EmailIntent,
-  type Feature,
-  type Surface,
-  askEmailIntent,
   emailIntentToProvisionServices,
+  type Feature,
   isStaticHostMode,
   mergeEmailIntoProvisionServices,
+  type Surface,
   summarizeEmailIntent,
 } from "./prompts.js";
 import { readDeferredSteps } from "./provision/deferrals.js";
@@ -93,11 +93,11 @@ import {
 } from "./scaffold/build-pipeline.js";
 import { needsLocalS3 } from "./scaffold/e2e-s3.js";
 import {
+  defaultPublicServiceForSurfaces,
   MANIFEST_FILENAME,
   MANIFEST_VERSION,
-  type ProjectManifest,
-  defaultPublicServiceForSurfaces,
   manifestHostnames,
+  type ProjectManifest,
   readManifest,
   writeManifest,
 } from "./scaffold/manifest.js";
@@ -115,7 +115,7 @@ import { assertNothingSecretStaged, stageAllSafely } from "./utils/git-safety.js
 import { ensureSecretFilesIgnored } from "./utils/gitignore.js";
 import { multiselect } from "./utils/multiselect.js";
 import { RunLedger } from "./utils/run-ledger.js";
-import { SECRET_KEYS, getSecret, setSecret } from "./utils/secrets.js";
+import { getSecret, SECRET_KEYS, setSecret } from "./utils/secrets.js";
 import {
   validateCoolifyDescription,
   validateDomain,

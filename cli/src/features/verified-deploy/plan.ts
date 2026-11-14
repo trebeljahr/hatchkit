@@ -26,12 +26,12 @@
 
 import { readImageEnvDefaults } from "../../scaffold/deploy-verification.js";
 import {
-  type OperationalContext,
-  type OperationalProject,
   defaultApiOrigin,
   defaultWebOrigin,
   hasClientHalf,
   hasServerHalf,
+  type OperationalContext,
+  type OperationalProject,
 } from "../operational-context.js";
 import {
   DEFAULT_ID_FIELD,

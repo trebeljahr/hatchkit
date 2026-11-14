@@ -37,8 +37,8 @@ import { upgradeServerEnvLoader } from "../utils/dev-env-loader.js";
 import {
   DEV_ENV_FILE,
   DEV_LOCAL_ENV_FILE,
-  LOCAL_ENV_IGNORE_PATTERN,
   findDevEnvSecrets,
+  LOCAL_ENV_IGNORE_PATTERN,
 } from "../utils/dev-env-secrets.js";
 import { dotenvxSet } from "../utils/dotenvx-safe.js";
 import { envFileCandidates, resolveEnvFileTarget } from "../utils/env-files.js";

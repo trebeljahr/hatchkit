@@ -26,18 +26,18 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { hasMarkedBlocks, stripMarkedBlocks } from "../client-core/markers.js";
 import {
-  type FeatureTokens,
-  type ServerFeatureInput,
-  type ServerFeatureResult,
-  type SourcePatch,
   addPackageScript,
   appendClaudeMdSection,
   appendEnvBlock,
   emptyResult,
+  type FeatureTokens,
   patchEnvConfig,
   patchSourceFile,
   renderFeatureTemplate,
   resolveServerDir,
+  type ServerFeatureInput,
+  type ServerFeatureResult,
+  type SourcePatch,
   shutdownCloseAnchor,
   writeFeatureFiles,
   writeManaged,

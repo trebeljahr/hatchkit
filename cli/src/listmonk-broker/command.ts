@@ -1,7 +1,6 @@
 /* `hatchkit listmonk broker [--dry-run]`: real dependencies for deploy.ts. */
 import chalk from "chalk";
 import { getCloudflareProvisioner, getListmonkAdminAuth, getStore } from "../config.js";
-import { checkListmonkAdmin } from "../provision/listmonk-project-user.js";
 import {
   createListmonkApiUser,
   createListmonkUserRole,
@@ -9,6 +8,7 @@ import {
   listListmonkUsers,
   updateListmonkUserRole,
 } from "../provision/listmonk.js";
+import { checkListmonkAdmin } from "../provision/listmonk-project-user.js";
 import { getSecret, setSecret } from "../utils/secrets.js";
 import { BROKER_NAME, deployListmonkBroker } from "./deploy.js";
 

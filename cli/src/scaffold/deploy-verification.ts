@@ -74,8 +74,8 @@ import { clientBuildArgUrls } from "./client-build-args.js";
 import { nativeClientOrigins } from "./native-origins.js";
 import {
   PROMOTE_STEP_NAME,
-  WORKFLOW_PROMOTE_STEP,
   upgradeWorkflowToSignedDeploy,
+  WORKFLOW_PROMOTE_STEP,
 } from "./signed-deploy.js";
 
 /** Project shape, as recorded in the manifest's `surfaces`. Decides

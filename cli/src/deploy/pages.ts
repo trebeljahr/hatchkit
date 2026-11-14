@@ -2,8 +2,8 @@ import { resolve4 } from "node:dns/promises";
 import {
   existsSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";

@@ -11,8 +11,7 @@
  */
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { getStore } from "../config.js";
-import { getConfiguredCloudflareAccountId } from "../config.js";
+import { getConfiguredCloudflareAccountId, getStore } from "../config.js";
 import type { RunWindow } from "./cloudflare.js";
 import { publishExpectedToWorker, uploadRunWindow } from "./deploy.js";
 import { getAuditWorker } from "./expected.js";

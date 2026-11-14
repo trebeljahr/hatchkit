@@ -27,10 +27,10 @@ import { RECORD_SHIP_ACTION_REL_PATH, writeRecordShipAction } from "./record-shi
 import { removeIfExists } from "./starter-files.js";
 import {
   CARRY_SCRIPT_REL_PATH,
-  WRANGLER_PACKAGE,
   defaultCompatibilityDate,
   migrateHeaders,
   renderWorkerHeaders,
+  WRANGLER_PACKAGE,
   writeCarryScript,
 } from "./worker-assets.js";
 

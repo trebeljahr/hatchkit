@@ -65,7 +65,7 @@
 
 import { createHmac, randomBytes } from "node:crypto";
 import type { CoolifyApi } from "../utils/coolify-api.js";
-import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { getSecret, SECRET_KEYS, setSecret } from "../utils/secrets.js";
 
 /** The path CI's signed payload claims to have modified. No commit may
  *  ever create it: a real push touching it would deploy through the

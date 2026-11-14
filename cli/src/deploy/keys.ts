@@ -39,7 +39,7 @@ import { getCoolifyConfig } from "../config.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { locateEnvFile } from "../utils/env-files.js";
 import { exec } from "../utils/exec.js";
-import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { getSecret, SECRET_KEYS, setSecret } from "../utils/secrets.js";
 import ora from "../utils/spinner.js";
 import { repoSlugFromRemote } from "./gh-actions-secrets.js";
 

@@ -63,33 +63,33 @@
  */
 
 import {
-  type OperationalContext,
-  type OperationalOutcome,
   applied,
   hasServerHalf,
+  type OperationalContext,
+  type OperationalOutcome,
   skipped,
 } from "../operational-context.js";
 import {
   PROXY_CONFIG_REL,
+  renderSelfHostBuildOverride,
+  renderSelfHostCiOverride,
+  renderSelfHostCompose,
   SELFHOST_BUILD_OVERRIDE_REL,
   SELFHOST_CI_OVERRIDE_REL,
   SELFHOST_CLIENT_DOCKERFILE_REL,
   SELFHOST_COMPOSE_REL,
-  renderSelfHostBuildOverride,
-  renderSelfHostCiOverride,
-  renderSelfHostCompose,
   selfHostClientDockerfile,
   selfHostPlan,
 } from "./compose.js";
-import { SELFHOST_ENV_EXAMPLE_REL, renderSelfHostEnvExample } from "./env-example.js";
+import { renderSelfHostEnvExample, SELFHOST_ENV_EXAMPLE_REL } from "./env-example.js";
 import { renderProxyConfig } from "./proxy.js";
-import { SELFHOST_SMOKE_WORKFLOW_REL, renderSmokeWorkflow } from "./smoke-workflow.js";
+import { renderSmokeWorkflow, SELFHOST_SMOKE_WORKFLOW_REL } from "./smoke-workflow.js";
 import {
   SERVER_TRUST_CONFIG_REL,
   STORE_CLIENT_ORIGINS_KEY,
+  storeClientOrigins,
   TRUST_EXTENSION_ORIGINS_KEY,
   TRUST_STORE_APPS_KEY,
-  storeClientOrigins,
   trustComposeLines,
 } from "./trust.js";
 

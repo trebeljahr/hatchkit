@@ -28,15 +28,15 @@
  */
 
 import {
-  REPORT_FIELDS,
-  type ReportBreadcrumb,
-  type ReportEvent,
-  type ReportField,
   allowedBreadcrumbs,
   allowedContexts,
   allowedEventKeys,
   allowedRequestHeaders,
   allowedTags,
+  REPORT_FIELDS,
+  type ReportBreadcrumb,
+  type ReportEvent,
+  type ReportField,
 } from "./allowlist.js";
 
 /** An email address inside free text. A server refusal can quote the address it refused. */

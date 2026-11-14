@@ -27,8 +27,8 @@ import {
   type Dirent,
   existsSync,
   mkdirSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";

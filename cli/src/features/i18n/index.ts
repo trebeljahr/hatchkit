@@ -30,17 +30,17 @@ import { checkbox, confirm, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import type { ProjectIdentifiers } from "../../scaffold/identifiers.js";
 import { FeatureLedger } from "../contract.js";
-import { CLIENT_PKG_REL, SERVER_PKG_REL, applyI18nConfig } from "./apply.js";
-import { DEFAULT_NAMESPACES, SUPPORTED_LOCALES, isKnownLocale, localeMeta } from "./locales.js";
+import { applyI18nConfig, CLIENT_PKG_REL, SERVER_PKG_REL } from "./apply.js";
+import { DEFAULT_NAMESPACES, isKnownLocale, localeMeta, SUPPORTED_LOCALES } from "./locales.js";
 import { shippedNamespaces } from "./plan.js";
 import type { I18nApplyResult, I18nConfig } from "./types.js";
 
-export * from "./types.js";
-export { SUPPORTED_LOCALES, localeMeta, isKnownLocale, DEFAULT_NAMESPACES } from "./locales.js";
 /** Re-exported so `hatchkit add i18n` and the scaffolder keep one import
  *  site for the feature, while `../all.ts` reaches the non-interactive
  *  half through `./definition.js` and never loads this module. */
 export { applyI18nConfig } from "./apply.js";
+export { DEFAULT_NAMESPACES, isKnownLocale, localeMeta, SUPPORTED_LOCALES } from "./locales.js";
+export * from "./types.js";
 
 const DEFAULT_GATE_MS = 4000;
 

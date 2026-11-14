@@ -32,13 +32,13 @@ import { redactErrorMessage, redactValues } from "../audit.js";
 import { clearRollback, loadRollback, saveRollback } from "../rollback-store.js";
 import type { DeployTarget, NewCred, OldCred, RevokePolicy, VerifyOutcome } from "../types.js";
 import {
-  type CoolifyDiscovery,
-  type ProjectPlan,
   applyCoolifyApp,
   applyProject,
+  type CoolifyDiscovery,
   defaultProjectRoots,
   discoverCoolifyApps,
   discoverProjects,
+  type ProjectPlan,
   planCoolifyApp,
   planProject,
 } from "./consumers.js";
@@ -94,10 +94,11 @@ export async function runGlobalRotate(opts: RunGlobalRotateOptions): Promise<Glo
   const pushTargets = opts.pushTargets ?? ["coolify", "gh"];
   const exclude = new Set(opts.exclude ?? []);
   const interactive = opts.interactive ?? (!!process.stdin.isTTY && !opts.json);
-  const roots = opts.projectRoots && opts.projectRoots.length > 0 ? opts.projectRoots : defaultProjectRoots();
+  const roots =
+    opts.projectRoots && opts.projectRoots.length > 0 ? opts.projectRoots : defaultProjectRoots();
 
   let resumeOld: OldCred | undefined;
-  let resumeNewHandle: Record<string, string> = {};
+  const resumeNewHandle: Record<string, string> = {};
   if (!opts.resume && !opts.dryRun) {
     // A fresh run would overwrite the blob that remembers the ORIGINAL
     // credential, which then never gets revoked.
@@ -116,7 +117,9 @@ export async function runGlobalRotate(opts: RunGlobalRotateOptions): Promise<Glo
   if (opts.resume) {
     const blob = await loadRollback(GLOBAL_ROLLBACK_SCOPE, rotator.name);
     if (!blob) {
-      throw new Error(`No interrupted ${rotator.name} rotation to resume (no rollback blob in the keychain).`);
+      throw new Error(
+        `No interrupted ${rotator.name} rotation to resume (no rollback blob in the keychain).`,
+      );
     }
     const oldHandle: Record<string, string> = {};
     for (const [k, v] of Object.entries(blob.handle)) {
@@ -237,13 +240,17 @@ export async function runGlobalRotate(opts: RunGlobalRotateOptions): Promise<Glo
       fresh = await rotator.createNew(ctx);
     } catch (err) {
       await clearRollback(GLOBAL_ROLLBACK_SCOPE, rotator.name);
-      throw new Error(`${rotator.name}: creating the new credential failed: ${redactErrorMessage((err as Error).message)}`);
+      throw new Error(
+        `${rotator.name}: creating the new credential failed: ${redactErrorMessage((err as Error).message)}`,
+      );
     }
     audit.verificationResult = await safeVerify(rotator, ctx, fresh);
     if (audit.verificationResult !== "ok") {
       try {
         await rotator.discard(ctx, fresh);
-        audit.notes.push("Verify failed: the new credential was deleted again. Nothing else changed.");
+        audit.notes.push(
+          "Verify failed: the new credential was deleted again. Nothing else changed.",
+        );
       } catch (err) {
         audit.notes.push(
           `Verify failed, and deleting the new credential failed too (${redactErrorMessage((err as Error).message)}). Remove it by hand.`,
@@ -271,7 +278,9 @@ export async function runGlobalRotate(opts: RunGlobalRotateOptions): Promise<Glo
   const results: ConsumerAuditEntry[] = [];
   for (const plan of plans) {
     if (plan.writeProd || plan.writeDev) {
-      results.push(await applyProject(plan, rotator, fresh, { pushGh: pushTargets.includes("gh") }));
+      results.push(
+        await applyProject(plan, rotator, fresh, { pushGh: pushTargets.includes("gh") }),
+      );
     } else {
       results.push(plan.entry);
     }
@@ -326,7 +335,9 @@ async function safeVerify(
   try {
     return await rotator.verify(ctx, fresh);
   } catch (err) {
-    console.error(`  · ${rotator.name} verify threw: ${redactErrorMessage((err as Error).message)}`);
+    console.error(
+      `  · ${rotator.name} verify threw: ${redactErrorMessage((err as Error).message)}`,
+    );
     return "failed";
   }
 }
@@ -342,7 +353,9 @@ async function safeRevoke(
     await rotator.revoke(ctx, old, fresh);
     return true;
   } catch (err) {
-    audit.notes.push(`Revoking the old credential failed: ${redactErrorMessage((err as Error).message)}`);
+    audit.notes.push(
+      `Revoking the old credential failed: ${redactErrorMessage((err as Error).message)}`,
+    );
     if (!(err instanceof RevokeError)) return false;
     const { state } = err;
     audit.revokeReport = { old: state.oldStatus, new: state.newStatus, newWorks: state.newWorks };
@@ -419,17 +432,25 @@ export function renderGlobalAuditHuman(audit: GlobalRotationAudit): void {
     console.log(chalk.dim("  No consumers found."));
   }
   for (const c of audit.consumers) {
-    const where = c.kind === "project" ? "project" : c.kind === "coolify-app" ? "coolify" : "service";
+    const where =
+      c.kind === "project" ? "project" : c.kind === "coolify-app" ? "coolify" : "service";
     const keys = c.keys.length > 0 ? c.keys.join(", ") : chalk.dim("(no keys)");
-    console.log(`  ${STATUS_COLOR[c.status](c.status.padEnd(9))} ${chalk.dim(where.padEnd(8))} ${c.name}  ${keys}`);
+    console.log(
+      `  ${STATUS_COLOR[c.status](c.status.padEnd(9))} ${chalk.dim(where.padEnd(8))} ${c.name}  ${keys}`,
+    );
     if (c.files?.length) console.log(chalk.dim(`              files: ${c.files.join(", ")}`));
-    if (c.targets?.length) console.log(chalk.dim(`              deploy targets: ${c.targets.join(", ")}`));
+    if (c.targets?.length)
+      console.log(chalk.dim(`              deploy targets: ${c.targets.join(", ")}`));
     if (c.reason) console.log(chalk.dim(`              ${c.reason}`));
   }
   if (!audit.dryRun) {
     console.log("");
     const verify =
-      audit.verificationResult === "ok" ? chalk.green("ok") : audit.verificationResult === "failed" ? chalk.red("failed") : chalk.dim("skipped");
+      audit.verificationResult === "ok"
+        ? chalk.green("ok")
+        : audit.verificationResult === "failed"
+          ? chalk.red("failed")
+          : chalk.dim("skipped");
     console.log(`  verify: ${verify}`);
     const report = audit.revokeReport;
     const revoke = report
@@ -447,7 +468,9 @@ export function renderGlobalAuditHuman(audit: GlobalRotationAudit): void {
     console.log(
       audit.outcome === "broken"
         ? chalk.red.bold(`  ${audit.credential} calls fail until you recover:`)
-        : chalk.bold(audit.dryRun ? "  Before a live run:" : "  Next steps (hatchkit never pushes):"),
+        : chalk.bold(
+            audit.dryRun ? "  Before a live run:" : "  Next steps (hatchkit never pushes):",
+          ),
     );
     for (const step of audit.nextSteps) console.log(`  ${step}`);
   }

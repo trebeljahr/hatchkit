@@ -87,7 +87,7 @@
 
 import chalk from "chalk";
 import type { CoolifyApi, CoolifyApplication } from "../utils/coolify-api.js";
-import { type ProjectAppsShape, findCoolifyAppsForProject } from "./coolify-app.js";
+import { findCoolifyAppsForProject, type ProjectAppsShape } from "./coolify-app.js";
 
 /** One env var whose value points at a Coolify-managed database.
  *  Carries the key and the HOST only — never the value, which is a

@@ -50,7 +50,7 @@ import { resolveAssetRoot } from "../../utils/asset-root.js";
  *                       see `wireNativeStyles` for the two reasons.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, posix, relative, sep } from "node:path";
 import { substituteIdentifierTokens } from "../../scaffold/identifiers.js";
 import {

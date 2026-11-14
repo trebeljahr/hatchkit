@@ -43,7 +43,7 @@
  * package, and the failure appears only on a user's machine.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ProjectIdentifiers } from "../scaffold/identifiers.js";

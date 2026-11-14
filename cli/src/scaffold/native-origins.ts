@@ -85,10 +85,7 @@ export const ANDROID_EMULATOR_HOST = "10.0.2.2";
  *  Only the emulator alias and loopback are returned. A physical device
  *  on the LAN, or a non-default port, needs its own entry — pass `lanIp`,
  *  or set TRUSTED_ORIGINS explicitly. */
-export function mobileLiveReloadOrigins(opts: {
-  port: number;
-  lanIp?: string;
-}): string[] {
+export function mobileLiveReloadOrigins(opts: { port: number; lanIp?: string }): string[] {
   const out = [
     // iOS Simulator shares the Mac's network namespace.
     `http://localhost:${opts.port}`,

@@ -22,8 +22,8 @@ import { COOLIFY_RUNTIMES } from "../deploy/image-runtime.js";
 import type { Topology } from "../deploy/routing.js";
 import type {
   AnalyticsProvider,
-  DeployTarget,
   DeploymentMode,
+  DeployTarget,
   EmailIntent,
   Feature,
   GitHubRepoVisibility,
@@ -87,6 +87,7 @@ export const KNOWN_FEATURES: readonly Feature[] = [
   "mcp",
 ];
 export { KNOWN_ML_SERVICES } from "../features/additions.js";
+
 import { KNOWN_ML_SERVICES } from "../features/additions.js";
 export const KNOWN_SURFACES: readonly Surface[] = ["fullstack", "split", "backend", "static"];
 export const KNOWN_TOPOLOGIES: readonly Topology[] = ["single-origin", "split"];

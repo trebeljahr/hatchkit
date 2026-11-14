@@ -35,11 +35,10 @@ import { getCoolifyConfig } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { readImageEnvDefaults } from "../scaffold/deploy-verification.js";
 import { workflowsPromotingLive } from "../scaffold/signed-deploy.js";
-import ora from "../utils/spinner.js";
-import { liveImageRefs } from "./coolify-deploy-hook.js";
-
 import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
 import { type ApplicationCreateInput, CoolifyApi } from "../utils/coolify-api.js";
+import ora from "../utils/spinner.js";
+import { liveImageRefs } from "./coolify-deploy-hook.js";
 import { repoSlugFromCoolifyGitRepository, repoSlugFromRemote } from "./gh-actions-secrets.js";
 import {
   appSlugFromHtmlUrl,
@@ -48,7 +47,7 @@ import {
 } from "./github-app-access.js";
 import { formatImageRef, healthCheckFor, needsCoolifyGithubSource } from "./image-runtime.js";
 import { placeProjectResource } from "./project-network.js";
-import { type RoutedApp, computeRoutingPlan } from "./routing.js";
+import { computeRoutingPlan, type RoutedApp } from "./routing.js";
 import { type NativeOriginsOutcome, pushNativeOriginsToServerApps } from "./trusted-origins.js";
 
 /** The image variables to seed on a compose app: the compose defaults,
@@ -768,10 +767,11 @@ const STARTER_CONTAINER_PORT = 3000;
  *  starter's `OWNER/REPO` placeholder is ignored in favour of the repo
  *  slug, which is what the workflow's `${{ github.repository }}` expands
  *  to. GHCR names are lowercase. */
-export function imageRefsForProject(args: {
-  projectDir?: string;
-  repoSlug?: string;
-}): { app?: string; client?: string; server?: string } {
+export function imageRefsForProject(args: { projectDir?: string; repoSlug?: string }): {
+  app?: string;
+  client?: string;
+  server?: string;
+} {
   const defaults = readImageEnvDefaults(args.projectDir);
   const usable = (ref: string | undefined): string | undefined =>
     ref && !/OWNER\/REPO/.test(ref) ? ref : undefined;

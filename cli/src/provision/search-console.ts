@@ -1,8 +1,8 @@
 import chalk from "chalk";
 import {
-  GoogleOAuthClientSecretMissingError,
   ensureDns,
   ensureGoogleSearchConsole,
+  GoogleOAuthClientSecretMissingError,
   reconfigureProvider,
   refreshGoogleSearchConsoleAccessToken,
 } from "../config.js";

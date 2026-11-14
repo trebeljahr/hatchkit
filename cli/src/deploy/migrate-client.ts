@@ -41,11 +41,20 @@ import { dirname, join } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
 import { getStore } from "../config.js";
-import { readManifest } from "../scaffold/manifest.js";
 import type { ProjectManifest } from "../scaffold/manifest.js";
+import { readManifest } from "../scaffold/manifest.js";
 import { CARRY_SCRIPT_REL_PATH, WRANGLER_PACKAGE } from "../scaffold/worker-assets.js";
 import { exec } from "../utils/exec.js";
 import { RunLedger } from "../utils/run-ledger.js";
+import {
+  addHttpsRedirectHosts,
+  applyEdgeRoutes,
+  type EdgeContext,
+  preflightEdge,
+  removeEdgeRoutes,
+  removeHttpsRedirectHosts,
+  resolveEdgeContext,
+} from "./client-host.js";
 import {
   CLIENT_EXPORT_DIR,
   type ClientScan,
@@ -54,24 +63,15 @@ import {
   workerConfigFindings,
   writeClientRepoFiles,
 } from "./client-host-repo.js";
-import {
-  type EdgeContext,
-  addHttpsRedirectHosts,
-  applyEdgeRoutes,
-  preflightEdge,
-  removeEdgeRoutes,
-  removeHttpsRedirectHosts,
-  resolveEdgeContext,
-} from "./client-host.js";
 import { readWorkerName } from "./cloudflare.js";
 import { resolveCoolifyRuntime } from "./image-runtime.js";
 import {
-  DEFAULT_ORIGIN_PATHS,
-  type EdgePlan,
-  type RoutingPlan,
   computeRoutingPlan,
+  DEFAULT_ORIGIN_PATHS,
   defaultClientWorkerName,
+  type EdgePlan,
   inferTopology,
+  type RoutingPlan,
 } from "./routing.js";
 
 export interface MigrateClientOptions {

@@ -23,11 +23,9 @@
  *   docs/server-migrations.md
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import {
-  type ServerFeatureInput,
-  type ServerFeatureResult,
   addPackageDeps,
   addPackageScript,
   appendClaudeMdSection,
@@ -36,6 +34,8 @@ import {
   patchEnvConfig,
   patchSourceFile,
   resolveServerDir,
+  type ServerFeatureInput,
+  type ServerFeatureResult,
   writeFeatureFiles,
 } from "../server-platform/kit.js";
 

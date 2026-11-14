@@ -5,20 +5,20 @@ import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { composeServicesOf, validateComposeServices } from "../utils/compose.js";
 import type { ApplicationCreateInput } from "../utils/coolify-api.js";
 import { CoolifyApi, pickDefaultServer } from "../utils/coolify-api.js";
-import { type PublicIps, discoverPublicIps } from "../utils/coolify-server-ips.js";
-import { SECRET_KEYS, getSecret } from "../utils/secrets.js";
+import { discoverPublicIps, type PublicIps } from "../utils/coolify-server-ips.js";
+import { getSecret, SECRET_KEYS } from "../utils/secrets.js";
 import ora from "../utils/spinner.js";
-import { DEPLOY_HOOK_WATCH_PATH } from "./coolify-deploy-hook.js";
 import { deployImageDefaults, existingAppUuids } from "./coolify.js";
+import { DEPLOY_HOOK_WATCH_PATH } from "./coolify-deploy-hook.js";
 import { type CoolifyDeployApp, repoSlugFromRemote } from "./gh-actions-secrets.js";
 import { type CoolifyRuntime, resolveCoolifyRuntime } from "./image-runtime.js";
 import { placeProjectResource } from "./project-network.js";
 import {
   type ClientHost,
+  computeRoutingPlan,
   type RoutedApp,
   type RoutingPlan,
   type Topology,
-  computeRoutingPlan,
 } from "./routing.js";
 import { pushNativeOriginsToServerApps } from "./trusted-origins.js";
 

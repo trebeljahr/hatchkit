@@ -25,11 +25,11 @@ import {
   STRIPE_API_VERSION,
   type StripeClient,
   StripeError,
-  type UnlockConfig,
-  type UnlockProduct,
   stripeLookupKey,
   stripeProductId,
   stripeRequest,
+  type UnlockConfig,
+  type UnlockProduct,
 } from "../paid-unlock/core.js";
 
 export type StripeMode = "test" | "live";

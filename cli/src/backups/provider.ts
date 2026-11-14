@@ -7,7 +7,7 @@ import {
   getStore,
   validateS3KeyPair,
 } from "../config.js";
-import { SECRET_KEYS, getSecret, setSecret } from "../utils/secrets.js";
+import { getSecret, SECRET_KEYS, setSecret } from "../utils/secrets.js";
 
 export interface BackupCredentials {
   accessKeyId: string;

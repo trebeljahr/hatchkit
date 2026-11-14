@@ -66,7 +66,7 @@ import {
 import { readComposeFile } from "../utils/compose.js";
 import { CoolifyApi } from "../utils/coolify-api.js";
 import { resolveCoolifyRuntime } from "./image-runtime.js";
-import { type RoutedApp, computeRoutingPlan, inferTopology } from "./routing.js";
+import { computeRoutingPlan, inferTopology, type RoutedApp } from "./routing.js";
 
 export const TRUSTED_ORIGINS_KEY = "TRUSTED_ORIGINS";
 

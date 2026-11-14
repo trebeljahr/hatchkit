@@ -34,8 +34,8 @@ import { localDevDomainFromProjectDomain } from "@hatchkit/dev-shared";
 import { type CoolifyRuntime, DEFAULT_NEW_PROJECT_RUNTIME } from "../deploy/image-runtime.js";
 import {
   type ClientHost,
-  type Topology,
   defaultPublicServiceForSurfaces as routingDefaultPublicService,
+  type Topology,
 } from "../deploy/routing.js";
 import type { SigningProjectConfig } from "../features/signing/types.js";
 import type {
@@ -48,7 +48,7 @@ import type {
 } from "../prompts.js";
 import type { DeferredStep } from "../provision/deferrals.js";
 import type { ProjectPorts } from "../utils/ports.js";
-import { type ProjectIdentifiers, legacyIdentifiers } from "./identifiers.js";
+import { legacyIdentifiers, type ProjectIdentifiers } from "./identifiers.js";
 
 export const MANIFEST_FILENAME = ".hatchkit.json";
 export const MANIFEST_VERSION = 5;

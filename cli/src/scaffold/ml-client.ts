@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { type MlServiceEntry, getMlServices } from "../config.js";
+import { getMlServices, type MlServiceEntry } from "../config.js";
 import type { GpuPlatform, MlService, ProjectConfig } from "../prompts.js";
 
 /** Resolve ML services — reuse existing or mark for deployment.

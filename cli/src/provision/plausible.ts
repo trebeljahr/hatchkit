@@ -8,8 +8,8 @@
  */
 
 import { ensurePlausible, getPlausibleConfig } from "../config.js";
-import { RunLedger, loadAllLedgers } from "../utils/run-ledger.js";
-import { SECRET_KEYS, deleteSecret, getSecret, setSecret } from "../utils/secrets.js";
+import { loadAllLedgers, RunLedger } from "../utils/run-ledger.js";
+import { deleteSecret, getSecret, SECRET_KEYS, setSecret } from "../utils/secrets.js";
 
 export interface PlausibleSite {
   projectName: string;

@@ -24,7 +24,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import chalk from "chalk";
 import { parseDotenv, resolveEnvFile } from "../deploy/env-resolve.js";
@@ -34,28 +34,28 @@ import { locateEnvFile, resolveEnvFileTarget } from "../utils/env-files.js";
 import { runGithubManifestFlow } from "./github-manifest.js";
 import { type ProvidersIo, systemIo } from "./io.js";
 import {
+  appleKeyEnvValue,
+  appleKeyFileName,
   CLIENT_ID_FIELD,
+  callbackUrl,
+  checkSignInUrl,
+  chosenProviders,
+  defaultGithubAppName,
   FIELDS,
   type FieldKey,
   type FieldSpec,
   type GuideContext,
   type GuideStep,
+  githubAppManifest,
+  githubAppSettingsUrl,
+  githubManifestFormAction,
   type OAuthProviderId,
   PROVIDER_FIELDS,
   PROVIDER_LABEL,
   PROVIDER_OPTION,
-  type RedirectCheck,
-  appleKeyEnvValue,
-  appleKeyFileName,
-  callbackUrl,
-  checkSignInUrl,
-  chosenProviders,
-  defaultGithubAppName,
-  githubAppManifest,
-  githubAppSettingsUrl,
-  githubManifestFormAction,
   parseProviderList,
   providerSteps,
+  type RedirectCheck,
   signInRequest,
 } from "./plan.js";
 import { AUTH_USAGE } from "./usage.js";

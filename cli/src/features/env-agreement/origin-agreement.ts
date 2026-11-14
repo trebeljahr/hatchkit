@@ -17,7 +17,7 @@
 import type { OperationalProject } from "../operational-context.js";
 import { defaultApiOrigin } from "../operational-context.js";
 import type { OriginSite, OriginSiteId } from "./sites.js";
-import { ORIGIN_SITES, isTripwireOrigin, normalizeOrigin, siteLocation } from "./sites.js";
+import { isTripwireOrigin, normalizeOrigin, ORIGIN_SITES, siteLocation } from "./sites.js";
 
 /**
  * What a single place turned out to hold.

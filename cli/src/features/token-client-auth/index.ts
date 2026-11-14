@@ -32,9 +32,9 @@ import type { ProjectIdentifiers } from "../../scaffold/identifiers.js";
 import { clientCoreFeature } from "../client-core/index.js";
 import { type FeatureContext, registerFeature } from "../contract.js";
 import {
-  type TemplateTokens,
   identifierTemplateTokens,
   renderFeatureTemplate,
+  type TemplateTokens,
 } from "../templates.js";
 import { type RewriteResult, rewriteAuthConfig, rewriteBarrel, rewriteCors } from "./rewriter.js";
 

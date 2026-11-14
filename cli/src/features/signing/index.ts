@@ -16,7 +16,7 @@ import ora from "../../utils/spinner.js";
 import { provisionAppleForProject } from "./apple.js";
 import { resolveAzureValues, verifyAzureCanList } from "./azure.js";
 import { writePostSigningChecklist } from "./checklist.js";
-import { SIGNING_SECRET_NAMES, pushSigningSecrets } from "./github.js";
+import { pushSigningSecrets, SIGNING_SECRET_NAMES } from "./github.js";
 import {
   ensureLocalSigningDir,
   generateAndroidKeystore,
@@ -32,9 +32,9 @@ import { runSigningStepper } from "./stepper.js";
 import type { RunSigningSetupOptions, SigningPlatform, SigningSetupAudit } from "./types.js";
 import { writeSigningWorkflows } from "./workflow-writer.js";
 
-export * from "./types.js";
 export { runSigningOrgInit } from "./org-init.js";
 export { detectPlatforms } from "./stepper.js";
+export * from "./types.js";
 
 const DEFAULT_PNPM_VERSION = "10.33.2";
 const DEFAULT_NODE_VERSION = "24";
@@ -439,4 +439,5 @@ function readPackageJsonField(projectDir: string, dotted: string): string | unde
 }
 
 void ownerFromRemote; // re-exported below for caller convenience
+
 export { ownerFromRemote };

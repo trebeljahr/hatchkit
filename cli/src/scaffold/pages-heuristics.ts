@@ -11,7 +11,7 @@
 //   · info  — nothing's broken but the user should know (e.g.
 //             `next/image` needs `unoptimized: true` on static export).
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 
 export type WarningLevel = "block" | "warn" | "info";

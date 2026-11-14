@@ -19,15 +19,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import {
-  type FeatureTokens,
-  type ServerFeatureInput,
-  type ServerFeatureResult,
   appendClaudeMdSection,
   appendEnvBlock,
   emptyResult,
+  type FeatureTokens,
   patchEnvConfig,
   patchSourceFile,
   resolveServerDir,
+  type ServerFeatureInput,
+  type ServerFeatureResult,
   shutdownCloseAnchor,
   writeFeatureFiles,
 } from "../server-platform/kit.js";

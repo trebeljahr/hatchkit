@@ -22,12 +22,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import chalk from "chalk";
+import type { ListmonkAuth } from "./listmonk.js";
 import {
   assertNotReserved,
   inspectListmonkProjectUser,
   regenerateRefusal,
 } from "./listmonk-project-user.js";
-import type { ListmonkAuth } from "./listmonk.js";
 
 /** The SES SMTP login hatchkit used to write into project env. */
 export const SES_SMTP_KEYS = [

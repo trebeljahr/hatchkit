@@ -50,10 +50,10 @@
 import type { GlitchtipConfig, GlitchtipMeta } from "../../config.js";
 import { getGlitchtipConfig, getStore } from "../../config.js";
 import {
-  GLITCHTIP_CLIENT_ENV_KEYS,
-  GLITCHTIP_SERVER_ENV_KEYS,
   assertDsnHost,
   dsnHostMismatch,
+  GLITCHTIP_CLIENT_ENV_KEYS,
+  GLITCHTIP_SERVER_ENV_KEYS,
 } from "../../provision/glitchtip.js";
 import { readEncryptedProd } from "../env-writer.js";
 import { register } from "../registry.js";
@@ -193,9 +193,7 @@ async function deleteProjectKey(
  *  side); all other surfaces share a single project. */
 function projectSlugFor(envKey: string, ctx: RotationContext): string {
   if (ctx.manifest.surfaces === "split") {
-    return sideOf(envKey) === "client"
-      ? `${ctx.projectName}-client`
-      : `${ctx.projectName}-server`;
+    return sideOf(envKey) === "client" ? `${ctx.projectName}-client` : `${ctx.projectName}-server`;
   }
   return ctx.projectName;
 }
@@ -350,9 +348,7 @@ const glitchtipRotator: ProviderRotator = {
           keysBySlug.set(slug, listed);
         }
         const keys = await listed;
-        const match = keys.find(
-          (k) => k.public === parsed.publicKey || k.dsn?.public === dsn,
-        );
+        const match = keys.find((k) => k.public === parsed.publicKey || k.dsn?.public === dsn);
         if (match) {
           handle[handleKey("keyId", envKey)] = match.id;
           handle[handleKey("projectSlug", envKey)] = slug;
@@ -368,9 +364,7 @@ const glitchtipRotator: ProviderRotator = {
   async createNew(ctx: RotationContext): Promise<NewCred> {
     const cfg = await getGlitchtipConfig();
     if (!cfg) {
-      throw new Error(
-        "GlitchTip is not configured. Run `hatchkit config add glitchtip`.",
-      );
+      throw new Error("GlitchTip is not configured. Run `hatchkit config add glitchtip`.");
     }
 
     const values: Record<string, string> = {};

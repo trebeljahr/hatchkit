@@ -57,15 +57,15 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type ProjectIdentifiers, legacyIdentifiers } from "../../scaffold/identifiers.js";
+import { legacyIdentifiers, type ProjectIdentifiers } from "../../scaffold/identifiers.js";
 import type { FileAction } from "../contract.js";
 import {
-  type OperationalContext,
-  type OperationalOutcome,
-  type OperationalProject,
   applied,
   defaultWebOrigin,
   hasClientHalf,
+  type OperationalContext,
+  type OperationalOutcome,
+  type OperationalProject,
   resolveClientDir,
   resolveSourceRoot,
   skipped,

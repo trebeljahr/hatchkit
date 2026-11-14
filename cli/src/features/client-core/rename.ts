@@ -13,7 +13,7 @@
  * away from the files it renames.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectIdentifiers } from "../../scaffold/identifiers.js";
 import { CLIENT_CORE_MARKED_FILES, CLIENT_CORE_OWNED_PATHS, IDENTIFIER_RENAMES } from "./types.js";

@@ -239,7 +239,9 @@ export async function listGithubSecretNames(slug: string): Promise<Set<string>> 
   });
   if (res.exitCode !== 0) {
     throw new Error(
-      redactErrorMessage(`gh secret list --repo ${slug} exited ${res.exitCode}: ${res.stderr.trim()}`),
+      redactErrorMessage(
+        `gh secret list --repo ${slug} exited ${res.exitCode}: ${res.stderr.trim()}`,
+      ),
     );
   }
   try {
@@ -271,9 +273,7 @@ async function pushReal(
     if (target === "coolify") {
       results.push(await pushToCoolify(projectName, pairs, { appName: options.coolifyAppName }));
     } else if (target === "gh") {
-      results.push(
-        await pushToGithub(pairs, { repoSlug: options.ghRepoSlug, cwd: options.cwd }),
-      );
+      results.push(await pushToGithub(pairs, { repoSlug: options.ghRepoSlug, cwd: options.cwd }));
     }
   }
   return results;

@@ -21,31 +21,21 @@
  */
 
 import {
-  type OperationalContext,
-  type OperationalOutcome,
   applied,
   notDeployedToCoolify,
+  type OperationalContext,
+  type OperationalOutcome,
   skipped,
 } from "../operational-context.js";
 import { recommendedDomainLayout, topologyAdvice } from "./advice.js";
 import {
   CLAUDE_MD_BEGIN,
-  TOPOLOGY_DOC_REL,
   renderClaudeMdSection,
   renderTopologyDoc,
+  TOPOLOGY_DOC_REL,
   upsertClaudeMdSection,
 } from "./docs.js";
 
-export {
-  inferZone,
-  labelsBelowZone,
-  normalizeHost,
-  pathInDomain,
-  recommendedDomainLayout,
-  serviceNameFindings,
-  splitApiHost,
-  topologyAdvice,
-} from "./advice.js";
 export type {
   DomainAlternative,
   DomainLayout,
@@ -57,12 +47,22 @@ export type {
   TopologyAdviceInput,
 } from "./advice.js";
 export {
+  inferZone,
+  labelsBelowZone,
+  normalizeHost,
+  pathInDomain,
+  recommendedDomainLayout,
+  serviceNameFindings,
+  splitApiHost,
+  topologyAdvice,
+} from "./advice.js";
+export {
   CLAUDE_MD_BEGIN,
   CLAUDE_MD_END,
   OWNED_FILE_NOTICE,
-  TOPOLOGY_DOC_REL,
   renderClaudeMdSection,
   renderTopologyDoc,
+  TOPOLOGY_DOC_REL,
   upsertClaudeMdSection,
 } from "./docs.js";
 

@@ -26,12 +26,12 @@ import {
 } from "../templates.js";
 import { runWorkspaceCodemods } from "./codemods.js";
 import { filesFor } from "./file-map.js";
-import { INVITES_PER_HOUR, INVITE_TTL_DAYS, PENDING_INVITE_CAP } from "./limits.js";
+import { INVITE_TTL_DAYS, INVITES_PER_HOUR, PENDING_INVITE_CAP } from "./limits.js";
 import type { WorkspacesTargets } from "./types.js";
 
-export { WORKSPACE_FILES, filesFor, enabledGroups } from "./file-map.js";
 export { runWorkspaceCodemods } from "./codemods.js";
-export { PENDING_INVITE_CAP, INVITES_PER_HOUR, INVITE_TTL_DAYS } from "./limits.js";
+export { enabledGroups, filesFor, WORKSPACE_FILES } from "./file-map.js";
+export { INVITE_TTL_DAYS, INVITES_PER_HOUR, PENDING_INVITE_CAP } from "./limits.js";
 export type { WorkspacesTargets } from "./types.js";
 
 /** Template directory under `cli/src/templates/`. */

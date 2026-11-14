@@ -101,9 +101,9 @@ import { join } from "node:path";
 import chalk from "chalk";
 import { getCoolifyConfig } from "../config.js";
 import {
-  type ProjectManifest,
   logManifestMigrationNotes,
   manifestHostnames,
+  type ProjectManifest,
   readManifestWithMigrationInfo,
 } from "../scaffold/manifest.js";
 import { hasNativeClient } from "../scaffold/native-origins.js";
@@ -119,19 +119,19 @@ import { discoverPublicIps } from "../utils/coolify-server-ips.js";
 import { exec } from "../utils/exec.js";
 import ora from "../utils/spinner.js";
 import { readWorkerName } from "./cloudflare.js";
+import { imageRefsForProject, provisionRoutedApp } from "./coolify.js";
 import { normalizeCoolifyGitRepository, wireDns } from "./coolify-app.js";
 import {
-  type CoolifyDbReference,
   appShowsCrashSymptoms,
+  type CoolifyDbReference,
   connectToDockerNetworkRecipe,
   findCoolifyDbReferences,
   needsDockerNetwork,
 } from "./coolify-db-network.js";
-import { imageRefsForProject, provisionRoutedApp } from "./coolify.js";
 import {
-  type DeployedRefReport,
   checkDeployedRef,
   composePathAtRepoRoot,
+  type DeployedRefReport,
   pinnedCommitOf,
   renderDeployedRef,
   summarizeDeployedRef,
@@ -146,31 +146,31 @@ import {
 import {
   type CoolifyRuntime,
   DOCKER_DRAIN_TIMING,
-  type HealthCheckSpec,
-  TRAEFIK_DRAIN_TIMING,
-  TRAEFIK_HEALTH,
   formatImageRef,
+  type HealthCheckSpec,
   healthCheckFor,
   healthCheckToConverge,
   needsCoolifyGithubSource,
   resolveCoolifyRuntime,
+  TRAEFIK_DRAIN_TIMING,
+  TRAEFIK_HEALTH,
 } from "./image-runtime.js";
 import { placeProjectResource } from "./project-network.js";
 import { isRoutedWorkerSite, routedWorkerSiteEdge, workersPhrase } from "./routed-worker-site.js";
 import {
+  collapseComposeDomains,
+  computeRoutingPlan,
   type EdgePlan,
+  inferTopology,
+  projectImageApp,
   type RoutedApp,
   type RoutingInput,
   type RoutingPlan,
   type Topology,
-  collapseComposeDomains,
-  computeRoutingPlan,
-  inferTopology,
-  projectImageApp,
 } from "./routing.js";
 import {
-  DRAIN_PROBE_HEADER,
   coolifyLabelsFrom,
+  DRAIN_PROBE_HEADER,
   drainLabelState,
   hasTraefikDrain,
   imageAnswersDrainProbe,
@@ -178,9 +178,9 @@ import {
 } from "./traefik-drain.js";
 import {
   type NativeOriginsOutcome,
-  TRUSTED_ORIGINS_KEY,
   pushNativeOriginsToServerApps,
   redeployNotice,
+  TRUSTED_ORIGINS_KEY,
 } from "./trusted-origins.js";
 
 export interface SyncOptions {

@@ -41,7 +41,7 @@ import {
   discoverTailscale,
   readTerraformState,
 } from "./discover.js";
-import { type MapExtras, expandHome } from "./extras.js";
+import { expandHome, type MapExtras } from "./extras.js";
 import type {
   BackupFacts,
   CloudflareFacts,

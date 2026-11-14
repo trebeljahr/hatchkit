@@ -62,7 +62,7 @@
  * treats "not found" as success).
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import { getCoolifyConfig } from "../config.js";
@@ -70,22 +70,22 @@ import { exec } from "../utils/exec.js";
 import type { RunLedger } from "../utils/run-ledger.js";
 import ora from "../utils/spinner.js";
 import {
+  classifyDeployTokenPolicies,
   DeployTokenError,
   type DeployTokenScope,
-  WORKER_TOKEN_GROUP,
-  classifyDeployTokenPolicies,
   maskId,
   mintWorkerDeployToken,
   targetWorkerIds,
+  WORKER_TOKEN_GROUP,
   withPropagationRetry,
   workerDeployTokenName,
 } from "./cloudflare-deploy-token.js";
 import {
   type DeployHook,
-  PROVISIONER_DEPLOY_SECRET_NAMES,
-  TOKEN_ONLY_DEPLOY_SECRET_NAMES,
   deployHookSecretNames,
   ensureDeployHook,
+  PROVISIONER_DEPLOY_SECRET_NAMES,
+  TOKEN_ONLY_DEPLOY_SECRET_NAMES,
 } from "./coolify-deploy-hook.js";
 
 /** A Coolify application the workflow should redeploy on push. */
@@ -178,10 +178,10 @@ export const PROVISIONER_SECRETS: readonly string[] = [
  *
  *  The provisioner-token names are always in `staleToRemove`; the I/O
  *  wrapper decides whether it is safe to remove them yet. */
-export function computeCoolifyDeploySecrets(input: {
-  hooks: DeployHook[];
-  coolifyUrl: string;
-}): { secrets: Record<string, string>; staleToRemove: string[] } {
+export function computeCoolifyDeploySecrets(input: { hooks: DeployHook[]; coolifyUrl: string }): {
+  secrets: Record<string, string>;
+  staleToRemove: string[];
+} {
   const secrets: Record<string, string> = {
     COOLIFY_BASE_URL: input.coolifyUrl.replace(/\/$/, ""),
   };

@@ -56,23 +56,23 @@ import { SECRET_KEYS, setSecret } from "../utils/secrets.js";
 import { validateDomain, validateProjectName } from "../utils/validate.js";
 import { getCliVersion } from "../utils/version.js";
 import {
-  type DeferralKind,
-  type DeferredStep,
-  FatalProvisionError,
   classifyOptionalStepError,
   confirmConfigureOrDefer,
-  deferStep,
+  type DeferralKind,
+  type DeferredStep,
   deferralForService,
   deferralKeyForService,
+  deferStep,
+  FatalProvisionError,
   labelForService,
   persistDeferredSteps,
   renderDeferralSummary,
   setupCommandsForService,
 } from "./deferrals.js";
 import {
+  adoptGlitchtipClient,
   type GlitchtipClient,
   type GlitchtipProjectRole,
-  adoptGlitchtipClient,
   glitchtipPlatformFor,
   packageUsesNext,
   provisionGlitchtipClient,
@@ -86,8 +86,8 @@ import {
   renderR2BucketTokensEnv,
 } from "./s3.js";
 import {
-  type SearchConsoleProvisionResult,
   provisionSearchConsoleForDomain,
+  type SearchConsoleProvisionResult,
 } from "./search-console.js";
 import { devLocalEnvPath, parseEnvLines, writeDevEnv, writeProdEnv } from "./write-env.js";
 

@@ -57,6 +57,7 @@ import type { ProjectFileReader } from "./origin-agreement.js";
 import { checkApiOriginAgreement } from "./origin-agreement.js";
 import { ORIGIN_SITES } from "./sites.js";
 
+export { ENV_SOURCES_DOC_REL_PATH, renderEnvSourcesDoc } from "./doc.js";
 export type {
   ApiOriginAgreementInput,
   ApiOriginAgreementResult,
@@ -82,14 +83,13 @@ export {
 } from "./runtime-env.js";
 export type { FileSite, OriginSite, OriginSiteId, PlatformEnvSite } from "./sites.js";
 export {
-  NATIVE_API_URL_KEY,
-  ORIGIN_SITES,
   extractOriginLiteral,
   isTripwireOrigin,
+  NATIVE_API_URL_KEY,
   normalizeOrigin,
+  ORIGIN_SITES,
   siteLocation,
 } from "./sites.js";
-export { ENV_SOURCES_DOC_REL_PATH, renderEnvSourcesDoc } from "./doc.js";
 
 /** A reader for {@link checkApiOriginAgreement} rooted at a project.
  *

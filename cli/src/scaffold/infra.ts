@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
-import { type S3ProviderMeta, getConfig } from "../config.js";
+import { getConfig, type S3ProviderMeta } from "../config.js";
 import type { ProjectConfig } from "../prompts.js";
 import { renderString } from "../utils/template.js";
 

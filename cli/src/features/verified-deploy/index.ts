@@ -55,10 +55,10 @@
  */
 
 import {
-  type OperationalContext,
-  type OperationalOutcome,
   applied,
   notDeployedToCoolify,
+  type OperationalContext,
+  type OperationalOutcome,
   skipped,
 } from "../operational-context.js";
 import { planVerifiedDeploy } from "./plan.js";
@@ -75,38 +75,38 @@ import {
   verifiedDeployRetrofits,
 } from "./workflow.js";
 
-export * from "./types.js";
 export { applicableChecks, evaluateGate, isWaiting } from "./gate.js";
 export {
   breakingMigrations,
   canRollBackServer,
-  readMigrationRegistry,
   EMPTY_REGISTRY,
+  readMigrationRegistry,
 } from "./migration-guard.js";
-export { isFullSha, selectRollbackTarget, shaFromImageRef } from "./rollback-target.js";
 export {
   DEPLOY_CONCURRENCY_GROUP,
-  type VerifiedDeployPlanInput,
   deployAppsFor,
   planVerifiedDeploy,
+  type VerifiedDeployPlanInput,
 } from "./plan.js";
+export { isFullSha, selectRollbackTarget, shaFromImageRef } from "./rollback-target.js";
 export {
   DEPLOY_ENTRY_REL_PATH,
   DEPLOY_LIB_REL_PATH,
   renderDeployEntry,
   renderDeployLib,
 } from "./script.js";
+export * from "./types.js";
 export {
   DEPLOY_STEP_NAME,
-  ROLLBACK_WORKFLOW_REL_PATH,
   deployStepYaml,
+  ROLLBACK_WORKFLOW_REL_PATH,
   renderRollbackWorkflow,
   verifiedDeployRetrofits,
   withDeployCheckoutHistory,
   withDeployJobConcurrency,
-  withVerifiedDeployStep,
   withoutPushCancellation,
   withoutSupersededDeploySteps,
+  withVerifiedDeployStep,
 } from "./workflow.js";
 
 /**

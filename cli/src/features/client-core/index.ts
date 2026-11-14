@@ -53,22 +53,22 @@ export const clientCoreFeature = registerFeature({
   },
 });
 
+export {
+  anchoredBlocks,
+  CLIENT_CORE_CHECKLIST_PATH,
+  insertAfter,
+  type ManualWiring,
+  renderClientCoreChecklist,
+} from "./add.js";
 export { applyClientCore, chainCoreBuild, starterFilesUnder } from "./apply.js";
 export {
-  CLIENT_CORE_CHECKLIST_PATH,
-  anchoredBlocks,
-  insertAfter,
-  renderClientCoreChecklist,
-  type ManualWiring,
-} from "./add.js";
-export {
-  MARKER_CLOSE,
-  MARKER_OPEN,
-  UnbalancedMarkerError,
   blockRanges,
   hasMarkedBlocks,
+  MARKER_CLOSE,
+  MARKER_OPEN,
   readMarkedBlocks,
   stripMarkedBlocks,
+  UnbalancedMarkerError,
 } from "./markers.js";
 export {
   findStarterIdentifierLiterals,

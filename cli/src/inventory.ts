@@ -24,7 +24,7 @@
  * Everything is read-only. No mutations. Safe to run anywhere.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { confirm, input } from "@inquirer/prompts";
 import chalk from "chalk";
@@ -54,7 +54,7 @@ import { CoolifyApi, type CoolifyApplication } from "./utils/coolify-api.js";
 import { exec, execOk } from "./utils/exec.js";
 import { listS3Buckets } from "./utils/s3-admin.js";
 import { getCloudflareTokenValue } from "./utils/secrets.js";
-import { type Step, runSteps } from "./utils/step-runner.js";
+import { runSteps, type Step } from "./utils/step-runner.js";
 import { getCliVersion } from "./utils/version.js";
 
 // ---------------------------------------------------------------------------

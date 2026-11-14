@@ -50,23 +50,23 @@
  * are in sync — the per-project revocation path.
  */
 
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import chalk from "chalk";
 import { getCoolifyConfig } from "../config.js";
 import { readWorkerName } from "../deploy/cloudflare.js";
 import {
   type DeployRole,
-  LIVE_TAG,
   deployHookSecretNames,
   ensureDeployHook,
+  LIVE_TAG,
   withLiveTag,
 } from "../deploy/coolify-deploy-hook.js";
 import {
   type CloudflareDeploySecretsResult,
   type CoolifyDeployApp,
-  PROVISIONER_SECRETS,
   listRepoSecrets,
+  PROVISIONER_SECRETS,
   planCoolifyDeploySecretNames,
   repoSlugFromRemote,
   setCloudflareDeploySecrets,
@@ -145,14 +145,18 @@ export interface IsolateResult {
  *  a wrangler.jsonc. */
 export function workerRepoName(
   projectDir: string,
-  manifest: Pick<ProjectManifest, "deploymentMode" | "clientHost" | "clientWorker"> &
-    Partial<Pick<ProjectManifest, "name">>
+  manifest:
+    | (Pick<ProjectManifest, "deploymentMode" | "clientHost" | "clientWorker"> &
+        Partial<Pick<ProjectManifest, "name">>)
     | null,
 ): string | null {
   const worker = readWorkerName(projectDir);
   if (manifest?.deploymentMode === "cloudflare") return worker ?? manifest.name ?? null;
   if (manifest?.clientHost === "cloudflare" && manifest.name) {
-    return clientWorkerName({ name: manifest.name, clientWorker: manifest.clientWorker }, projectDir);
+    return clientWorkerName(
+      { name: manifest.name, clientWorker: manifest.clientWorker },
+      projectDir,
+    );
   }
   if (manifest) return null;
   return worker && workflowsReading(projectDir, ["CLOUDFLARE_API_TOKEN"]).length > 0
@@ -195,7 +199,9 @@ export function coolifyAppsBesideWorker(
   for (const routed of plan.apps) {
     const uuid = [routed.appName, ...routed.aliases].map((n) => byName.get(n)).find(Boolean);
     if (!uuid) continue;
-    out.push(routed.role === "server" || routed.role === "client" ? { uuid, role: routed.role } : { uuid });
+    out.push(
+      routed.role === "server" || routed.role === "client" ? { uuid, role: routed.role } : { uuid },
+    );
   }
   return out;
 }
@@ -447,7 +453,8 @@ export async function isolateProject(
     return result;
   }
   const promotesLive = workflows.some(
-    (w) => w.after.includes(`- name: ${PROMOTE_STEP_NAME}`) || w.after.includes("hatchkit-deploy.mjs"),
+    (w) =>
+      w.after.includes(`- name: ${PROMOTE_STEP_NAME}`) || w.after.includes("hatchkit-deploy.mjs"),
   );
   if (!opts.dryRun) {
     for (const w of workflows) {
@@ -482,7 +489,8 @@ export async function isolateProject(
               updates[key] = withLiveTag(value);
               result.live.push(`${label}: ${key}=${withLiveTag(value)} (from :${tagOf(value)})`);
             }
-            if (!opts.dryRun && Object.keys(updates).length > 0) await api.setAppEnv(app.uuid, updates);
+            if (!opts.dryRun && Object.keys(updates).length > 0)
+              await api.setAppEnv(app.uuid, updates);
           }
         } catch (err) {
           result.errors.push(`${label}: :live switch failed — ${(err as Error).message}`);
@@ -602,7 +610,8 @@ function printResult(r: IsolateResult, dryRun: boolean): void {
   if (r.cloudflare) printCloudflare(r.cloudflare, dryRun);
   const coolifySecrets = r.secretsPushed.filter((n) => !r.cloudflare?.pushed.includes(n));
   for (const a of r.apps) {
-    const kind = a.buildPack === "dockercompose" ? " (compose)" : a.buildPack ? ` (${a.buildPack})` : "";
+    const kind =
+      a.buildPack === "dockercompose" ? " (compose)" : a.buildPack ? ` (${a.buildPack})` : "";
     console.log(
       `    · ${a.role ?? "app"} ${a.uuid}${kind}` +
         (a.changes.length ? ` — ${would}${a.changes.join(", ")}` : ""),
@@ -672,9 +681,7 @@ export async function runSecretsIsolate(args: string[]): Promise<number> {
     }
     apps.push(role === "client" || role === "server" ? { uuid, role } : { uuid });
   }
-  const target = args.find(
-    (a, i) => i > 0 && !a.startsWith("--") && args[i - 1] !== "--app",
-  );
+  const target = args.find((a, i) => i > 0 && !a.startsWith("--") && args[i - 1] !== "--app");
 
   const { defaultProjectRoots, discoverProjects } = await import("./global/consumers.js");
   let dirs: string[];
@@ -693,8 +700,7 @@ export async function runSecretsIsolate(args: string[]): Promise<number> {
       (apps.length > 0 && existsSync(target))
     ) {
       dirs = [target];
-    }
-    else {
+    } else {
       const match = discoverProjects(defaultProjectRoots()).find(
         (p) => p.name === target || p.dir.endsWith(`/${target}`),
       );

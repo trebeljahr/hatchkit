@@ -47,7 +47,7 @@ import {
   resolveProductionEnv,
 } from "./env-resolve.js";
 import type { RoutedApp } from "./routing.js";
-import { TRUSTED_ORIGINS_KEY, mergePushedTrustedOrigins } from "./trusted-origins.js";
+import { mergePushedTrustedOrigins, TRUSTED_ORIGINS_KEY } from "./trusted-origins.js";
 
 /** One Coolify app to push to. */
 export interface EnvPushApp {

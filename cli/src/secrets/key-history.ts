@@ -107,7 +107,10 @@ export async function assertKeysNotLeaked(
 
 /** Operator-facing refusal text. Exported so the global fan-out can put
  *  the same recovery recipe on a skipped consumer. */
-export function keyHistoryRefusal(report: KeyHistoryReport, opts: AssertKeysNotLeakedOptions): string {
+export function keyHistoryRefusal(
+  report: KeyHistoryReport,
+  opts: AssertKeysNotLeakedOptions,
+): string {
   const where = `${report.paths.join(", ")} (commit ${report.commits.join(", ")})`;
   const recipe =
     `  hatchkit keys rotate ${opts.projectName}\n` +

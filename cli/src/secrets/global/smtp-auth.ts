@@ -11,7 +11,7 @@
  * into an error: failures report the SMTP reply code and the phase.
  */
 
-import { type Socket, connect as netConnect } from "node:net";
+import { connect as netConnect, type Socket } from "node:net";
 import { connect as tlsConnect } from "node:tls";
 
 export interface SmtpAuthOptions {

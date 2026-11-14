@@ -19,14 +19,14 @@
  */
 
 import chalk from "chalk";
-import { grantListsOnListRole } from "./listmonk-project-user.js";
 import {
+  createListmonkList,
   type ListmonkAuth,
   type ListmonkList,
-  createListmonkList,
   listListmonkListRoles,
   listListmonkLists,
 } from "./listmonk.js";
+import { grantListsOnListRole } from "./listmonk-project-user.js";
 
 const KEY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 

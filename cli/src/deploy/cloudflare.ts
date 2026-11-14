@@ -27,9 +27,9 @@ import {
   rememberWorkersSubdomain,
 } from "../config.js";
 import {
+  applyCloudflareMode,
   CLOUDFLARE_PUBLISH_DIR,
   CLOUDFLARE_WRANGLER_REL_PATH,
-  applyCloudflareMode,
 } from "../scaffold/cloudflare-mode.js";
 import { readManifest } from "../scaffold/manifest.js";
 import { type CfDnsRecord, CloudflareApi } from "../utils/cloudflare-api.js";

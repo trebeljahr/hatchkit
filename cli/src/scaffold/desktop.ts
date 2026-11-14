@@ -22,11 +22,11 @@
  * tests alike.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import {
-  type ProjectIdentifiers,
   findUnsubstitutedIdentifierTokens,
+  type ProjectIdentifiers,
   substituteIdentifierTokens,
 } from "./identifiers.js";
 

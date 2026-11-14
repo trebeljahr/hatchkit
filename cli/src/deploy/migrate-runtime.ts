@@ -57,7 +57,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
@@ -75,13 +75,13 @@ import {
 import { formatImageRef } from "./image-runtime.js";
 import {
   type CarriedVolume,
-  type PlannedImageApp,
-  type RuntimeMigrationPlan,
   deploySecretNameFor,
+  type PlannedImageApp,
   parseMigrationImageOverride,
   planRuntimeMigration,
+  type RuntimeMigrationPlan,
 } from "./migrate-runtime-plan.js";
-import { type RoutedApp, computeRoutingPlan, projectImageApp } from "./routing.js";
+import { computeRoutingPlan, projectImageApp, type RoutedApp } from "./routing.js";
 import { TRAEFIK_ADDRESS_ENV, traefikAddressFor } from "./traefik-address.js";
 
 export interface MigrateRuntimeOptions {

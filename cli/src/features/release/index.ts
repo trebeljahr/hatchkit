@@ -43,19 +43,19 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type FeatureContext, registerFeature } from "../contract.js";
-import { type ProjectFacts, buildReleaseConfig, derivationInputFromProject } from "./config.js";
+import { buildReleaseConfig, derivationInputFromProject, type ProjectFacts } from "./config.js";
 import { renderCredentialsDoc, renderReleasingDoc } from "./docs.js";
 import type { ReleaseConfig, ReleaseSetupAudit } from "./types.js";
 import { RELEASE_CONFIG_FILENAME } from "./types.js";
 import { renderCompatWorkflow, renderSummaryWorkflow } from "./workflows.js";
 
-export * from "./types.js";
-export { buildReleaseConfig, derivationInputFromProject, readReleaseConfig } from "./config.js";
 export { deriveChannels } from "./channels.js";
+export { buildReleaseConfig, derivationInputFromProject, readReleaseConfig } from "./config.js";
 export { deriveCredentials, signingSecretsFor } from "./credentials.js";
-export { derivePolicy } from "./policy-rules.js";
-export { deriveVersionCopies, deriveVersionReads } from "./version-targets.js";
 export { renderCredentialsDoc, renderReleasingDoc } from "./docs.js";
+export { derivePolicy } from "./policy-rules.js";
+export * from "./types.js";
+export { deriveVersionCopies, deriveVersionReads } from "./version-targets.js";
 export { renderCompatWorkflow, renderSummaryWorkflow } from "./workflows.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

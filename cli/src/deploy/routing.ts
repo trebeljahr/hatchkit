@@ -107,8 +107,8 @@ import type { Surface } from "../prompts.js";
 import {
   type CoolifyRuntime,
   type HealthCheckSpec,
-  type ImageRef,
   healthCheckFor,
+  type ImageRef,
   parseImageRef,
 } from "./image-runtime.js";
 

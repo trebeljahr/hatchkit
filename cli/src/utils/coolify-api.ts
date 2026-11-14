@@ -1,8 +1,8 @@
 import {
   type HealthCheckSpec,
+  healthCheckPayload,
   type ImageRef,
   type LiveHealthCheck,
-  healthCheckPayload,
 } from "../deploy/image-runtime.js";
 import { collapseComposeDomains, splitDomainString } from "../deploy/routing.js";
 

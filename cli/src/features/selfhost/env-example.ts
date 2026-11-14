@@ -19,7 +19,7 @@
 
 import type { OperationalProject } from "../operational-context.js";
 import { hasServerHalf } from "../operational-context.js";
-import { type SelfHostOptions, ownedFileHeader, selfHostPlan } from "./compose.js";
+import { ownedFileHeader, type SelfHostOptions, selfHostPlan } from "./compose.js";
 import { trustSwitches } from "./trust.js";
 
 export const SELFHOST_ENV_EXAMPLE_REL = ".env.selfhost.example";

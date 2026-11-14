@@ -40,14 +40,14 @@
 import type { OperationalProject } from "../operational-context.js";
 import { hasServerHalf } from "../operational-context.js";
 import {
+  ciImageTag,
+  ownedFileHeader,
   PROXY_CONFIG_REL,
   SELFHOST_BUILD_OVERRIDE_REL,
   SELFHOST_CI_OVERRIDE_REL,
   SELFHOST_CLIENT_DOCKERFILE_REL,
   SELFHOST_COMPOSE_REL,
   type SelfHostOptions,
-  ciImageTag,
-  ownedFileHeader,
   selfHostPlan,
 } from "./compose.js";
 import { SELFHOST_ENV_EXAMPLE_REL } from "./env-example.js";
@@ -210,7 +210,7 @@ export function renderSmokeWorkflow(
     "          # -k: the certificate comes from the proxy's internal CA, which",
     "          # the runner does not trust. That is the point of using it.",
     "          status=\"$(curl -sk -o health.json -w '%{http_code}' \\",
-    `            \"https://$APP_DOMAIN${plan.apiPrefix}/health\")\"`,
+    `            "https://$APP_DOMAIN${plan.apiPrefix}/health")"`,
     "          cat health.json; echo",
     '          if [ "$status" != "200" ]; then',
     `            echo "::error::${plan.apiPrefix}/health answered HTTP $status through the proxy"`,
@@ -240,7 +240,7 @@ export function renderSmokeWorkflow(
       "          # is by fetching this file. A cached copy would let a rolled",
       "          # back deploy keep reporting the commit it no longer serves.",
       "          curl -sk -D info.headers -o info.json \\",
-      `            \"https://$APP_DOMAIN${BUILD_INFO_PATH}\"`,
+      `            "https://$APP_DOMAIN${BUILD_INFO_PATH}"`,
       "          cat info.json; echo",
       "          grep -i '^cache-control:.*no-cache' info.headers > /dev/null \\",
       `            || { cat info.headers; echo "::error::${BUILD_INFO_PATH} is not served no-cache"; exit 1; }`,
@@ -263,10 +263,10 @@ export function renderSmokeWorkflow(
       // Exactly 16 bytes base64-encoded, as the protocol requires — a
       // shorter key is rejected before the route is ever exercised.
       "            -H 'Sec-WebSocket-Key: c2VsZmhvc3RzbW9rZTEyMw==' \\",
-      `            \"https://$APP_DOMAIN${plan.socketPath}\" || true`,
+      `            "https://$APP_DOMAIN${plan.socketPath}" || true`,
       "          grep -qi '^HTTP/1.1 101' ws.headers \\",
       "            || { cat ws.headers; \\",
-      `                 echo \"::error::${plan.socketPath} did not upgrade through the proxy\"; exit 1; }`,
+      `                 echo "::error::${plan.socketPath} did not upgrade through the proxy"; exit 1; }`,
     );
   }
 

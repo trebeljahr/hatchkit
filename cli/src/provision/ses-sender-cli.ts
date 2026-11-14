@@ -13,10 +13,10 @@ import { readProjectEnvSnapshot } from "./listmonk-user-cli.js";
 import { operatorScope, senderOperatorPolicy } from "./ses-operator-policy.js";
 import { senderPolicy, senderSpec } from "./ses-project-policy.js";
 import {
-  type SenderRecord,
-  type SenderStore,
   ensureSender,
   retirePreviousSenderKey,
+  type SenderRecord,
+  type SenderStore,
   senderClients,
   senderRollbackRecipe,
   senderSetupInstructions,

@@ -19,15 +19,15 @@ import {
   needsCoolifyGithubSource,
 } from "./deploy/image-runtime.js";
 import type { Topology } from "./deploy/routing.js";
-import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./email/presets.js";
+import { buildForwardPresets, DEFAULT_CATCH_ALL } from "./email/presets.js";
 import type { AuthSecurityOption } from "./features/auth-account-security/types.js";
 import {
   EXTENSION_PREREQUISITE,
   extensionPrerequisiteProblem,
 } from "./features/extension/index.js";
 import {
-  type ProjectOnboardingPlan,
   onboardingPlanToProjectConfig,
+  type ProjectOnboardingPlan,
   projectConfigToOnboardingPlan,
   renderOnboardingDeploymentModeSummary,
   renderOnboardingSurfaceSummary,
@@ -41,7 +41,7 @@ import { CoolifyApi, type CoolifyServer } from "./utils/coolify-api.js";
 import { discoverPublicIps } from "./utils/coolify-server-ips.js";
 import { exec } from "./utils/exec.js";
 import { multiselect as inquirerMultiselect } from "./utils/multiselect.js";
-import { type Step, rememberStepPrompt, runSteps } from "./utils/step-runner.js";
+import { rememberStepPrompt, runSteps, type Step } from "./utils/step-runner.js";
 import {
   parseDomain,
   validateCoolifyDescription,
@@ -530,11 +530,7 @@ export interface EmailNeeds {
  *  per-need booleans. Four options (none / one / the other / both)
  *  rather than two separate yes-no prompts — same information, but
  *  shorter and copy-paste friendly. */
-export async function askEmailNeeds(
-  opts: {
-    defaults?: EmailNeeds;
-  } = {},
-): Promise<EmailNeeds> {
+export async function askEmailNeeds(opts: { defaults?: EmailNeeds } = {}): Promise<EmailNeeds> {
   const choice = await select<"none" | "tx" | "ml" | "both">({
     message: "Email needs for this project:",
     default: emailNeedsToChoiceKey(opts.defaults ?? { transactional: false, mailingList: false }),

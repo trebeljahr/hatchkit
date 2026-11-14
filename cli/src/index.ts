@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-import { prepareInfrastructureRoot, resolveAssetRoot } from "./utils/asset-root.js";
-import { configureHttpTimeouts } from "./utils/http-timeouts.js";
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
@@ -11,7 +9,6 @@ import { AUDIT_USAGE, runAuditCommand } from "./audit/command.js";
 import { AUTH_USAGE } from "./auth-providers/usage.js";
 import { BACKUP_USAGE, runBackupCommand } from "./backups/command.js";
 import {
-  PAUSABLE_PROVIDERS,
   clearProviderPause,
   ensureCoolify,
   ensureDns,
@@ -26,6 +23,7 @@ import {
   getProviderPauses,
   isFirstRun,
   isPausableProvider,
+  PAUSABLE_PROVIDERS,
   reconfigureProvider,
   resetConfig,
   runOnboarding,
@@ -46,42 +44,43 @@ import { requireCloudflareZoneForTerraform, runTerraform } from "./deploy/terraf
 import { printReleaseUsage } from "./features/release/command.js";
 import { type HelpTopic, helpTopicForCommand, isHelpRequest } from "./help-routing.js";
 import { HOST_USAGE, runHostCommand } from "./host/integrity.js";
-import { UPDATES_USAGE, runUpdatesCommand } from "./host/updates.js";
+import { runUpdatesCommand, UPDATES_USAGE } from "./host/updates.js";
 import { INFRA_USAGE, runInfraCommand } from "./infra/command.js";
 import { MAC_RUNNER_USAGE, runMacRunnerCommand } from "./mac-runner/command.js";
 import { MAP_USAGE } from "./map/usage.js";
 import {
-  type Feature,
-  type GpuPlatform,
-  type ProjectConfig,
   collectProjectConfig,
   describeDeployNow,
   docsSitePromptApplies,
   docsSiteUrl,
+  type Feature,
+  type GpuPlatform,
+  type ProjectConfig,
   summarizeEmailForwarding,
   summarizeEmailIntent,
 } from "./prompts.js";
 import {
   type DeferredStep,
-  STANDALONE_STEP_KEYS,
   deferralForStep,
   labelForService,
   persistDeferredSteps,
   renderDeferralSummary,
+  STANDALONE_STEP_KEYS,
 } from "./provision/deferrals.js";
 import {
-  type ProvisionService,
   type ProvisionedEvent,
-  type SurfaceMode,
+  type ProvisionService,
   runProvision,
   runUnprovision,
+  type SurfaceMode,
 } from "./provision/index.js";
 import { STRIPE_USAGE } from "./provision/stripe-usage.js";
 import { scaffoldApp } from "./scaffold/app.js";
 import { scaffoldInfra } from "./scaffold/infra.js";
 import { MANIFEST_FILENAME, type ProjectManifest, readManifest } from "./scaffold/manifest.js";
 import { mlEnvVarName, printMlSummary, resolveMlServices } from "./scaffold/ml-client.js";
-import { SUPPORTED_ADDITIONS, runUpdate } from "./scaffold/update.js";
+import { runUpdate, SUPPORTED_ADDITIONS } from "./scaffold/update.js";
+import { prepareInfrastructureRoot, resolveAssetRoot } from "./utils/asset-root.js";
 import {
   installCancelHandler,
   isCancelInProgress,
@@ -93,8 +92,8 @@ import {
   KNOWN_ANALYTICS_PROVIDERS,
   KNOWN_DB_ENGINES,
   KNOWN_DB_PROVIDERS,
-  KNOWN_DEPLOYMENT_MODES,
   KNOWN_DEPLOY_TARGETS,
+  KNOWN_DEPLOYMENT_MODES,
   KNOWN_EMAIL_INTENTS,
   KNOWN_FEATURES,
   KNOWN_GITHUB_VISIBILITIES,
@@ -107,6 +106,7 @@ import {
   KNOWN_SURFACES,
   parseCreateFlags,
 } from "./utils/flags.js";
+import { configureHttpTimeouts } from "./utils/http-timeouts.js";
 import { RunLedger } from "./utils/run-ledger.js";
 import { SECRET_KEYS } from "./utils/secrets.js";
 import { getCliVersion } from "./utils/version.js";
@@ -1750,7 +1750,7 @@ async function handleAdd(): Promise<void> {
   const validSurfaceModes = ["fullstack", "split", "backend", "static"] as const;
   const noEnvServices = new Set<ProvisionService>(["email", "search-console"]);
   const onlyNoEnvServices = services.every((service) => noEnvServices.has(service));
-  let surfaces: Parameters<typeof runProvision>[0]["surfaces"] = undefined;
+  let surfaces: Parameters<typeof runProvision>[0]["surfaces"];
   if (noWrite) {
     surfaces = false;
   } else if (onlyNoEnvServices) {

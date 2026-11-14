@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import { Separator, confirm, input, password, select } from "@inquirer/prompts";
+import { confirm, input, password, Separator, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import Conf from "conf";
 import type { CloudflareAuditConfig } from "./audit/expected.js";
@@ -16,17 +16,17 @@ import {
 } from "./utils/gh-token.js";
 import { pickPort } from "./utils/ports.js";
 import {
-  LEGACY_CLOUDFLARE_TOKEN_SLOTS,
-  SECRET_KEYS,
   clearAllSecrets,
   deleteSecret,
   getCloudflareToken,
   getCloudflareTokenValue,
   getSecret,
+  LEGACY_CLOUDFLARE_TOKEN_SLOTS,
+  SECRET_KEYS,
   setSecret,
 } from "./utils/secrets.js";
 import ora from "./utils/spinner.js";
-import { type Step, runSteps } from "./utils/step-runner.js";
+import { runSteps, type Step } from "./utils/step-runner.js";
 import { validateRequired, validateUrl } from "./utils/validate.js";
 
 /** Sanity-check an S3 access/secret pair against shape rules. Returns

@@ -8,7 +8,7 @@
  * files and stops.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { CLOUDFLARE_WRANGLER_REL_PATH } from "../scaffold/cloudflare-mode.js";
 import { RECORD_SHIP_ACTION_REL_PATH, writeRecordShipAction } from "../scaffold/record-ship.js";

@@ -31,7 +31,7 @@ import {
 } from "./client-rewriter.js";
 import { renderAuthSecurityDocs } from "./docs.js";
 import { PASSKEY_PACKAGE } from "./options.js";
-import { APPLE_ENV_VARS, METHOD_ENV_VARS, filesFor, planAuthAccountSecurity } from "./plan.js";
+import { APPLE_ENV_VARS, filesFor, METHOD_ENV_VARS, planAuthAccountSecurity } from "./plan.js";
 import {
   type AuthSecurityTokens,
   renderAuthSecurityString,
@@ -45,10 +45,6 @@ import {
   GUEST_ACCOUNTS_ADDITION,
   type HealthExtra,
   type RewriteResult,
-  SIGN_IN_METHODS_HEALTH_EXTRA,
-  SOCIAL_PROVIDERS_ADDITION,
-  STEAM_ADDITION,
-  USERNAME_ADDITION,
   rewriteHealthRouter,
   rewriteHealthRouterExtras,
   rewriteProfileRouter,
@@ -57,29 +53,13 @@ import {
   rewriteServerAuthAccountLinking,
   rewriteServerAuthAddition,
   rewriteSharedIndex,
+  SIGN_IN_METHODS_HEALTH_EXTRA,
+  SOCIAL_PROVIDERS_ADDITION,
+  STEAM_ADDITION,
+  USERNAME_ADDITION,
 } from "./server-rewriter.js";
 import type { ApplyAuthSecurityOptions, AuthSecurityAudit, AuthSecurityOption } from "./types.js";
 
-export * from "./types.js";
-export { AUTH_SECURITY_SPECS, specFor, signInMethods, PASSKEY_PACKAGE } from "./options.js";
-export { planAuthAccountSecurity, filesFor, APPLE_ENV_VARS, METHOD_ENV_VARS } from "./plan.js";
-export { renderAuthSecurityDocs, tokenShellVerdicts } from "./docs.js";
-export {
-  ORDERED_SERVER_PLUGINS,
-  assertPluginOrder,
-  extractRegisteredPlugins,
-  findPluginOrderViolation,
-  serverPluginsFor,
-} from "./plugin-order.js";
-export {
-  rewriteServerAuth,
-  rewriteServerAuthAddition,
-  rewriteServerAuthAccountLinking,
-  rewriteServerAuthApple,
-  rewriteHealthRouterApple,
-  rewriteHealthRouterExtras,
-  ACCOUNT_LINKING_BLOCK,
-} from "./server-rewriter.js";
 export {
   rewriteAuthClient,
   rewriteLoginPage,
@@ -90,6 +70,26 @@ export {
   rewriteSignupPage,
   rewriteSignupPageExtras,
 } from "./client-rewriter.js";
+export { renderAuthSecurityDocs, tokenShellVerdicts } from "./docs.js";
+export { AUTH_SECURITY_SPECS, PASSKEY_PACKAGE, signInMethods, specFor } from "./options.js";
+export { APPLE_ENV_VARS, filesFor, METHOD_ENV_VARS, planAuthAccountSecurity } from "./plan.js";
+export {
+  assertPluginOrder,
+  extractRegisteredPlugins,
+  findPluginOrderViolation,
+  ORDERED_SERVER_PLUGINS,
+  serverPluginsFor,
+} from "./plugin-order.js";
+export {
+  ACCOUNT_LINKING_BLOCK,
+  rewriteHealthRouterApple,
+  rewriteHealthRouterExtras,
+  rewriteServerAuth,
+  rewriteServerAuthAccountLinking,
+  rewriteServerAuthAddition,
+  rewriteServerAuthApple,
+} from "./server-rewriter.js";
+export * from "./types.js";
 
 /** Screens a signed-out visitor may be sent back to after signing in.
  *  The starter's protected routes; a project adds its own. */

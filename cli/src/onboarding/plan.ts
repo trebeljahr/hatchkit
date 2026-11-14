@@ -2,8 +2,8 @@ import chalk from "chalk";
 import type { AdoptPlan, DetectedState } from "../adopt.js";
 import type {
   AnalyticsProvider,
-  DeployTarget,
   DeploymentMode,
+  DeployTarget,
   Feature,
   GitHubRepoVisibility,
   ProjectConfig,

@@ -29,7 +29,7 @@ import {
 import { type ProjectManifest, patchManifest, readManifest } from "../scaffold/manifest.js";
 import { CloudflareApi, isEmailDestinationVerified } from "../utils/cloudflare-api.js";
 import { multiselect } from "../utils/multiselect.js";
-import { DEFAULT_CATCH_ALL, buildForwardPresets } from "./presets.js";
+import { buildForwardPresets, DEFAULT_CATCH_ALL } from "./presets.js";
 import { assertEmailRoutingAccess, probeEmailRouting } from "./routing-access.js";
 import {
   type EmailSetupOptions,

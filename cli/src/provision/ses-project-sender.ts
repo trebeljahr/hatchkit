@@ -37,15 +37,15 @@ import {
   SESv2Client,
 } from "@aws-sdk/client-sesv2";
 import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
+import type { SesAuth } from "./ses.js";
 import { operatorScope, senderBoundaryPolicy } from "./ses-operator-policy.js";
 import {
+  canonical,
   SENDER_POLICY_NAME,
   type SesSenderSpec,
-  canonical,
   senderPolicy,
   senderSpec,
 } from "./ses-project-policy.js";
-import type { SesAuth } from "./ses.js";
 
 export interface SenderKey {
   id: string;

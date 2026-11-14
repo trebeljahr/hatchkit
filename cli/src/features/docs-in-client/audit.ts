@@ -17,7 +17,7 @@ export type {
   DocsViolation,
   DocsViolationCode,
 } from "./rules.js";
-export { DOCS_AUDIT_RULES, DOCS_VIOLATION_CODES, cleanDocsTree } from "./rules.js";
+export { cleanDocsTree, DOCS_AUDIT_RULES, DOCS_VIOLATION_CODES } from "./rules.js";
 
 /** The verdict on one built docs tree. */
 export interface DocsAuditResult {

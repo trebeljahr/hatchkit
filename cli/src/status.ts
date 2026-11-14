@@ -25,8 +25,8 @@ import {
 import type { Feature } from "./prompts.js";
 import { type DeferredStep, readDeferredSteps } from "./provision/deferrals.js";
 import {
-  type ProjectManifest,
   manifestHostnames,
+  type ProjectManifest,
   readManifestWithMigrationInfo,
 } from "./scaffold/manifest.js";
 import { getCliVersion } from "./utils/version.js";

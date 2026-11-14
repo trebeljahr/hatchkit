@@ -66,23 +66,23 @@ import {
   deferralForStep,
   persistDeferredSteps,
 } from "../provision/deferrals.js";
-import { type ProjectManifest, findManifestDirUpward, readManifest } from "../scaffold/manifest.js";
+import { findManifestDirUpward, type ProjectManifest, readManifest } from "../scaffold/manifest.js";
 import { CloudflareApi } from "../utils/cloudflare-api.js";
 import { validateDomain } from "../utils/validate.js";
 import {
   type ConfiguredProviders,
+  inferOldDomain,
   MIGRATION_PROVIDERS,
   type MigrationAction,
   type MigrationPhase,
   type MigrationPlan,
   type MigrationPlanInput,
   type MigrationProvider,
-  inferOldDomain,
   planDomainMigration,
   selectActions,
 } from "./plan.js";
 import { renderManualChecklist, renderMigrationPlan } from "./render.js";
-import { type StepContext, type StepFollowUp, type StepOutcome, executorFor } from "./steps.js";
+import { executorFor, type StepContext, type StepFollowUp, type StepOutcome } from "./steps.js";
 
 export interface MigrateDomainOptions {
   projectDir: string;
