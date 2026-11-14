@@ -257,7 +257,7 @@ full database restore as rollback.
 2. With safe current memory pressure, run `HATCHKIT_RUN_LISTMONK_DOCKER=1 node
    scripts/test.mjs test-listmonk-instance-separation.ts` from `cli/`. This opt-in
    test requires cached Postgres 17, Listmonk 6.2
-   and nginx 1.28 Alpine images, creates
+   and nginx 1.30 Alpine images, creates
    two disposable Listmonk/Postgres stacks on high loopback ports, and removes
    only its own random Compose projects/volumes. It starts no SES relay. Foreign
    auth/read/write/send requests must fail, while positive controls pass.
