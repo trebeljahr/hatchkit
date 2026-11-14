@@ -1,5 +1,5 @@
 import { env } from "../config/env.js";
-import { getPresignedUploadUrl, getPublicUrl } from "./storage.js";
+import { getPublicUrl } from "./storage.js";
 import { readLimitedMlResponse } from "./ml-response.js";
 import { randomUUID } from "crypto";
 import {
@@ -112,7 +112,9 @@ export async function generateSubtitles(
   audioBase64: string,
   language?: string,
   model: string = "large-v3",
-  format: string = "json",
+  // Accepted for the router's input shape; the response is always parsed as
+  // JSON, so the request always asks for JSON.
+  _format: string = "json",
 ): Promise<{
   text: string;
   language: string;
