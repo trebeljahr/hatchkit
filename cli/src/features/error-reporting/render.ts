@@ -76,7 +76,7 @@ export const ERROR_REPORTING_SDK_PACKAGE = "@sentry/browser";
  * version that decides what `beforeSend` is handed is the version the
  * generated scrubber was written against.
  */
-export const ERROR_REPORTING_SDK_VERSION = "^10.53.1";
+export const ERROR_REPORTING_SDK_VERSION = "^11.11.0";
 
 /** A host a report can come from. Which of these a project has is
  *  decided by its manifest features, not by sniffing at runtime. */
@@ -502,7 +502,14 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
           dsn: options.dsn,
           release: options.release,
           environment: options.environment,
-          sendDefaultPii: false,
+          // Sentry 11 has no sendDefaultPii; its dataCollection defaults
+          // collect user info, cookies, headers and bodies. All off.
+          dataCollection: {
+            userInfo: false,
+            cookies: false,
+            httpHeaders: false,
+            httpBodies: [],
+          },
           sendClientReports: false,
           // The list replaces the SDK's defaults rather than adding to
           // them, which is what leaves out the ping on every page load,
@@ -512,8 +519,9 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
             client.eventFiltersIntegration(),
             client.functionToStringIntegration(),
             client.browserApiErrorsIntegration(),
+            // Sentry 11 moved console breadcrumbs to an integration of
+            // their own, which this list leaves out.
             client.breadcrumbsIntegration({
-              console: false,
               dom: false,
               sentry: false,
               fetch: true,
