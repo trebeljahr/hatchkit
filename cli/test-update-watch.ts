@@ -51,6 +51,8 @@ const controller = spawnSync(process.execPath, ["test-security-controller.mjs"],
 assert.equal(controller.status, 0, "Independent security controller tests failed");
 const storageWatch = spawnSync(process.execPath, ["test-storage-watch.mjs"], { stdio: "inherit" });
 assert.equal(storageWatch.status, 0, "Cloudflare storage watch tests failed");
+const digestPool = spawnSync(process.execPath, ["test-digest-pool.mjs"], { stdio: "inherit" });
+assert.equal(digestPool.status, 0, "Pooled digest tests failed");
 
 // The host script's own reports for the fixture hosts (test-update-watch.py).
 const generated = spawnSync(

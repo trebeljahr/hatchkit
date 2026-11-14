@@ -80,8 +80,25 @@ def issues_for(config, work):
     return sorted(issues + restore_issues(config, work))
 
 
-def send_email(settings, subject, body):
-    """Send one branded multipart mail. `body` is a hatchkit_mail document or plain text."""
+POOLED = 'pooled'
+
+
+def pooled(settings, body=None):
+    """With `alerts.pool`, the hosts' daily digests go to the security-controller Worker,
+    which sends one mail for every host. Every check's own mail then stays local: what it
+    reports is already in the host's digest. Test mails still go out directly, so they
+    keep proving the fallback path works."""
+    if not (settings or {}).get('pool'):
+        return False
+    return not (isinstance(body, dict) and body.get('title') == 'Test mail')
+
+
+def send_email(settings, subject, body, *, direct=False):
+    """Send one branded multipart mail. `body` is a hatchkit_mail document or plain text.
+
+    Pooled hosts return POOLED without sending, unless `direct` (the digest's fallback)."""
+    if not direct and pooled(settings, body):
+        return POOLED
     path = Path(settings['smtpFile'])
     if path.stat().st_mode & 0o077:
         raise ValueError('SMTP credential file must be private (0600)')

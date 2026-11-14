@@ -143,4 +143,15 @@ class BackupAlerts(unittest.TestCase):
             self.assertNotIn('secret', message.as_string())
 
 
+class PooledMail(unittest.TestCase):
+    def test_check_mails_stay_local_when_pooled_but_test_mail_goes_out(self):
+        settings = {'pool': True, 'smtpFile': '/nonexistent/alert-smtp.json'}
+        self.assertEqual(alerts.send_email(settings, 'x', {'title': 'Backup failed'}), alerts.POOLED)
+        self.assertEqual(alerts.send_email(settings, 'x', 'plain text'), alerts.POOLED)
+        with self.assertRaises(OSError):  # reaches SMTP: the file read fails
+            alerts.send_email(settings, 'x', {'title': 'Test mail'})
+        with self.assertRaises(OSError):
+            alerts.send_email(settings, 'x', {'title': 'Daily digest'}, direct=True)
+
+
 if __name__ == '__main__': unittest.main()

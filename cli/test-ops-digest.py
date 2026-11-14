@@ -269,6 +269,67 @@ class WhenItSends(DigestCase):
         self.assertTrue(any(i['what'] == 'Update watch has no recent result.' for i in self.sent[1][1]['sections']['unchecked']))
 
 
+class Pooled(DigestCase):
+    """alerts.pool: post to the security-controller Worker; mail only when it stops taking posts."""
+    POOLED = {**ALERTS, 'pool': True}
+
+    def run_pooled(self, now=NOW, post=None):
+        self.posts = getattr(self, 'posts', [])
+        def accept(payload):
+            self.posts.append(payload)
+        def send(settings, subject, body, direct=False):
+            self.sent.append((subject, body, direct))
+            return '<id@mail.example.test>'
+        return digest.run({'alerts': self.POOLED}, self.work, send, HOST, now, [], self.units, post=post or accept)
+
+    def test_every_run_posts_and_nothing_is_mailed(self):
+        self.write_watch([package(knownExploited=True)])
+        result = self.run_pooled()
+        self.assertEqual((result['kind'], self.sent), ('pooled', []))
+        payload = self.posts[0]
+        self.assertEqual((payload['schema'], payload['host']), (1, HOST))
+        self.assertEqual(payload['sections']['needs'][0]['flags'], ['Known exploited'])
+        self.assertNotIn(SECRET, json.dumps(payload))
+        self.run_pooled(NOW + dt.timedelta(hours=1))
+        self.assertEqual(len(self.posts), 2, 'posted every run, not once a day')
+        status = json.loads((self.work / digest.STATUS_NAME).read_text())
+        self.assertEqual((status['mode'], status['ok'], status['postError']), ('pooled', True, None))
+
+    def test_a_failed_post_is_a_failed_delivery_then_falls_back_to_direct_mail(self):
+        self.write_watch([package(knownExploited=True)])
+        self.run_pooled()
+        def down(payload):
+            raise OSError('connection refused')
+        result = self.run_pooled(NOW + dt.timedelta(hours=1), post=down)
+        self.assertEqual((result['postError'], self.sent), ('OSError', []))
+        status = json.loads((self.work / digest.STATUS_NAME).read_text())
+        self.assertEqual((status['ok'], status['mailError']), (False, 'OSError'))
+        self.run_pooled(NOW + digest.POOL_FALLBACK + dt.timedelta(hours=1), post=down)
+        self.assertEqual(len(self.sent), 1)
+        self.assertTrue(self.sent[0][2], 'the fallback mails directly, past the pool switch')
+        self.assertEqual(json.loads((self.work / digest.STATUS_NAME).read_text())['mode'], 'fallback')
+
+    def test_the_target_is_the_publishers_monitor_with_the_digest_path(self):
+        path = self.work / 'publisher.json'
+        path.write_text(json.dumps({'url': 'https://monitor.example.test/ping/' + HOST, 'token': 'k' * 43}))
+        self.assertEqual(digest.pool_target(path), ('https://monitor.example.test/digest/' + HOST, 'k' * 43))
+        path.write_text(json.dumps({'url': 'http://monitor.example.test/ping/' + HOST, 'token': 'k' * 43}))
+        with self.assertRaises(ValueError):
+            digest.pool_target(path)
+
+
+class VendorBlocked(DigestCase):
+    def test_known_exploited_without_a_fix_waits_and_moves_to_needs_once_fixed(self):
+        self.write_watch([package(knownExploited=True, fixed=None)])
+        state = digest.collect(self.work, HOST, NOW, [], self.units)
+        self.assertEqual(state['needs'], [])
+        self.assertEqual(state['waiting'][0]['flags'], ['Known exploited'])
+        self.assertIn('No fix reported.', state['waiting'][0]['what'])
+        self.write_watch([package(knownExploited=True)])
+        state = digest.collect(self.work, HOST, NOW, [], self.units)
+        self.assertEqual((len(state['needs']), state['waiting']), (1, []))
+
+
 class WhatItSays(DigestCase):
     def rendered(self, findings, issues=(), skipped=()):
         self.write_watch(findings, skipped)

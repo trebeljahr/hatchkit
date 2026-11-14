@@ -5,9 +5,17 @@ The checks keep their ledgers and mail only what cannot wait. This module reads
 those files once a day and sends nothing when nothing is open. It runs inside the
 hourly hatchkit-backup-alerts service, so a host with alert mail needs no new unit.
 
-There is no fleet digest. The hosts share only the security-controller Worker, and
-its boundary is fixed health metadata: package findings must not cross it. Each host
-therefore sends its own digest. The Worker mails coverage across all hosts.
+With `alerts.pool` set, the host does not mail its digest: every hourly run posts the
+open items to the security-controller Worker (`POST /digest/<host>`, the publisher's
+ping key), and the Worker sends one mail a day for all hosts. Items are the same text
+the mail would hold (package, advisory, container name, deadline, command); no
+application records, logs or secrets. When the Worker has not accepted a post for
+POOL_FALLBACK, the host mails its own digest again, so a dead Worker cannot go silent.
+Without `alerts.pool` each host sends its own digest, as before.
+
+A known-exploited finding with no fix reported is listed under Waiting on vendor, not
+Needs you: nobody can act on it until a fix exists. It moves to Needs you as soon as
+the ledger reports a fix.
 
 Raw scanner matches keep their weekly gate: they appear on the weekly review day and
 do not cause a mail on their own the rest of the week. Their clocks keep running in
@@ -18,6 +26,8 @@ import datetime as dt
 import hashlib
 import json
 from pathlib import Path
+import urllib.error
+import urllib.request
 from zoneinfo import ZoneInfo
 
 STATUS_NAME = 'digest-status.json'
@@ -34,6 +44,8 @@ CHECKS = (('update-watch-status.json', 'hatchkit-update-watch.timer', 8 * 3600, 
 QUICK_EXCLUSIONS = {'CPU not measured: the window was under 5 s.',
                     'Sustained CPU and outbound peers use the daily full scan.'}
 WORKLOADS_SHOWN = 6
+PUBLISHER = Path('/etc/hatchkit-security/publisher.json')
+POOL_FALLBACK = dt.timedelta(hours=26)
 
 
 def local_shifted(now):
@@ -276,7 +288,8 @@ def collect(work, host, now, backup_issues, units=UNITS):
     raw = [f for f in packages if not urgent(f) and not assessed(f, now)]
 
     for key, rows in group_packages(urgent_rows):
-        needs.append(urgent_item(key, rows, host))
+        # No fix reported: nothing to do until the vendor ships one (key[2] is the fix).
+        (needs if key[2] else waiting).append(urgent_item(key, rows, host))
     host_packages = [f for f in direct if f.get('kind') == 'host-package']
     for finding in direct:
         if finding.get('kind') == 'host-package':
@@ -469,14 +482,75 @@ def subject_for(doc):
     return '[Hatchkit] ' + doc['host'] + ': ' + summary_line(doc)
 
 
-def run(config, work, send, host, now=None, backup_issues=(), units=UNITS):
-    """Send at most one digest per digest day. A failed send retries at the next hourly run."""
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None
+
+
+def pool_target(publisher=PUBLISHER):
+    """The Worker's digest URL and this host's key, from the health publisher's own config."""
+    data = json.loads(Path(publisher).read_text())
+    url, token = data['url'], data['token']
+    base, sep, name = url.rpartition('/ping/')
+    if not sep or not base.startswith('https://') or not name:
+        raise ValueError('publisher url is not https://<monitor>/ping/<host>')
+    return base + '/digest/' + name, token
+
+
+def pool_payload(state, host, now):
+    return {'schema': 1, 'host': host, 'generatedAt': now.isoformat(timespec='seconds'),
+            'sections': {k: state[k] for k in ('needs', 'waiting', 'unchecked', 'fixed')},
+            'weekly': {'needs': state['rawNeeds'], 'waiting': state['rawWaiting']},
+            'counts': {k: state[k] for k in ('rawCount', 'reviewedCount', 'packageCount', 'groupCount')},
+            'paste': state['pasteRows'], 'ledger': LEDGER}
+
+
+def post_pool(payload, publisher=PUBLISHER, opener=None):
+    url, token = pool_target(publisher)
+    request = urllib.request.Request(url, data=json.dumps(payload).encode(), method='POST', headers={
+        'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+    opener = opener or urllib.request.build_opener(_NoRedirect)
+    with opener.open(request, timeout=30) as response:
+        if response.status != 200:
+            raise RuntimeError('monitor answered %d' % response.status)
+
+
+def run(config, work, send, host, now=None, backup_issues=(), units=UNITS, post=post_pool):
+    """Send at most one digest per digest day. A failed send retries at the next hourly run.
+
+    Pooled: post every run instead; mail locally only after POOL_FALLBACK without an accepted post."""
     now = now or dt.datetime.now(dt.timezone.utc)
     settings = config.get('alerts')
     if not settings or not settings.get('enabled', True):
         return {'configured': False, 'sent': False}
     path = work / STATUS_NAME
     previous = read_json(path) or {}
+    pool = None
+    if settings.get('pool'):
+        state = collect(work, host, now, list(backup_issues), units)
+        pool = {'lastPostedAt': previous.get('lastPostedAt')}
+        try:
+            post(pool_payload(state, host, now))
+            pool.update(lastPostedAt=now.isoformat(timespec='seconds'), postError=None)
+        except Exception as error:  # an HTTP error body is not ours to log; keep the type only
+            pool['postError'] = type(error).__name__
+        last = pool['lastPostedAt']
+        if pool['postError'] is None or (last and now - dt.datetime.fromisoformat(last) < POOL_FALLBACK):
+            record = {'checkedAt': now.isoformat(timespec='seconds'), 'ok': pool['postError'] is None,
+                      'mode': 'pooled', **pool}
+            if pool['postError']:
+                record['mailError'] = pool['postError']  # the health publisher reports it as a failed delivery
+            for key in ('evaluatedDay', 'lastSentAt', 'lastWeeklyReviewKey', 'lastWeeklyReviewAt',
+                        'quietFingerprint', 'messageId'):
+                record[key] = previous.get(key)
+            temporary = work / (STATUS_NAME + '.tmp')
+            temporary.write_text(json.dumps(record, indent=2) + '\n')
+            temporary.replace(path)
+            return {'configured': True, 'sent': False, 'kind': 'pooled' if pool['postError'] is None else None,
+                    'postError': pool['postError']}
+        # The Worker has not taken a digest for too long: this host mails its own again.
+        direct_send = send
+        send = lambda s, subject, body: direct_send(s, subject, body, direct=True)
     day, week = day_key(now), week_key(now)
     state = collect(work, host, now, list(backup_issues), units)
     last_week = previous.get('lastWeeklyReviewKey')
@@ -494,6 +568,8 @@ def run(config, work, send, host, now=None, backup_issues=(), units=UNITS):
               'lastWeeklyReviewAt': previous.get('lastWeeklyReviewAt'),
               'quietFingerprint': previous.get('quietFingerprint'), 'messageId': previous.get('messageId'),
               'mailed': None}
+    if pool:
+        record.update(mode='fallback', **pool)
     result = {'configured': True, 'sent': False, 'kind': None}
     failure = None
     if due:

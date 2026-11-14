@@ -1,6 +1,8 @@
-// Only fixed health metadata crosses this boundary. No app logs, records or secrets.
+// Heartbeats carry fixed health metadata only. Pooled hosts also post their digest
+// items (digest-pool.mjs): finding text, no app logs, records or secrets.
 import {renderMail,summaryLine} from './mail-core.mjs';
 import {storageWatch} from './storage-watch.mjs';
+import {DIGEST_LIMIT,poolSweep,sanitizeDigest,openItems,resolveItems} from './digest-pool.mjs';
 // The monitored hosts come from the Worker's PING_KEYS variable: a JSON object
 // from host name to the name of that host's ping-secret binding, for example
 // {"web-1":"WEB_1_PING_KEY","ops-1":"OPS_1_PING_KEY"}. Without it every ping
@@ -109,14 +111,22 @@ async function authorized(actual, expected) {
   return difference===0;
 }
 async function jsonObject(bucket,key) { const value=await bucket.get(key);return value ? value.json() : null; }
-async function readSmall(request) {
+async function readSmall(request,limit=8192) {
   const reader=request.body?.getReader();if(!reader)throw new Error('missing body');
   let length=0;const chunks=[];
   for(;;){const {done,value}=await reader.read();if(done)break;length+=value.length;
-    if(length>8192){await reader.cancel();throw new Error('oversized body');}chunks.push(value);}
+    if(length>limit){await reader.cancel();throw new Error('oversized body');}chunks.push(value);}
   const all=new Uint8Array(length);let at=0;for(const c of chunks){all.set(c,at);at+=c.length;}
   return JSON.parse(new TextDecoder().decode(all));
 }
+/** Every monitor issue now (dark, failing, incomplete). */
+export async function monitorIssues(env, now=Date.now()) {
+  const issues=[];
+  for(const host of Object.keys(hostsOf(env))) issues.push(...issuesFor(host,await jsonObject(env.STATE,`hosts/${host}.json`),now));
+  return issues;
+}
+/** POOL_MAIL=1: no mail of its own; the monitor's issues go into the one daily digest. */
+const pooledMail=env=>env.POOL_MAIL==='1';
 export async function sweep(env, now=Date.now()) {
   const issues=[],pending=[];
   for(const host of Object.keys(hostsOf(env))) {
@@ -131,6 +141,12 @@ export async function sweep(env, now=Date.now()) {
   const digestDue=quiet.length>0 && new Date(now).getUTCHours()===digestHour(env) &&
     (!previous.lastDigestAt || now-Date.parse(previous.lastDigestAt)>=20*3600000);
   const recovered=!urgent.length && !pending.length && previous.notifiedIssues?.length>0;
+  if(pooledMail(env)) {
+    const state={checkedAt:iso(now),ok:!issues.length&&!pending.length,issues,pending,pooled:true};
+    await env.STATE.put('sweep.json',JSON.stringify(state));
+    state.pool=await poolSweep(env,Object.keys(hostsOf(env)),issues,digestHour(env),now);
+    return state;
+  }
   const state={checkedAt:iso(now),ok:!issues.length&&!pending.length,issues,pending,lastMailedAt:previous.lastMailedAt || null,lastDigestAt:previous.lastDigestAt || null,notifiedIssues:previous.notifiedIssues || []};
   const shouldDeliver=!!(added || unacknowledged || reminder || digestDue || recovered || (issues.length && previous.deliveryPending));
   state.deliveryPending=shouldDeliver;
@@ -149,6 +165,24 @@ export async function sweep(env, now=Date.now()) {
 export default {
   async fetch(request,env) {
     const url=new URL(request.url);const bearer=request.headers.get('Authorization')?.replace(/^Bearer /,'');
+    const digestHost=url.pathname.match(/^\/digest\/([a-z0-9-]+)$/)?.[1];
+    if(request.method==='POST' && digestHost) {
+      let hosts;try {hosts=hostsOf(env);} catch {return new Response('Not configured',{status:503});}
+      if(!Object.hasOwn(hosts,digestHost) || !await authorized(bearer,env[hosts[digestHost]]))return new Response('Forbidden',{status:403});
+      try {const safe=sanitizeDigest(await readSmall(request,DIGEST_LIMIT),digestHost);await env.STATE.put(`digests/${digestHost}.json`,JSON.stringify(safe));return Response.json({accepted:true});}
+      catch {return new Response('Invalid digest',{status:400});}
+    }
+    if((url.pathname==='/open'&&request.method==='GET')||(url.pathname==='/resolve'&&request.method==='POST')) {
+      // Only the operator's machine holds RESOLVER_KEY; READER_KEY may read the open list.
+      const resolver=await authorized(bearer,env.RESOLVER_KEY);
+      if(!resolver && !(url.pathname==='/open' && await authorized(bearer,env.READER_KEY)))return new Response('Forbidden',{status:403});
+      let hosts;try {hosts=Object.keys(hostsOf(env));} catch {return new Response('Not configured',{status:503});}
+      const issues=await monitorIssues(env);
+      if(url.pathname==='/open')return Response.json(await openItems(env,hosts,issues));
+      let body;try {body=await readSmall(request);} catch {return new Response('Invalid body',{status:400});}
+      const result=await resolveItems(env,hosts,issues,body);
+      return Response.json(result.body,{status:result.status});
+    }
     const name=url.pathname.match(/^\/ping\/([a-z0-9-]+)$/)?.[1];
     let keys={};
     if(request.method==='POST' && name) {
@@ -171,7 +205,8 @@ export default {
     }
     if(url.pathname==='/status' && request.method==='GET' && await authorized(bearer,env.READER_KEY)) {
       const state=await jsonObject(env.STATE,'sweep.json');const storage=await jsonObject(env.STATE,'storage.json');
-      return Response.json({...(state || {ok:false,issue:'No sweep yet'}),storage:storage || {configured:!!(env.CF_ACCOUNT_ID||env.CF_USAGE_TOKEN),ok:false}});
+      const pool=await jsonObject(env.STATE,'pool.json');
+      return Response.json({...(state || {ok:false,issue:'No sweep yet'}),pool:pool || null,storage:storage || {configured:!!(env.CF_ACCOUNT_ID||env.CF_USAGE_TOKEN),ok:false}});
     }
     return new Response('Not found',{status:404});
   },
