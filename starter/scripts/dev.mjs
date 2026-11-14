@@ -332,7 +332,7 @@ if (posix) {
 const require = createRequire(import.meta.url);
 const concurrentlyBin = resolve(
   dirname(require.resolve("concurrently/package.json")),
-  "dist/bin/concurrently.js",
+  "dist/bin/index.js",
 );
 
 // --kill-others-on-fail, NOT -k: a child exiting 0 must not tear down the rest.
