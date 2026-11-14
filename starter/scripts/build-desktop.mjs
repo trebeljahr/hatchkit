@@ -58,15 +58,12 @@ import { createRequire } from "node:module";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// @electron/asar is CommonJS; the default import is its module.exports, which
-// is the one form Node's named-export detection cannot get wrong.
-import asar from "@electron/asar";
+// @electron/asar 4 is an ES module with named exports and no default export.
+import { extractFile, listPackage } from "@electron/asar";
 import { build as esbuild } from "esbuild";
 
 import { builderEnvFor, resolveSigning } from "./lib/desktop-release.mjs";
 import { ensureElectron } from "./ensure-electron.mjs";
-
-const { extractFile, listPackage } = asar;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
