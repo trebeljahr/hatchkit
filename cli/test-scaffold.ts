@@ -4507,7 +4507,7 @@ results.clientBuildArgUpgrades = await (async () => {
   const upgradedDockerfile = upgradeClientDockerfile(oldDockerfile);
 
   const oldWorkflow = [
-    "      - uses: docker/build-push-action@v6",
+    "      - uses: docker/build-push-action@v7",
     "        with:",
     "          context: .",
     "          file: packages/client/Dockerfile",

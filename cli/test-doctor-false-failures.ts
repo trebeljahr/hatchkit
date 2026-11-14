@@ -469,7 +469,7 @@ function deployWorkflow(buildArg: string | null, probe: string | null): string {
     "jobs:",
     "  build-client:",
     "    steps:",
-    "      - uses: docker/build-push-action@v6",
+    "      - uses: docker/build-push-action@v7",
     "        with:",
     "          build-args: |",
     buildArg === null ? "            OTHER=1" : `            NEXT_PUBLIC_API_URL=${buildArg}`,

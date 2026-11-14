@@ -536,7 +536,7 @@ expect("client stamp no-ops on a Dockerfile that isn't the generated layout", ()
 
 expect("COMMIT_SHA build arg appends to an existing block", () => {
   const wf = [
-    "      - uses: docker/build-push-action@v6",
+    "      - uses: docker/build-push-action@v7",
     "        with:",
     "          file: packages/client/Dockerfile",
     "          push: true",
@@ -561,7 +561,7 @@ expect("COMMIT_SHA build arg appends to an existing block", () => {
 
 expect("COMMIT_SHA build arg creates a block when the step has none", () => {
   const wf = [
-    "      - uses: docker/build-push-action@v6",
+    "      - uses: docker/build-push-action@v7",
     "        with:",
     "          file: packages/server/Dockerfile",
     "          push: true",
@@ -576,11 +576,11 @@ expect("COMMIT_SHA build arg creates a block when the step has none", () => {
 
 expect("COMMIT_SHA build arg stays inside its own step", () => {
   const wf = [
-    "      - uses: docker/build-push-action@v6",
+    "      - uses: docker/build-push-action@v7",
     "        with:",
     "          file: packages/server/Dockerfile",
     "          push: true",
-    "      - uses: docker/build-push-action@v6",
+    "      - uses: docker/build-push-action@v7",
     "        with:",
     "          file: packages/client/Dockerfile",
     "          push: true",
@@ -734,7 +734,7 @@ expect("adopt workflow template carries the verify gate and one build arg", () =
   assert.equal(wf.split("COMMIT_SHA=${{ github.sha }}").length - 1, 1);
   assert.ok(!wf.includes("packages/server/Dockerfile"), "references a path adopt never writes");
   assert.ok(!wf.includes("packages/client/Dockerfile"), "references a path adopt never writes");
-  assert.equal(wf.split("uses: docker/build-push-action@v6").length - 1, 1);
+  assert.equal(wf.split("uses: docker/build-push-action@v7").length - 1, 1);
   assert.ok(wf.includes("    needs: [build]\n"), "deploy job should depend on the one build job");
   // The tags CI pushes have to be the ones the compose default and the
   // pin step name — an un-suffixed `ghcr.io/<repo>`.

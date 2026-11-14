@@ -69,7 +69,7 @@ try {
     `build-android secrets expression preserved`,
   );
   assert(
-    android.includes("pnpm/action-setup@v4") &&
+    android.includes("pnpm/action-setup@v6") &&
       android.includes("version: 10.33.2"),
     `build-android pnpm version substituted`,
   );

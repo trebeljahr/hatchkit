@@ -51,13 +51,13 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_PROVISIONING_PROFILE_NAME: ${{ secrets.APPLE_PROVISIONING_PROFILE_NAME }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: __HATCHKIT_PNPM_VERSION__
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: __HATCHKIT_NODE_VERSION__
           # Not on a self-hosted Mac, whose pnpm store is the operator's own.
@@ -157,7 +157,7 @@ jobs:
           fi
 
       - name: Upload to TestFlight
-        uses: apple-actions/upload-testflight-build@v3
+        uses: apple-actions/upload-testflight-build@v5
         with:
           app-path: ${{ runner.temp }}/ipa/App.ipa
           issuer-id: ${{ secrets.APPSTORE_API_ISSUER_ID }}
@@ -181,7 +181,7 @@ jobs:
           # Outlives the job on a self-hosted Mac otherwise.
           rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/dist.mobileprovision"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ios-ipa
           path: ${{ runner.temp }}/ipa/*.ipa

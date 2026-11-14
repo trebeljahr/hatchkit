@@ -23,15 +23,15 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Same setup shape as build-and-deploy.yml: .nvmrc is the single
       # source of truth for the Node version, and pnpm/action-setup reads
       # the version from packageManager in package.json. Keep the two
       # workflows identical here — a lint job that installs against a
       # different Node than the build job can pass while the build fails.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint

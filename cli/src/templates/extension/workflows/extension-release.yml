@@ -155,15 +155,15 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "tag=${tag:-none} mode=$mode"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.resolve.outputs.tag || github.ref }}
 
       # No `version:` input: action-setup reads `packageManager` from
       # package.json and throws on a differing pin.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: __HATCHKIT_NODE_VERSION__
           cache: pnpm
@@ -202,7 +202,7 @@ jobs:
       # Before any store call, so the exact bytes sent are kept even
       # when the upload or the review submission fails.
       - name: Upload zip artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.package.outputs.name }}
           path: ${{ steps.package.outputs.zip }}
@@ -309,13 +309,13 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "tag=${tag:-none} mode=$mode"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.resolve.outputs.tag || github.ref }}
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: __HATCHKIT_NODE_VERSION__
           cache: pnpm
@@ -365,7 +365,7 @@ jobs:
           zip -r -q "$RUNNER_TEMP/__HATCHKIT_PROJECT_SLUG__-firefox-${{ steps.check.outputs.version }}.zip" .
 
       - name: Upload the unsigned artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: firefox-extension-${{ steps.check.outputs.version }}
           path: ${{ runner.temp }}/__HATCHKIT_PROJECT_SLUG__-firefox-${{ steps.check.outputs.version }}.zip
@@ -398,7 +398,7 @@ jobs:
       # anyway, and costs nothing.
       - name: Upload the signed add-on
         if: steps.resolve.outputs.mode != 'build'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: firefox-extension-signed-${{ steps.check.outputs.version }}
           path: ${{ runner.temp }}/amo/*.xpi

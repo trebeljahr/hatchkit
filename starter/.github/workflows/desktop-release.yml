@@ -61,10 +61,10 @@ jobs:
     outputs:
       percentage: ${{ steps.check.outputs.percentage }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: scripts
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       # Through the environment, never interpolated into the script: a dispatch
@@ -151,13 +151,13 @@ jobs:
       AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ matrix.channel == 'win' && secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME || '' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # No `version:` input: pnpm/action-setup reads `packageManager` from
       # package.json, and refuses a run that names the version twice.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # Node 26's electron download leaves a truncated binary.
           node-version: 24
@@ -279,7 +279,7 @@ jobs:
       # The name is what desktop-release-draft.mjs reads the leg's channel and
       # mode from: desktop-<channel>-<mode>.
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.channel }}-${{ steps.signing.outputs.mode }}
           path: |
@@ -309,11 +309,11 @@ jobs:
       # install (100 is written as no key; scripts/lib/desktop-rollout.mjs).
       STAGING_PERCENTAGE: ${{ needs.rollout.outputs.percentage }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -322,7 +322,7 @@ jobs:
       - name: Install deps
         run: pnpm install --frozen-lockfile --ignore-scripts
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: desktop-*
           path: artifacts

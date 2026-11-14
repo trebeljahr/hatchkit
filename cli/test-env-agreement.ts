@@ -149,7 +149,7 @@ function deployWorkflow(apiUrl: string, probeUrl = apiUrl): string {
     "jobs:",
     "  build-client:",
     "    steps:",
-    "      - uses: docker/build-push-action@v6",
+    "      - uses: docker/build-push-action@v7",
     "        with:",
     "          file: packages/client/Dockerfile",
     "          push: true",

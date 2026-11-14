@@ -651,13 +651,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 `;
 
-  const tail = `      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+  const tail = `      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: ${d.publishDir}
+          # v4 and later leave dotfiles (.nojekyll, .well-known/) out unless asked.
+          include-hidden-files: true
 
   deploy:
     needs: build
@@ -667,7 +669,7 @@ jobs:
       url: \${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 `;
 
   if (d.kind === "static") {
@@ -681,15 +683,17 @@ jobs:
         with:
           ruby-version: "3.2"
           bundler-cache: true${wdLine}
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         id: pages
       - name: Build with Jekyll
         run: bundle exec jekyll build --baseurl "\${{ steps.pages.outputs.base_path }}"${jekyllWd}
         env:
           JEKYLL_ENV: production
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: ${d.publishDir}
+          # v4 and later leave dotfiles (.nojekyll, .well-known/) out unless asked.
+          include-hidden-files: true
 
   deploy:
     needs: build
@@ -699,7 +703,7 @@ jobs:
       url: \${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 `;
   }
 
@@ -713,21 +717,21 @@ jobs:
   const buildLabel = d.kind === "docusaurus" ? "Build with Docusaurus" : "Build";
   const nodeSetup =
     pm === "pnpm"
-      ? `      - uses: pnpm/action-setup@v4
+      ? `      - uses: pnpm/action-setup@v6
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: pnpm${d.workDir ? `\n          cache-dependency-path: ${d.workDir}/pnpm-lock.yaml` : ""}`
       : pm === "yarn"
-        ? `      - uses: actions/setup-node@v4
+        ? `      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: yarn${d.workDir ? `\n          cache-dependency-path: ${d.workDir}/yarn.lock` : ""}`
         : pm === "bun"
           ? `      - uses: oven-sh/setup-bun@v2`
-          : `      - uses: actions/setup-node@v4
+          : `      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm${d.workDir ? `\n          cache-dependency-path: ${d.workDir}/package-lock.json` : ""}`;

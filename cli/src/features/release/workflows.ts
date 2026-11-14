@@ -179,13 +179,13 @@ export function renderSummaryWorkflow(config: ReleaseConfig): string {
   lines.push("    runs-on: ubuntu-24.04");
   lines.push("    timeout-minutes: 5");
   lines.push("    steps:");
-  lines.push("      - uses: actions/checkout@v4");
+  lines.push("      - uses: actions/checkout@v7");
   lines.push("        with:");
   lines.push("          # The default branch, never the tag: the script that reads the run");
   lines.push("          # must be the reviewed one.");
   lines.push("          persist-credentials: false");
   lines.push("");
-  lines.push("      - uses: actions/setup-node@v4");
+  lines.push("      - uses: actions/setup-node@v7");
   lines.push("        with:");
   lines.push("          # The status script has no dependencies and is not installed.");
   lines.push("          node-version: 24");
@@ -291,7 +291,7 @@ export function renderCompatWorkflow(config: ReleaseConfig): string | null {
   lines.push("      tag: ${{ steps.find.outputs.tag }}");
   lines.push("      has-suite: ${{ steps.find.outputs.has-suite }}");
   lines.push("    steps:");
-  lines.push("      - uses: actions/checkout@v4");
+  lines.push("      - uses: actions/checkout@v7");
   lines.push("        with:");
   lines.push("          # Every tag, to find the newest release.");
   lines.push("          fetch-depth: 0");
@@ -328,11 +328,11 @@ export function renderCompatWorkflow(config: ReleaseConfig): string | null {
     "      COMPAT_PROJECT: compat-old-server-${{ github.run_id }}-${{ github.run_attempt }}",
   );
   lines.push("    steps:");
-  lines.push("      - uses: actions/checkout@v4");
+  lines.push("      - uses: actions/checkout@v7");
   lines.push("");
   lines.push("      # The compose file that release shipped with, so the old server runs");
   lines.push("      # with its own environment. Checked out beside this one, never over it.");
-  lines.push("      - uses: actions/checkout@v4");
+  lines.push("      - uses: actions/checkout@v7");
   lines.push("        with:");
   lines.push("          ref: ${{ needs.previous.outputs.tag }}");
   lines.push("          path: previous-release");
@@ -381,17 +381,17 @@ export function renderCompatWorkflow(config: ReleaseConfig): string | null {
     "      COMPAT_PROJECT: compat-new-server-${{ github.run_id }}-${{ github.run_attempt }}",
   );
   lines.push("    steps:");
-  lines.push("      - uses: actions/checkout@v4");
+  lines.push("      - uses: actions/checkout@v7");
   lines.push("");
-  lines.push("      - uses: actions/checkout@v4");
+  lines.push("      - uses: actions/checkout@v7");
   lines.push("        with:");
   lines.push("          ref: ${{ needs.previous.outputs.tag }}");
   lines.push("          path: previous-release");
   lines.push("");
-  lines.push("      - uses: docker/setup-buildx-action@v3");
+  lines.push("      - uses: docker/setup-buildx-action@v4");
   lines.push("");
   lines.push("      - name: Build the server image from this checkout");
-  lines.push("        uses: docker/build-push-action@v6");
+  lines.push("        uses: docker/build-push-action@v7");
   lines.push("        with:");
   lines.push("          context: .");
   lines.push(`          file: ${compat.serverDockerfile}`);
@@ -496,14 +496,14 @@ function setupSteps(
   const out: string[] = [];
 
   if (packageManager === "pnpm") {
-    out.push("      - uses: pnpm/action-setup@v4");
+    out.push("      - uses: pnpm/action-setup@v6");
     if (directory !== null) {
       out.push("        with:");
       out.push(`          package_json_file: ${directory}/package.json`);
     }
   }
 
-  out.push("      - uses: actions/setup-node@v4");
+  out.push("      - uses: actions/setup-node@v7");
   out.push("        with:");
   out.push(`          node-version-file: ${nvmrc}`);
   if (directory === null) out.push(`          cache: ${packageManager}`);

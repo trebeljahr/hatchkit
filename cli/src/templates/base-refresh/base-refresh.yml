@@ -85,14 +85,14 @@ jobs:
     needs: [live]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.live.outputs.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - run: pnpm run test:unit
@@ -108,7 +108,7 @@ jobs:
       matrix:
         half: [server, client]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.live.outputs.sha }}
           persist-credentials: false
@@ -117,13 +117,13 @@ jobs:
         run: |
           if [ -f "packages/${{ matrix.half }}/Dockerfile" ]; then echo "found=true" >> "$GITHUB_OUTPUT"
           else echo "no packages/${{ matrix.half }}/Dockerfile — nothing to rebuild"; fi
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         if: steps.present.outputs.found == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         if: steps.present.outputs.found == 'true'
         with:
           context: .

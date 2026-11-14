@@ -183,7 +183,7 @@ const CLIENT_RECORD_STEPS = `      # Leave a GitHub Deployment for this commit o
       # live. Here and not in \`deploy\`: the Worker switch makes the site
       # live. This job has no checkout, so the action is fetched on its own.
       - name: Check out the record-ship action
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           sparse-checkout: .github/actions/record-ship
           persist-credentials: false
@@ -318,9 +318,9 @@ export function renderBuildClientJob(
       SITE_URL: ${input.siteUrl}
       WRANGLER: ${WRANGLER_PACKAGE}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: ${input.nodeVersionFile}
           cache: pnpm

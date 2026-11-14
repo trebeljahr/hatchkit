@@ -1020,7 +1020,7 @@ check("a deploy job with its own checkout keeps it and gains the history", () =>
     "  deploy:",
     "    runs-on: ubuntu-latest",
     "    steps:",
-    "      - uses: actions/checkout@v4",
+    "      - uses: actions/checkout@v7",
     "      - name: Deploy via Coolify API",
     "        run: curl -X POST https://example.test",
     "",

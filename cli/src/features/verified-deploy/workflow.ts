@@ -190,10 +190,10 @@ export function withDeployCheckoutHistory(content: string): string {
     stepsAt + 1,
     0,
     ...comment,
-    "      - uses: actions/checkout@v4",
+    "      - uses: actions/checkout@v7",
     "        with:",
     "          fetch-depth: 0",
-    "      - uses: actions/setup-node@v4",
+    "      - uses: actions/setup-node@v7",
     "        with:",
     "          node-version-file: .nvmrc",
   );
@@ -417,10 +417,10 @@ jobs:
       # Full history: the sha is resolved and checked against the default
       # branch here, and the migration registries of two commits are
       # compared out of git.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
 

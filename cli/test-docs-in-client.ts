@@ -524,7 +524,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - run: pnpm run test:unit
@@ -533,7 +533,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [verify]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: pnpm run test:e2e
 `;
 

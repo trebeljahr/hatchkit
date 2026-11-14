@@ -53,13 +53,13 @@ jobs:
     outputs:
       plan: ${{ steps.plan.outputs.plan }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -169,16 +169,16 @@ jobs:
       PLAN_BUILD_NUMBER: ${{ fromJSON(needs.plan.outputs.plan).buildNumber }}
       KEYSTORE_PATH: android/app/release.keystore
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
@@ -256,7 +256,7 @@ jobs:
       # release download.
       - name: Upload AAB artifact
         if: fromJSON(needs.plan.outputs.plan).android.artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: android-aab-${{ env.PLAN_VERSION }}-${{ env.PLAN_BUILD_NUMBER }}
           path: ${{ steps.aab.outputs.path }}
@@ -312,11 +312,11 @@ jobs:
       PLAN_VERSION: ${{ fromJSON(needs.plan.outputs.plan).version || '0.0.0' }}
       PLAN_BUILD_NUMBER: ${{ fromJSON(needs.plan.outputs.plan).buildNumber }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           # On a self-hosted Mac the pnpm store is the operator's own, used by
@@ -448,7 +448,7 @@ jobs:
       # Guarded by the plan: `artifact` is true only when the build was signed.
       - name: Upload IPA artifact
         if: fromJSON(needs.plan.outputs.plan).ios.artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ios-ipa-${{ env.PLAN_VERSION }}-${{ env.PLAN_BUILD_NUMBER }}
           path: ${{ env.IPA_PATH }}
