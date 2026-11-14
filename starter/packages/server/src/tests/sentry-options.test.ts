@@ -57,7 +57,7 @@ describe("sentryOptions", () => {
     const event: TransactionEvent = {
       type: "transaction",
       contexts: { trace: { span_id: "1", trace_id: "2", data: headerData() } },
-      spans: [{ span_id: "3", trace_id: "2", start_timestamp: 0, data: headerData() }],
+      spans: [{ span_id: "3", trace_id: "2", start_timestamp: 0, status: "ok", data: headerData() }],
     };
     const sent = await options.beforeSendTransaction?.(event, {});
     const kept = { "http.request.header.user_agent": "node-test", "http.route": "/boom" };
@@ -69,6 +69,20 @@ describe("sentryOptions", () => {
   test("events without a request pass through", async () => {
     const event: ErrorEvent = { type: undefined, message: "boom" };
     assert.deepEqual(await options.beforeSend?.(event, {}), { type: undefined, message: "boom" });
+  });
+
+  test("collects no cookies, bodies, credential headers or user info", () => {
+    const collection = options.dataCollection;
+    assert.equal(collection?.userInfo, false);
+    assert.equal(collection?.cookies, false);
+    assert.deepEqual(collection?.httpBodies, []);
+    assert.ok(
+      typeof collection?.httpHeaders === "object" &&
+        "request" in collection.httpHeaders &&
+        typeof collection.httpHeaders.request === "object" &&
+        "deny" in collection.httpHeaders.request &&
+        collection.httpHeaders.request.deny.includes("cookie"),
+    );
   });
 
   test("replaces the integrations that read the body and cookies", () => {

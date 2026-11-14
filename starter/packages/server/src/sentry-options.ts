@@ -2,9 +2,11 @@
 // instrument.ts so tests can check them without starting the SDK.
 //
 // By default @sentry/node puts the request headers (Cookie included), the
-// parsed cookies (the better-auth session token) and up to 10 KB of the
-// request body on every event. Leaving `sendDefaultPii` unset does not
-// stop that, so the body is never read and the hooks strip the rest.
+// parsed cookies (the better-auth session token), up to 10 KB of the
+// request body and the user's IP address on every event. Sentry 11 dropped
+// `sendDefaultPii`; its `dataCollection` defaults collect all of that. So
+// collection is switched off explicitly, the body is never read, and the
+// hooks strip whatever an integration still copies onto an event.
 
 import * as Sentry from "@sentry/node";
 
@@ -53,9 +55,16 @@ export function sentryOptions(dsn: string): Sentry.NodeOptions {
     dsn,
     environment: process.env.NODE_ENV ?? "development",
     tracesSampleRate: process.env.NODE_ENV === "production" ? 0.2 : 1.0,
+    dataCollection: {
+      userInfo: false,
+      cookies: false,
+      httpHeaders: { request: { deny: [...CREDENTIAL_HEADERS] }, response: { deny: ["set-cookie"] } },
+      httpBodies: [],
+      urlQueryParams: true,
+    },
     integrations: [
-      Sentry.httpIntegration({ maxIncomingRequestBodySize: "none" }),
-      Sentry.requestDataIntegration({ include: { cookies: false, data: false } }),
+      Sentry.httpIntegration({ maxRequestBodySize: "none" }),
+      Sentry.requestDataIntegration(),
     ],
     beforeSend: scrubRequest,
     beforeSendTransaction: scrubRequest,
