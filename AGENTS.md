@@ -126,7 +126,7 @@ Terraform/keychain state without user approval.
 
 - Run CLI tests through `pnpm --filter hatchkit test` or
   `pnpm --filter hatchkit exec node scripts/test.mjs test-<name>.ts`.
-  The runner replaces keytar with a temporary fixture store in the test and
+  The runner replaces the OS credential store (`src/utils/os-keyring`) with a temporary fixture store in the test and
   its child processes. `HATCHKIT_CONF_DIR` and `HATCHKIT_KEYTAR_SERVICE` alone
   do not isolate the OS keychain. Do not run tests against real credentials.
 - Unattended CLI commands refuse OS keychain access by default. Keep

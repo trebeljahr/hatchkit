@@ -48,7 +48,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as dotenvxParse, set as dotenvxSet } from "@dotenvx/dotenvx";
-import keytar from "keytar";
+import keyring from "./src/utils/os-keyring.js";
 import {
   type ProviderConfigReaders,
   detectConfigured,
@@ -830,9 +830,9 @@ await expect("the macOS hint is not printed on other platforms", () => {
   assert.doesNotMatch(err.message, /Homebrew/);
 });
 
-await expect("getSecret wraps a keytar failure instead of rethrowing it bare", async () => {
-  const original = keytar.getPassword;
-  keytar.getPassword = async () => {
+await expect("getSecret wraps a credential-store failure instead of rethrowing it bare", async () => {
+  const original = keyring.getPassword;
+  keyring.getPassword = async () => {
     throw new Error("An unknown error occurred.");
   };
   try {
@@ -842,7 +842,7 @@ await expect("getSecret wraps a keytar failure instead of rethrowing it bare", a
       return true;
     });
   } finally {
-    keytar.getPassword = original;
+    keyring.getPassword = original;
   }
 });
 
@@ -870,7 +870,7 @@ await expect(
     const readers = allConfigured();
     // The exact failure that used to take migrate-domain down on a
     // client-only project: one unreadable keychain secret, wrapped the
-    // way getSecret wraps a native keytar error.
+    // way getSecret wraps a native credential-store error.
     readers.searchConsole = async () => {
       throw describeKeychainError(
         "read",

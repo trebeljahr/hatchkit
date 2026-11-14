@@ -9,12 +9,23 @@ if (!process.env.HATCHKIT_TEST_KEYCHAIN_DIR) {
   throw new Error("Run CLI tests with node scripts/test.mjs [test-file.ts].");
 }
 
-// Synchronous hooks also catch require(). The native addon is never loaded.
+// Synchronous hooks also catch require(). The native addon is never loaded:
+// hatchkit's OS backend (src/utils/os-keyring) resolves to the fixture store,
+// and a direct import of the native package throws.
+const OS_KEYRING = /(?:^|\/)os-keyring(?:\.[cm]?[jt]s)?$/;
+const NATIVE_KEYRING = /^(?:@napi-rs\/keyring(?:\/.*)?|keytar)$/;
+const nativeRefused = `throw new Error("Tests cannot load the native credential store; import src/utils/os-keyring instead.");`;
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (specifier === "keytar") {
+    if (OS_KEYRING.test(specifier)) {
       return {
-        url: new URL("./keytar.mjs", import.meta.url).href,
+        url: new URL("./fixture-keyring.mjs", import.meta.url).href,
+        shortCircuit: true,
+      };
+    }
+    if (NATIVE_KEYRING.test(specifier)) {
+      return {
+        url: `data:text/javascript,${encodeURIComponent(nativeRefused)}`,
         shortCircuit: true,
       };
     }

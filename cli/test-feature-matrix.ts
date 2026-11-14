@@ -49,7 +49,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 // Same isolation contract as test-scaffold.ts: a throwaway config dir, a
-// throwaway keytar service (every scaffold mints a dotenvx key) and a
+// throwaway secret-store service (every scaffold mints a dotenvx key) and a
 // throwaway local-dev root, all removed at the end.
 process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "matrix-conf-"));
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;

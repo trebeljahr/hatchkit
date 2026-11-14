@@ -54,7 +54,6 @@
     "onlyBuiltDependencies": [
       "@biomejs/biome",
       "esbuild",
-      "keytar",
       "sharp"
     ]
   },

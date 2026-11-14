@@ -37,17 +37,17 @@ assert.equal(await getSecret("fixture"), null);
 await setSecret("fixture", "test-only");
 assert.equal(await getSecret("fixture"), "test-only");
 
-// A child CLI sees the parent's fixtures, but still cannot load native keytar.
+// A child CLI sees the parent's fixtures, but still cannot load the native store.
 const child = execFileSync(
   process.execPath,
   [
     "--input-type=module",
     "-e",
     `
-  import keytar from 'keytar';
+  import keyring from './src/utils/os-keyring.ts';
   import assert from 'node:assert/strict';
-  assert.equal(await keytar.getPassword('hatchkit', 'fixture'), 'test-only');
-  await keytar.setPassword('hatchkit', 'from-child', 'fixture-value');
+  assert.equal(await keyring.getPassword('hatchkit', 'fixture'), 'test-only');
+  await keyring.setPassword('hatchkit', 'from-child', 'fixture-value');
   console.log('fixture child passed');
 `,
   ],
@@ -58,9 +58,11 @@ assert.equal(await getSecret("from-child"), "fixture-value");
 
 // require() must be redirected too; a CJS caller must not escape the fake.
 const require = createRequire(import.meta.url);
-const cjsStore = require("keytar").default;
+const cjsStore = require("./src/utils/os-keyring.js").default;
 assert.equal(await cjsStore.getPassword("hatchkit", "fixture"), "test-only");
-assert.ok(!Object.keys(require.cache).some((path) => /keytar.*\.node$/.test(path)));
+assert.ok(!Object.keys(require.cache).some((path) => /(keytar|keyring).*\.node$/.test(path)));
+// The native package itself is refused, so a new import site cannot bypass the fixture.
+await assert.rejects(import("@napi-rs/keyring"), /cannot load the native credential store/);
 assert.throws(
   () => execFileSync("/usr/bin/security", ["find-generic-password"]),
   /Tests cannot invoke/,
@@ -106,7 +108,7 @@ await Promise.all(
 assert.equal(maxActive, 1, "keychain calls never run concurrently");
 
 // Drop the preload deliberately: source must still refuse unattended access
-// before loading keytar, even when the service/config names look like tests.
+// before loading the native store, even when the service/config names look like tests.
 const unwrapped = execFileSync(
   process.execPath,
   [

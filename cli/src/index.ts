@@ -6050,7 +6050,7 @@ function printHelp(topic?: HelpTopic): void {
 
     create + adopt:
     - GitHub repo                              ${chalk.dim("gh repo delete")}
-    - dotenvx private key in keychain          ${chalk.dim("keytar deletePassword")}
+    - dotenvx private key in secret store      ${chalk.dim("deletePassword")}
     - GlitchTip / Plausible / Listmonk + SES ${chalk.dim("DELETE")} per-vendor
     - Coolify app / project / database         ${chalk.dim("DELETE /api/v1/...")}
     - Stripe webhook endpoints                 ${chalk.dim("DELETE /v1/webhook_endpoints/<id>")}
@@ -6811,7 +6811,7 @@ main().catch((error) => {
     console.error("");
   }
   // The message alone often can't say where a failure came from — a bare
-  // keytar "An unknown error occurred.", a null-deref in one provider's
+  // keychain "An unknown error occurred.", a null-deref in one provider's
   // planner — names neither the call site nor the wrapped `cause`. Set
   // HATCHKIT_DEBUG=1 (or DEBUG) to print the stack and the full cause
   // chain so failures like that are diagnosable instead of opaque.

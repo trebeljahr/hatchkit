@@ -408,7 +408,7 @@ stub.close();
 await deleteSecret(SECRET_KEYS.glitchtipToken).catch(() => {});
 await deleteSecret(SECRET_KEYS.plausibleApiKey).catch(() => {});
 // The successful resume run mirrored a dotenvx key into the (throwaway)
-// keytar service — drop it so repeated local runs stay clean.
+// secret-store service — drop it so repeated local runs stay clean.
 await deleteSecret(SECRET_KEYS.dotenvxPrivateKey("raptor")).catch(() => {});
 for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
 

@@ -65,8 +65,19 @@ The manifest **always** lives at the repo root, even when `projectSubdir` is set
 
 ## Secret handling
 
-- **Provider tokens** → OS keychain (`keytar`), service name `hatchkit`.
-- **Per-project encryption key** → OS keychain. Used by [dotenvx](https://dotenvx.com) to encrypt `.env.production` in the generated repo. The encrypted file is safe to commit, and should be — it is the at-rest store, see below.
+- **Provider tokens** → the OS credential store, service name `hatchkit`: the macOS Keychain, Windows Credential Manager, or Secret Service on Linux (gnome-keyring, KWallet, KeePassXC). hatchkit talks to it through `@napi-rs/keyring`, which ships prebuilt binaries, so installing the CLI needs no compiler.
+- **Per-project encryption key** → the same store.
+
+### Machines without a credential store
+
+A Linux server, a container or WSL often has no Secret Service running. hatchkit then fails with a hint instead of keeping tokens somewhere that forgets them. Two ways out:
+
+- **One environment variable per secret.** `getSecret` reads `HATCHKIT_SECRET_<ACCOUNT>` first: the account name upper-cased, every other character turned into `_`. `coolify:token` becomes `HATCHKIT_SECRET_COOLIFY_TOKEN`, `hetzner:token` becomes `HATCHKIT_SECRET_HETZNER_TOKEN`. The variable is read-only: commands that store a secret still write to the store.
+- **A secrets file.** `HATCHKIT_SECRET_STORE=file` keeps every secret in `secrets.json` next to the hatchkit config file (or at `HATCHKIT_SECRETS_FILE`), mode `0600` in a `0700` directory. This is plaintext on disk, protected only by file permissions, like the credential files of `gh` and the AWS CLI. Use it only on a machine you control.
+
+Unattended runs (no terminal) still need `HATCHKIT_KEYCHAIN_ACCESS=allow` to open the OS store, on every platform. Neither the environment variables nor the file store need it.
+
+`hatchkit dev-setup init` still supports macOS only: it installs a launchd agent and reads its Cloudflare token with the macOS `security` command. Used by [dotenvx](https://dotenvx.com) to encrypt `.env.production` in the generated repo. The encrypted file is safe to commit, and should be — it is the at-rest store, see below.
 
 ### Where production values live at runtime
 

@@ -2170,16 +2170,16 @@ console.log("\n── rollback: failed scaffold leaves no partial state ──�
 }
 
 // Keytar migration: seed a legacy plaintext token in the conf store,
-// call the ensure function, verify the token moves to keytar and is
+// call the ensure function, verify the token moves to the secret store and is
 // cleared from conf.
-console.log("\n── keytar migration: legacy plaintext secret moved to keychain ─────────────────────────────");
+console.log("\n── secret-store migration: legacy plaintext secret moved to keychain ─────────────────────────────");
 {
   const { default: Conf } = await import("conf");
   const { getSecret, setSecret, deleteSecret, SECRET_KEYS } = await import(
     "./src/utils/secrets.js"
   );
 
-  // Ensure the keytar entry is clean before the test so we observe
+  // Ensure the secret-store entry is clean before the test so we observe
   // only this test's effect.
   await deleteSecret(SECRET_KEYS.coolifyToken);
 
@@ -2208,7 +2208,7 @@ console.log("\n── keytar migration: legacy plaintext secret moved to keychai
   const checks: Check[] = [
     ["getCoolifyConfig() returned merged config", loaded?.token === "legacy-plaintext-token"],
     ["token removed from conf JSON", coolifyMeta?.token === undefined],
-    ["token present in keytar", secretValue === "legacy-plaintext-token"],
+    ["token present in secret store", secretValue === "legacy-plaintext-token"],
   ];
   let ok = true;
   for (const [n, c] of checks) {
@@ -2217,7 +2217,7 @@ console.log("\n── keytar migration: legacy plaintext secret moved to keychai
   }
   results.keytarMigration = ok;
 
-  // Clean up: remove the keytar entry we created so we don't pollute
+  // Clean up: remove the secret-store entry we created so we don't pollute
   // the developer's real keychain across test runs.
   await deleteSecret(SECRET_KEYS.coolifyToken);
 }

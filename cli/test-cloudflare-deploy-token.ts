@@ -14,7 +14,7 @@ const keychainStub = `const deny = async () => { throw new Error("Unexpected OS 
 export default { getPassword: deny, setPassword: deny, deletePassword: deny, findCredentials: deny, findPassword: deny };`;
 const moduleGuard = registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (specifier === "keytar")
+    if (/(?:^|\/)os-keyring(?:\.[cm]?[jt]s)?$/.test(specifier))
       return {
         url: `data:text/javascript,${encodeURIComponent(keychainStub)}`,
         shortCircuit: true,

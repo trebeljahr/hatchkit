@@ -29,7 +29,7 @@ Credential denial means a check is unverified. Do not report it as an invalid cr
 - `doctor` is read-only; `doctor --fix` writes providers. Read a subcommand's help before assuming its JSON or dry-run flags make it read-only.
 - Keep `HATCHKIT_KEYCHAIN_ACCESS=deny` during automated work. Live access needs an authorized interactive run or explicit authorization for `HATCHKIT_KEYCHAIN_ACCESS=allow`.
 - After a denied credential read, stop that credential-dependent operation. Do not retry through another runtime or `/usr/bin/security`, weaken ACLs, or export credentials.
-- Run CLI tests through `pnpm --filter hatchkit test` or `pnpm --filter hatchkit exec node scripts/test.mjs test-<name>.ts`. The runner replaces keytar with a temporary fixture store for tests and children. `HATCHKIT_CONF_DIR` and `HATCHKIT_KEYTAR_SERVICE` alone do not isolate the OS keychain.
+- Run CLI tests through `pnpm --filter hatchkit test` or `pnpm --filter hatchkit exec node scripts/test.mjs test-<name>.ts`. The runner replaces the OS credential store (`src/utils/os-keyring`) with a temporary fixture store for tests and children. `HATCHKIT_CONF_DIR` and `HATCHKIT_KEYTAR_SERVICE` alone do not isolate the OS keychain.
 - Never print secrets without an explicit request. `keys show` and `hatchkit_keys_show` return secrets. Provider metadata belongs in config; credentials belong in the keychain.
 - `config reset` clears provider metadata and keychain entries. Confirm the intended reset before running it.
 - Review changes to existing deployments before applying them. Prefer supported `--dry-run` or `--recipe` paths. Dry-runs can still read hosts/providers and execute preflight probes.

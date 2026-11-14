@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { isTailscaleIpv4, localDevDomainSafetyIssue } from "./src/dev-setup.js";
+import {
+  devSetupInitPlatformIssue,
+  isTailscaleIpv4,
+  localDevDomainSafetyIssue,
+} from "./src/dev-setup.js";
+
+assert.equal(devSetupInitPlatformIssue("darwin"), null);
+assert.match(devSetupInitPlatformIssue("linux") ?? "", /macOS only/);
+assert.match(devSetupInitPlatformIssue("win32") ?? "", /win32/);
 
 assert.equal(localDevDomainSafetyIssue("local.example.com"), null);
 assert.equal(localDevDomainSafetyIssue("*.local.example.com"), null);

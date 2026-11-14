@@ -1,10 +1,19 @@
 /*
- * Secrets store backed by the OS keychain (macOS Keychain / Windows
- * Credential Vault / GNOME libsecret) via `keytar`.
+ * Secrets store. Everything sensitive (tokens, passwords, access keys)
+ * goes here. The Conf-backed JSON store in config.ts keeps only metadata
+ * (URLs, cached server lists, `lastVerified` timestamps, status flags).
  *
- * Everything sensitive (tokens, passwords, access keys) goes here. The
- * Conf-backed JSON store in config.ts keeps only metadata (URLs, cached
- * server lists, `lastVerified` timestamps, status flags).
+ * Backends, picked by `HATCHKIT_SECRET_STORE`:
+ *   · `os` (default) → the OS credential store (os-keyring.ts): macOS
+ *     Keychain, Windows Credential Manager, Linux Secret Service.
+ *   · `file` → a 0600 JSON file (file-secret-store.ts), for machines with
+ *     no credential store: headless Linux, containers, WSL.
+ *
+ * On top of either backend, `getSecret` first reads an environment
+ * variable named after the account (`secretEnvName`): `coolify:token` →
+ * `HATCHKIT_SECRET_COOLIFY_TOKEN`. That lets CI and one-off runs pass a
+ * token without any store. The override is read-only: writes and deletes
+ * still go to the backend.
  *
  * Naming:
  *   service = "hatchkit"
@@ -12,12 +21,35 @@
  */
 
 import { createKeychainQueue } from "./keychain-access.js";
+import type { SecretBackend } from "./os-keyring.js";
+
+export type SecretStoreKind = "os" | "file";
+
+export function secretStoreKind(env: NodeJS.ProcessEnv = process.env): SecretStoreKind {
+  const value = env.HATCHKIT_SECRET_STORE?.trim();
+  if (!value || value === "os") return "os";
+  if (value === "file") return "file";
+  throw new Error(`HATCHKIT_SECRET_STORE must be os or file, got "${value}".`);
+}
+
+/** The environment variable that overrides one secret: the account,
+ *  upper-cased, every run of other characters turned into `_`. */
+export function secretEnvName(account: string): string {
+  return `HATCHKIT_SECRET_${account
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_|_$/g, "")}`;
+}
 
 // Load the native module only after the access guard passes. The test
-// runner redirects this import to a fixture store, including in children.
+// runner redirects the os-keyring import to a fixture store, including in
+// children. The file backend opens no OS dialog, so it skips the guard.
 const keychainQueue = createKeychainQueue();
-async function withKeychain<T>(operation: (store: typeof import("keytar")) => Promise<T>) {
-  return keychainQueue(async () => operation((await import("keytar")).default));
+async function withKeychain<T>(operation: (store: SecretBackend) => Promise<T>) {
+  if (secretStoreKind() === "file") {
+    return operation((await import("./file-secret-store.js")).default);
+  }
+  return keychainQueue(async () => operation((await import("./os-keyring.js")).default));
 }
 
 // A service name is a namespace, not test isolation. Tests replace the
@@ -191,11 +223,11 @@ export const SECRET_KEYS = {
 } as const;
 
 /**
- * Turn a raw keytar failure into one that names the secret and the
- * likely cause.
+ * Turn a raw credential-store failure into one that names the secret and
+ * the likely cause for this platform.
  *
- * keytar's native layer collapses most macOS Security framework errors
- * into "An unknown error occurred.", with no key name attached. Seen on
+ * The native layer often reports a bare "An unknown error occurred." or
+ * a platform error code, with no key name attached. Seen on
  * its own, halfway through a multi-provider command, that says nothing
  * about which credential failed or why. The usual why on macOS is not a
  * missing item but a refused read: the keychain item's access list
@@ -210,10 +242,38 @@ export function describeKeychainError(
 ): Error {
   const reason = err instanceof Error ? err.message : String(err);
   const lines = [`Keychain ${op} failed for secret "${key}" (service "${SERVICE}"): ${reason}`];
-  if (
-    platform === "darwin" &&
-    !/OS keychain access is disabled|Keychain access stopped|HATCHKIT_KEYCHAIN_ACCESS/.test(reason)
-  ) {
+  const guardError =
+    /OS keychain access is disabled|Keychain access stopped|HATCHKIT_KEYCHAIN_ACCESS|HATCHKIT_SECRET_STORE/.test(
+      reason,
+    );
+  let fileStore = false;
+  try {
+    fileStore = secretStoreKind() === "file";
+  } catch {
+    // An invalid HATCHKIT_SECRET_STORE is already the reason.
+  }
+  const noStoreHint = [
+    `  → Without a credential store, set ${secretEnvName(key)} for this run,`,
+    "    or set HATCHKIT_SECRET_STORE=file to keep secrets in a 0600 file",
+    "    next to the hatchkit config (plaintext on disk; see the docs).",
+  ];
+  if (!guardError && !fileStore && platform === "linux") {
+    lines.push(
+      "  → hatchkit stores secrets through the Secret Service D-Bus API (gnome-keyring,",
+      "    KWallet, KeePassXC). A server, container or SSH session usually has none",
+      "    running, or the keyring is locked.",
+      "  → Check: is DBUS_SESSION_BUS_ADDRESS set, and is a keyring daemon running and unlocked?",
+      ...noStoreHint,
+    );
+  }
+  if (!guardError && !fileStore && platform === "win32") {
+    lines.push(
+      "  → hatchkit stores secrets in Windows Credential Manager (generic credentials).",
+      "    Check them under Control Panel → Credential Manager → Windows Credentials.",
+      ...noStoreHint,
+    );
+  }
+  if (!guardError && !fileStore && platform === "darwin") {
     lines.push(
       "  → macOS denies non-interactive keychain reads when the `node` on PATH is ad-hoc",
       "    signed (e.g. Homebrew node) rather than the Node.js-team-signed build the",
@@ -227,6 +287,8 @@ export function describeKeychainError(
 }
 
 export async function getSecret(key: string): Promise<string | null> {
+  const fromEnv = process.env[secretEnvName(key)]?.trim();
+  if (fromEnv) return fromEnv;
   try {
     return await withKeychain((store) => store.getPassword(SERVICE, key));
   } catch (err) {
@@ -321,14 +383,14 @@ export function parseStripeWebhookIdAccount(
   };
 }
 
-/** Move every per-project secret from `oldName` to `newName` in the OS
- *  keychain. Used by `hatchkit rename-project --keys`.
+/** Move every per-project secret from `oldName` to `newName` in the
+ *  secret store. Used by `hatchkit rename-project --keys`.
  *
  *  Matches the project-name segment in every well-known per-project key
  *  shape — dotenvx, per-project S3 (across all providers),
  *  Plausible, Stripe-per-project (both `test`/`live` modes, all subkeys).
  *
- *  Strategy: enumerate live keychain entries with `keytar.findCredentials`,
+ *  Strategy: enumerate live entries with the backend's `findCredentials`,
  *  match each account name against the known patterns, re-store under the
  *  new account name, then delete the old. Setting before deleting means a
  *  crash mid-migration leaves both copies — recoverable. Returns the list

@@ -1,4 +1,5 @@
-/** Unattended commands must not open macOS authorization dialogs. */
+/** Unattended commands must not open OS authorization dialogs (macOS
+ *  Keychain prompts, a locked Linux keyring asking to unlock). */
 export function assertKeychainAccess(): void {
   if (
     process.env.HATCHKIT_TEST_KEYCHAIN_DIR &&
@@ -14,7 +15,8 @@ export function assertKeychainAccess(): void {
     throw new Error(
       "OS keychain access is disabled for this unattended command. " +
         "Run it in an interactive terminal, or explicitly set HATCHKIT_KEYCHAIN_ACCESS=allow " +
-        "when credential access is intended. Tests must use the isolated test runner.",
+        "when credential access is intended, or pass the secret as a HATCHKIT_SECRET_<NAME> " +
+        "environment variable. Tests must use the isolated test runner.",
     );
   }
 }

@@ -1,5 +1,6 @@
 [
   "test-keychain-isolation.ts",
+  "test-secret-store.ts",
   "test-readiness.ts",
   "test-help-safety.ts",
   "test-documentation-contracts.ts",

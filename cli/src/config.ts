@@ -555,12 +555,12 @@ export async function resetConfig(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Migration — move legacy plaintext secrets from Conf JSON to keytar the
+// Migration — move legacy plaintext secrets from Conf JSON to the secret store the
 // first time they're seen. Runs lazily inside the relevant ensure/get
-// call so we don't spin up keytar for every CLI invocation.
+// call so we don't open the secret store on every CLI invocation.
 // ---------------------------------------------------------------------------
 
-async function migrateSecret(keyInStore: string, keytarKey: string): Promise<void> {
+async function migrateSecret(keyInStore: string, secretKey: string): Promise<void> {
   // Conf's typed API restricts keys to `keyof CliConfig`. Migration
   // reaches into arbitrary nested paths ("providers.coolify.token",
   // etc.) that Conf supports at runtime but not in the type. Cast
@@ -572,7 +572,7 @@ async function migrateSecret(keyInStore: string, keytarKey: string): Promise<voi
   };
   const raw = rawStore.get(keyInStore);
   if (!raw) return;
-  await setSecret(keytarKey, raw);
+  await setSecret(secretKey, raw);
   rawStore.delete(keyInStore);
 }
 

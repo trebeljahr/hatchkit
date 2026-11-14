@@ -1,4 +1,4 @@
-/** Offline adversarial tests. No keytar/config module, credentials, network,
+/** Offline adversarial tests. No secret-store/config module, credentials, network,
  * test mail, AWS policy simulation or real keychain calls. */
 import assert from "node:assert/strict";
 import { operatorScope, senderBoundaryPolicy } from "./src/provision/ses-operator-policy.js";
@@ -523,7 +523,7 @@ console.log(
   "✓ failed keychain save rolls back the new key; unknown AWS outcome retains recovery journal and refuses automatic retry",
 );
 
-// Drive the CLI through the mandatory fixture backend. Native keytar imports
+// Drive the CLI through the mandatory fixture backend. Native keyring imports
 // and shell keychain commands are blocked by the test runner, in descendants too.
 {
   assert.equal(

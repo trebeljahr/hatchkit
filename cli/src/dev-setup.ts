@@ -546,7 +546,22 @@ export function isTailscaleIpv4(ip: string): boolean {
   return n >= 0x64400000 && n <= 0x647fffff;
 }
 
+/** `init` runs Caddy under launchd and reads its ACME token with the
+ *  macOS `security` CLI. Neither exists elsewhere; stop before writing
+ *  anything instead of leaving a half-made setup. */
+export function devSetupInitPlatformIssue(
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform === "darwin") return null;
+  return (
+    `hatchkit dev-setup init supports macOS only for now (it installs a launchd agent and reads the Keychain); this machine is ${platform}. ` +
+    "Per-project fragments from `dev-setup enable` still work if you run Caddy yourself."
+  );
+}
+
 export async function runDevSetupInit(opts: DevSetupInitOptions = {}): Promise<DevSetupInitResult> {
+  const platformIssue = devSetupInitPlatformIssue();
+  if (platformIssue) throw new Error(platformIssue);
   if (!existsSync(PROJECTS_DIR)) mkdirSync(PROJECTS_DIR, { recursive: true });
   const localDevDomain =
     normaliseLocalDevDomain(opts.localDevDomain) ??
@@ -1643,6 +1658,12 @@ export async function runDevSetupCli(args: string[]): Promise<void> {
     return;
   }
   if (sub === "init") {
+    const platformIssue = devSetupInitPlatformIssue();
+    if (platformIssue) {
+      const chalk = (await import("chalk")).default;
+      console.log(chalk.yellow(platformIssue));
+      process.exit(1);
+    }
     const force = args.includes("--force");
     const domainFlagIdx = args.findIndex((a) => a === "--domain" || a.startsWith("--domain="));
     const rawDomain =

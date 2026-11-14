@@ -11,7 +11,7 @@
 //
 // The secrets shot scaffolds a real project, which needs a keychain. It uses
 // the CLI test suite's fixture keychain (cli/test-support/setup.mjs swaps the
-// native keytar module for files in the sandbox), so the OS keychain is never
+// native credential store for files in the sandbox), so the OS keychain is never
 // read or written. A source checkout's create also writes two infra files
 // into <checkout>/infra; the script refuses to run if they already exist and
 // deletes them afterwards.

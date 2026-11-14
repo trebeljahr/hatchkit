@@ -36,8 +36,8 @@ try {
   const install = join(scratch, "install");
   mkdirSync(install);
   writeFileSync(join(install, "package.json"), '{"name":"packed-install-test","private":true}');
-  // Native keytar is deliberately not built: fixture setup intercepts its
-  // import. These checks never access the OS credential store.
+  // The native credential store is never loaded: fixture setup intercepts the
+  // os-keyring import. These checks never access the OS credential store.
   console.log("Installing tarballs in a clean temporary project...");
   run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", ...archives], install);
   console.log("Checking installed commands and scaffolding...");

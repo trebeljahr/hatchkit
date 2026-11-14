@@ -1,9 +1,9 @@
 /*
  * cli/src/secrets/rollback-store.ts — Per-(project, adapter) rollback
- * blob persistence, backed by the OS keychain via keytar.
+ * blob persistence, backed by the hatchkit secret store (utils/secrets.ts).
  *
  * Why the keychain (not an encrypted tmp file):
- *   · keytar is already a hard dependency (cli/src/utils/secrets.ts).
+ *   · the secret store is already a hard dependency (cli/src/utils/secrets.ts).
  *   · Every other per-project secret in this codebase lives there —
  *     adding a parallel filesystem path drifts.
  *   · Encrypted tmp files create their own leak surface (accidental
@@ -13,7 +13,7 @@
  * Value shape: JSON-stringified { version, timestamp, values, handle }.
  *
  * `clearAllSecrets()` in utils/secrets.ts already sweeps every
- * keytar entry under the hatchkit service, so `config reset` cleans
+ * secret-store entry under the hatchkit service, so `config reset` cleans
  * these up by default — no new wildcard needed.
  */
 
