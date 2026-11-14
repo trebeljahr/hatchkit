@@ -172,6 +172,9 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   Postgres (`kind: postgres`, digest-pinned `X.Y-alpine`): a higher minor of the
   same major or an upstream rebuild of the tag; the old and new image must read
   one snapshot copy to the same exact row counts before the recreate.
+  A known-exploited image-package finding (fix reported) on the running image
+  is patched at once, outside the window and age wait, when the candidate's own
+  `apk` shows the fixed version; otherwise the plan lists it as `exploitedUnfixed`.
   Kuma security overlay (`overlay --target --packages`): a local
   `localhost/hatchkit-overlay/uptime-kuma:<tag>-hk<n>` FROM the pinned
   upstream digest with only those Debian packages upgraded; `run` leaves it for

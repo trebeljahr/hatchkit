@@ -245,6 +245,90 @@ class Postgres(unittest.TestCase):
         self.assertEqual(list(Path(folder.name).glob('canary.env')), [])
 
 
+RUNNING_IMAGE = 'sha256:' + 'c' * 64
+
+
+def kev_row(**over):
+    row = {'kind': 'image-package', 'service': RUNNING_IMAGE, 'name': 'libxslt', 'id': 'CVE-2026-0001',
+           'version': '1.1.43-r3', 'fixed': '1.1.43-r4', 'fixState': 'fixed', 'containers': ['postgres-x'],
+           'knownExploited': True}
+    row.update(over)
+    return row
+
+
+class PostgresKnownExploited(unittest.TestCase):
+    """A known-exploited package fix in a newer Postgres image is taken at once, not in the window."""
+    LATER = NOW.replace(hour=14)
+    FRESH = '2026-11-07T12:00:00Z'
+
+    def plan(self, rows, apk_fixed, tags=None, image=RUNNING_IMAGE):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        compose = Path(folder.name, 'docker-compose.yml')
+        compose.write_text(PG_COMPOSE)
+        target = {'name': 'listmonk-db', 'kind': 'postgres', 'container': 'postgres-x', 'compose': str(compose)}
+        tags = tags or [tag('18.7-alpine', updated=self.FRESH)]
+        inspected = []
+
+        def fake_inspect(name):
+            inspected.append(name)
+            return {'Image': image}
+        with patch.object(sp, 'inspect', fake_inspect):
+            plan = sp.plan_target(target, {}, {'findings': rows}, self.LATER, CONFIG,
+                                  fetch=lambda url: {'results': tags}, apk_fixed=apk_fixed)
+        return plan, inspected
+
+    def test_a_candidate_that_carries_the_fix_is_patched_outside_the_window_and_age(self):
+        seen = []
+
+        def apk_fixed(ref, rows):
+            seen.append((ref, [r['package'] for r in rows]))
+            return ['CVE-2026-0001']
+        plan, _ = self.plan([kev_row()], apk_fixed)
+        self.assertEqual((plan['action'], plan['fixes']), ('patch', ['CVE-2026-0001']))
+        self.assertIn('known-exploited', plan['reason'])
+        self.assertEqual(plan['ref'], 'postgres:18.7-alpine@' + DIGEST)
+        self.assertEqual(seen, [('postgres:18.7-alpine@' + DIGEST, ['libxslt'])])
+        self.assertIn('CVE-2026-0001', plan['advisories'])
+
+    def test_a_candidate_without_the_fix_keeps_waiting_and_names_the_finding(self):
+        plan, _ = self.plan([kev_row()], lambda ref, rows: [])
+        self.assertEqual(plan['action'], 'wait')
+        self.assertEqual(plan['exploitedUnfixed'], ['CVE-2026-0001'])
+
+    def test_no_candidate_names_the_unfixed_finding(self):
+        plan, _ = self.plan([kev_row()], lambda ref, rows: self.fail('nothing to check'),
+                            tags=[tag('18.6-alpine', digest='sha256:' + 'a' * 64)])
+        self.assertEqual((plan['action'], plan['exploitedUnfixed']), ('none', ['CVE-2026-0001']))
+
+    def test_stale_unexploited_unfixed_or_foreign_rows_change_nothing(self):
+        never = lambda ref, rows: self.fail('no row should reach the image check')
+        for row in (kev_row(service='sha256:' + 'd' * 64), kev_row(knownExploited=False),
+                    kev_row(fixState='not-fixed', fixed=None), kev_row(containers=['other'])):
+            plan, _ = self.plan([row], never)
+            self.assertEqual(plan['action'], 'wait', row)
+            self.assertNotIn('exploitedUnfixed', plan)
+
+    def test_docker_is_asked_only_when_the_ledger_names_the_container(self):
+        _, inspected = self.plan([kev_row(containers=['other'])], lambda ref, rows: [])
+        self.assertEqual(inspected, [])
+
+    def test_alpine_fixed_reads_and_compares_with_the_images_own_apk(self):
+        calls = []
+
+        def fake_run(args, timeout=120, check=False, input=None, cwd=None):
+            calls.append(args)
+            if args[-4:-2] == ['version', '-t']:
+                order = {('1.1.43-r4', '1.1.43-r4'): '=', ('1.22.2-r1', '1.22.3-r0'): '<'}[tuple(args[-2:])]
+                return NS(returncode=0, stdout=order + '\n', stderr='')
+            return NS(returncode=0, stdout='libxslt libxslt-1.1.43-r4\nkrb5-libs krb5-libs-1.22.2-r1\n', stderr='')
+        rows = [kev_row(), kev_row(id='CVE-2026-0002', name='krb5-libs', fixed='1.22.3-r0'), kev_row(id='CVE-2026-0003', name='zlib')]
+        rows = sp.exploited_rows({'findings': rows}, 'postgres-x', RUNNING_IMAGE)
+        with patch.object(sp, 'run', fake_run):
+            self.assertEqual(sp.alpine_fixed('postgres:18.7-alpine@' + DIGEST, rows), ['CVE-2026-0001'])
+        self.assertTrue(all('--network' in c and 'none' in c for c in calls))
+
+
 class Sync(unittest.TestCase):
     def test_the_script_goes_over_stdin_with_database_parts_and_standalone_rows(self):
         calls = []

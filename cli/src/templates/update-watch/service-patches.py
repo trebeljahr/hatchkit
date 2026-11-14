@@ -16,7 +16,10 @@ What `run` does, once an hour:
      major.minor.
   2. Patches a target when a newer patch exists AND either an advisory finding is
      fixed by it (at once), or the release is at least `minAgeHours` old and the
-     hour is inside the quiet `window` (UTC).
+     hour is inside the quiet `window` (UTC). Postgres also patches at once when
+     the update watch reports a known-exploited package with a fix in the image the
+     container runs, and the candidate image carries that fixed Alpine package
+     (read with `apk` inside the pulled candidate, no network).
   3. Canary: the new image runs first with no network, on the live configuration
      (Traefik: the same command and read-only mounts, its own health test; Kuma: a
      copy of the data volume, the same user and limits, the image's health check,
@@ -214,6 +217,51 @@ def advisories_for(ledger, kind, current):
         rows.append({'id': finding.get('id') or finding.get('cve') or 'advisory',
                      'severity': finding.get('severity'), 'fixedIn': same[0] if same else None})
     return rows
+
+
+def exploited_rows(ledger, container, image_id):
+    """Known-exploited image-package findings with a fix, on the image this container runs now.
+
+    Rows for another image ID are stale (the scan predates a recreate) and are ignored;
+    image_id None skips that check (a cheap first pass before asking Docker)."""
+    rows = []
+    for finding in (ledger or {}).get('findings') or []:
+        if finding.get('kind') != 'image-package' or not finding.get('knownExploited'):
+            continue
+        if container not in (finding.get('containers') or []):
+            continue
+        if image_id is not None and finding.get('service') != image_id:
+            continue
+        if finding.get('fixState') != 'fixed' or not finding.get('fixed') or not finding.get('name'):
+            continue
+        rows.append({'id': finding.get('id') or 'advisory', 'package': finding['name'],
+                     'version': finding.get('version'), 'fixed': str(finding['fixed']).split(',')[0].strip()})
+    return rows
+
+
+def alpine_fixed(ref, rows):
+    """-> ids of rows whose fixed package version (or newer) is installed in an Alpine image.
+
+    Read and compared by the image's own apk, with no network."""
+    packages = sorted({r['package'] for r in rows})
+    script = 'for p in "$@"; do v=$(apk info -e -v "$p" 2>/dev/null) && echo "$p $v"; done'
+    result = run(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'sh', ref, '-c', script, 'sh'] + packages,
+                 timeout=120)
+    installed = {}
+    for line in result.stdout.splitlines():
+        name, _, full = line.partition(' ')
+        if full.startswith(name + '-'):
+            installed[name] = full[len(name) + 1:]
+    fixed = []
+    for row in rows:
+        have = installed.get(row['package'])
+        if not have:
+            continue
+        order = run(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'apk', ref,
+                     'version', '-t', have, row['fixed']], timeout=60).stdout.strip()
+        if order in ('=', '>'):
+            fixed.append(row['id'])
+    return sorted(set(fixed))
 
 
 def decide(kind, current, candidate, advisories, state, now, config, forced=None):
@@ -1001,7 +1049,7 @@ def new_ref_for(kind, version, tag):
     return ref
 
 
-def plan_target(target, state, ledger, now, config, forced_tag=None, fetch=None, versions=None):
+def plan_target(target, state, ledger, now, config, forced_tag=None, fetch=None, versions=None, apk_fixed=None):
     kind = target['kind']
     current = current_version(target)
     advisories = advisories_for(ledger, kind, current)
@@ -1035,10 +1083,31 @@ def plan_target(target, state, ledger, now, config, forced_tag=None, fetch=None,
     else:
         action, reason, fixes = decide(kind, current, candidate, advisories, state, now, config,
                                        forced=forced_tag)
+    exploited, lacking = [], []
+    if kind == 'postgres' and not forced_tag:
+        exploited = exploited_rows(ledger, target['container'], None)
+        if exploited:
+            # Only now ask Docker which image runs: rows of an older image are stale.
+            exploited = exploited_rows(ledger, target['container'], (inspect(target['container']) or {}).get('Image'))
+        if exploited and candidate and action not in ('patch', 'paused'):
+            ref = new_ref_for(kind, candidate[0], candidate[1])
+            if apk_fixed is None:
+                pull(ref)
+            have = (apk_fixed or alpine_fixed)(ref, exploited)
+            lacking = sorted({r['id'] for r in exploited} - set(have))
+            if have:
+                action, fixes = 'patch', have
+                reason = 'fixes known-exploited ' + ', '.join(have)
+        elif exploited and not candidate:
+            lacking = sorted({r['id'] for r in exploited})
     plan = {'target': target['name'], 'kind': kind, 'current': fmt(current),
             'action': action, 'reason': reason, 'fixes': fixes,
-            'advisories': [a['id'] for a in advisories],
+            'advisories': [a['id'] for a in advisories] + sorted({r['id'] for r in exploited}),
             'unpatchable': sorted(a['id'] for a in advisories if not a['fixedIn'])}
+    if lacking:
+        # Known exploited, fixed upstream in Alpine, but no Postgres image of this
+        # line carries it yet: say so instead of waiting silently.
+        plan['exploitedUnfixed'] = lacking
     if overlay:
         plan['overlay'] = overlay['ref']
     if candidate:
