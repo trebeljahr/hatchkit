@@ -287,11 +287,11 @@ function patchServerPackageJson(outputDir: string): void {
   pkg.dependencies = pkg.dependencies ?? {};
   delete pkg.dependencies.mongoose;
   delete pkg.dependencies.mongodb;
-  pkg.dependencies.pg = "^8.13.1";
+  pkg.dependencies.pg = "^8.23.1";
   pkg.dependencies["drizzle-orm"] = "^0.36.4";
   pkg.devDependencies = pkg.devDependencies ?? {};
   pkg.devDependencies["drizzle-kit"] = "^0.28.1";
-  pkg.devDependencies["@types/pg"] = "^8.11.10";
+  pkg.devDependencies["@types/pg"] = "^8.23.1";
   pkg.scripts = pkg.scripts ?? {};
   pkg.scripts["db:generate"] = "drizzle-kit generate";
   pkg.scripts["db:migrate"] = "drizzle-kit migrate";

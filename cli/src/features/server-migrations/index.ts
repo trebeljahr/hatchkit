@@ -44,7 +44,7 @@ import {
  *  only exposes what a package declares — an undeclared `mongodb`
  *  import resolves in a hoisted install and fails in a strict one,
  *  which is the worst place for that difference to show up. */
-const MONGODB_DEP = "^7.2.0";
+const MONGODB_DEP = "^7.7.0";
 
 /** Marker for the env block and the `env` object entry. Both are
  *  idempotent on it, so a second `hatchkit update` adds neither. */

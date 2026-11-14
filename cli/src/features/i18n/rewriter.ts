@@ -50,9 +50,9 @@ const GATE_EXEMPT_ATTR = "data-locale-fixed";
 
 /** The version the templates were written against — `createTranslator`
  *  and the `_Translator` type both come from `use-intl/core`. */
-const USE_INTL_VERSION = "^4.14.4";
+const USE_INTL_VERSION = "^4.14.9";
 /** Only used when the client does not pin a version of its own. */
-const FALLBACK_VITEST_VERSION = "^4.1.6";
+const FALLBACK_VITEST_VERSION = "^5.1.0";
 
 export type RewriteStatus = "rewritten" | "unchanged" | "absent";
 
