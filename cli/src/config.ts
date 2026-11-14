@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { confirm, input, password, Separator, select } from "@inquirer/prompts";
 import chalk from "chalk";
-import Conf from "conf";
+import Conf, { type Options } from "conf";
 import type { CloudflareAuditConfig } from "./audit/expected.js";
 import { CloudflareApi } from "./utils/cloudflare-api.js";
 import { verifyCoolify } from "./utils/coolify-api.js";
@@ -429,7 +429,12 @@ export interface CliConfig {
 // reset rather than bricking the CLI for every subsequent command —
 // a fresh config is recoverable (re-run `init`), a crash at import
 // time is not.
-const STORE_DEFAULTS: CliConfig = {
+// conf 16 types `defaults` with a dot-path index of every key; a value typed
+// as the whole config has none of those index signatures, so it is cast to
+// the option's own type. The object itself is still checked as a CliConfig.
+type StoreDefaults = NonNullable<Options<CliConfig>["defaults"]>;
+
+const STORE_DEFAULTS_CONFIG: CliConfig = {
   version: 1,
   providers: {
     github: { status: "unconfigured" },
@@ -439,6 +444,7 @@ const STORE_DEFAULTS: CliConfig = {
   mlServices: {},
   usedPorts: [],
 };
+const STORE_DEFAULTS = STORE_DEFAULTS_CONFIG as StoreDefaults;
 
 function createStore(): Conf<CliConfig> {
   try {
@@ -3379,7 +3385,10 @@ interface SetupStep {
 }
 
 /** Wipe a provider's stored meta + secret keys so its ensureFn re-prompts. */
-async function wipeProvider(storeKey: string, secretKeys: string[]): Promise<void> {
+async function wipeProvider(
+  storeKey: Parameters<Conf<CliConfig>["delete"]>[0],
+  secretKeys: string[],
+): Promise<void> {
   store.delete(storeKey);
   for (const k of secretKeys) await deleteSecret(k);
 }
