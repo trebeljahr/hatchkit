@@ -1135,7 +1135,7 @@ foreach ($args['services'] as $s) {
         Symfony\Component\Yaml\Yaml::parse($newRaw); Symfony\Component\Yaml\Yaml::parse($swap[0]);
         $r += ['from' => $swap[1], 'to' => $swap[2], 'status' => $apply ? 'updated' : 'would-update'];
         if ($apply) {
-          Illuminate\Support\Facades\DB::transaction(function () use ($service, $application, $newRaw, $swap) {
+          Illuminate\Support\Facades\DB::transaction(function () use ($service, $application, $newRaw, $swap, $isDb) {
             Illuminate\Support\Facades\DB::table('services')->where('id', $service->id)->update(['docker_compose_raw' => $newRaw, 'docker_compose' => $swap[0]]);
             Illuminate\Support\Facades\DB::table($isDb ? 'service_databases' : 'service_applications')->where('id', $application->id)->update(['image' => $swap[2]]);
           });
@@ -1172,6 +1172,9 @@ SYNC_PATTERNS = {'traefik': '/^traefik(:v\\d+\\.\\d+\\.\\d+)?@sha256:[0-9a-f]{64
                  'postgres': '/^postgres:\\d+\\.\\d+-alpine@sha256:[0-9a-f]{64}$/'}
 
 
+SYNC_USER = 'www-data'
+
+
 def sync_coolify(sync, apply):
     """Follow patched host files in Coolify's own copies. Prints and returns no compose text."""
     args = {'apply': apply,
@@ -1185,7 +1188,10 @@ def sync_coolify(sync, apply):
     container = sync.get('container', 'coolify')
     # The script goes over stdin: a file in the container's /tmp is exactly what
     # host-integrity's temp-file detector reports (and mails).
-    result = run(['docker', 'exec', '-i', '-u', 'root', '-e', 'HK_ARGS=' + json.dumps(args), container, 'php'],
+    # It runs as Coolify's own user: as root, Coolify's SSH helper leaves a
+    # root-owned ControlMaster socket under storage/app/ssh/mux, and every
+    # Coolify job (www-data) to that server then fails with "Permission denied".
+    result = run(['docker', 'exec', '-i', '-u', SYNC_USER, '-e', 'HK_ARGS=' + json.dumps(args), container, 'php'],
                  input=SYNC_PHP, timeout=180)
     lines = [l for l in result.stdout.splitlines() if l.startswith('[')]
     if result.returncode or not lines:

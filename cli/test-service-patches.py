@@ -6,6 +6,7 @@ cli/src/templates/update-watch/README.md.
 import datetime as dt
 import hashlib
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -261,6 +262,17 @@ class Sync(unittest.TestCase):
         sent = json.loads(next(a for a in args if a.startswith('HK_ARGS='))[len('HK_ARGS='):])
         self.assertEqual((sent['services'][0]['part'], sent['services'][0]['prefix']), ('database', 'postgres:'))
         self.assertEqual(sent['standalone'][0]['uuid'], 'g145')
+        # Coolify's own user: a root run leaves a root-owned SSH mux socket that
+        # breaks every later Coolify job on that server.
+        self.assertEqual(args[args.index('-u') + 1], 'www-data')
+
+    def test_the_service_update_closure_captures_every_variable_it_reads(self):
+        # PHP closures see only what `use` names; a missing one fails at apply
+        # time as "Undefined variable", after the dry run passed.
+        for match in re.finditer(r'function \(\) use \(([^)]*)\) \{(.*?)\n\s*\}\);', sp.SYNC_PHP, re.S):
+            captured = set(re.findall(r'\$(\w+)', match.group(1)))
+            used = set(re.findall(r'\$(\w+)', match.group(2))) - {'this'}
+            self.assertEqual(used - captured, set(), match.group(0)[:80])
 
 
 class Clients(unittest.TestCase):
