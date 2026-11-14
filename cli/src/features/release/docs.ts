@@ -508,7 +508,9 @@ export function renderCredentialsDoc(config: ReleaseConfig): string {
         "**One-time setup.** These cannot be automated; the vendor forces each one through its own UI.",
         "",
       );
-      group.manualSteps.forEach((manualStep, index) => out.push(`${index + 1}. ${manualStep}`));
+      for (const [index, manualStep] of group.manualSteps.entries()) {
+        out.push(`${index + 1}. ${manualStep}`);
+      }
       out.push("");
     }
   }

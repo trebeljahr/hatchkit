@@ -964,7 +964,7 @@ export async function runPlausibleMerge(
   );
   for (const note of plan.notes) say(`  · ${note}`);
   say("  Writes:");
-  plannedWrites(plan).forEach((line, i) => say(`    ${i + 1}. ${line}`));
+  for (const [i, line] of plannedWrites(plan).entries()) say(`    ${i + 1}. ${line}`);
 
   if (flags.dryRun) {
     say("  Dry run: nothing written.");

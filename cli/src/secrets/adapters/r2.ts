@@ -35,7 +35,7 @@ import {
   readManifestWithMigrationInfo,
 } from "../../scaffold/manifest.js";
 import { type CfTokenPolicy, CloudflareApi } from "../../utils/cloudflare-api.js";
-import { getCloudflareTokenValue, getSecret, SECRET_KEYS } from "../../utils/secrets.js";
+import { getCloudflareTokenValue } from "../../utils/secrets.js";
 import { readEncryptedProd } from "../env-writer.js";
 import { register } from "../registry.js";
 import type {
