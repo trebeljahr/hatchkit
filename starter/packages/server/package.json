@@ -33,7 +33,7 @@
     "mongodb": "^7.7.0",
     "mongoose": "^9.10.3",
     "morgan": "^1.12.1",
-    "stripe": "^22.6.2",
+    "stripe": "^23.1.0",
     "ws": "^8.22.0",
     "zod": "^4.6.5",
     "@aws-sdk/client-sesv2": "3.1048.0"
