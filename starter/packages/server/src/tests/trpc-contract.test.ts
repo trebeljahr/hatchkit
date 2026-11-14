@@ -62,7 +62,7 @@ test("the committed contract matches the router, the sync events and the levels"
   const raw = readFileSync(TRPC_CONTRACT_PATH, "utf8");
   const committed = JSON.parse(raw) as TrpcContract;
   const verdict = contractVerdict(committed, generated);
-  assert.equal(verdict, null, verdict ?? undefined);
+  assert.equal(verdict, null, verdict ?? "the contract has no change");
   // Byte-for-byte too, so key order and formatting cannot drift.
   assert.equal(raw, trpcContractJson(generated));
 });
