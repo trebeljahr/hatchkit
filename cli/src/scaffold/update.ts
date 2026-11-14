@@ -106,6 +106,7 @@ import { inferGhOwner, substituteComposeImageRefs } from "./owner.js";
 import { setPackageJsonScript } from "./pkg-json.js";
 import {
   SENTRY_OPTIONS_REL_PATH,
+  SENTRY_OPTIONS_SDK_MAJOR,
   SERVER_INSTRUMENT_REL_PATH,
   retrofitServerErrorScrub,
 } from "./server-error-scrub.js";
@@ -502,6 +503,14 @@ export async function runUpdate(
     for (const rel of errorScrub.writes) {
       console.log(chalk.green(`  ${dryRun ? "~ would write" : "✓"} ${rel}: ${what}`));
     }
+  } else if (errorScrub.outcome === "sdk-too-old") {
+    console.log(
+      chalk.yellow(
+        `  ⚠ ${SENTRY_OPTIONS_REL_PATH} was not copied: the starter's version is written for\n` +
+          `    @sentry/node ${SENTRY_OPTIONS_SDK_MAJOR}, and packages/server is on an older major.\n` +
+          `    Upgrade @sentry/node to ${SENTRY_OPTIONS_SDK_MAJOR}, then run hatchkit update again.`,
+      ),
+    );
   } else if (errorScrub.outcome === "customized") {
     console.log(
       chalk.yellow(

@@ -53,6 +53,7 @@ const {
   classifyServerInstrument,
   normalizeSource,
   retrofitServerErrorScrub,
+  serverSentryMajor,
 } = await import("./src/scaffold/server-error-scrub.js");
 
 const STARTER = resolve(join(import.meta.dirname, "..", "starter"));
@@ -186,6 +187,39 @@ await expect("writes sentry-options.ts, its test and the new instrument.ts", () 
   }
   assert.deepEqual(ledger.conflicts(), []);
   rmSync(dir, { recursive: true, force: true });
+});
+
+await expect("a project still on @sentry/node 10 gets nothing copied", () => {
+  const dir = makeProject({
+    [SERVER_INSTRUMENT_REL_PATH]: PRE_SCRUB_INSTRUMENT_TS,
+    "packages/server/package.json": JSON.stringify({
+      dependencies: { "@sentry/node": "^10.75.3" },
+    }),
+  });
+  const ledger = new FeatureLedger(dir, false);
+  const result = retrofitServerErrorScrub(ledger, STARTER);
+  assert.equal(result.outcome, "sdk-too-old");
+  assert.deepEqual(result.writes, []);
+  assert.equal(existsSync(join(dir, SENTRY_OPTIONS_REL_PATH)), false);
+  assert.equal(
+    readFileSync(join(dir, SERVER_INSTRUMENT_REL_PATH), "utf-8"),
+    PRE_SCRUB_INSTRUMENT_TS,
+  );
+  rmSync(dir, { recursive: true, force: true });
+});
+
+await expect("the SDK major is read from the server's range", () => {
+  assert.equal(
+    serverSentryMajor(JSON.stringify({ dependencies: { "@sentry/node": "^11.11.0" } })),
+    11,
+  );
+  assert.equal(
+    serverSentryMajor(JSON.stringify({ dependencies: { "@sentry/node": "~10.1.0" } })),
+    10,
+  );
+  assert.equal(serverSentryMajor(JSON.stringify({ dependencies: {} })), undefined);
+  assert.equal(serverSentryMajor("{"), undefined);
+  assert.equal(serverSentryMajor(undefined), undefined);
 });
 
 await expect("CRLF line endings and trailing whitespace still count as the old file", () => {

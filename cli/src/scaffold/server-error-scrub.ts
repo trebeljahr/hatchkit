@@ -36,6 +36,12 @@ import type { FeatureLedger, FileAction } from "../features/contract.js";
 export const SERVER_INSTRUMENT_REL_PATH = "packages/server/src/instrument.ts";
 export const SENTRY_OPTIONS_REL_PATH = "packages/server/src/sentry-options.ts";
 export const SENTRY_OPTIONS_TEST_REL_PATH = "packages/server/src/tests/sentry-options.test.ts";
+export const SERVER_PACKAGE_JSON_REL_PATH = "packages/server/package.json";
+
+/** The `@sentry/node` major the starter's `sentry-options.ts` is written
+ *  for. Sentry 11 replaced `sendDefaultPii` and the integration options with
+ *  `dataCollection`, so the file does not compile against an older SDK. */
+export const SENTRY_OPTIONS_SDK_MAJOR = 11;
 
 /** `instrument.ts` as the starter shipped it until 2026-10-19. */
 export const PRE_SCRUB_INSTRUMENT_TS = [
@@ -87,7 +93,10 @@ export type ServerErrorScrubOutcome =
   | "not-sentry"
   /** `instrument.ts` uses the SDK but is not the old starter file.
    *  Reported as a manual step, never rewritten. */
-  | "customized";
+  | "customized"
+  /** The scrub would be copied, but the project's `@sentry/node` is older
+   *  than the SDK the starter's `sentry-options.ts` is written for. */
+  | "sdk-too-old";
 
 export interface ServerErrorScrubRetrofit {
   outcome: ServerErrorScrubOutcome | "absent";
@@ -103,6 +112,22 @@ export function normalizeSource(source: string): string {
     .map((line) => line.trimEnd())
     .join("\n")
     .trimEnd();
+}
+
+/** The lowest major a `@sentry/node` range in the server's package.json
+ *  allows, or undefined when there is no readable range. */
+export function serverSentryMajor(packageJson: string | undefined): number | undefined {
+  if (packageJson === undefined) return undefined;
+  let range: unknown;
+  try {
+    const pkg = JSON.parse(packageJson) as Record<string, Record<string, unknown> | undefined>;
+    range = pkg.dependencies?.["@sentry/node"] ?? pkg.devDependencies?.["@sentry/node"];
+  } catch {
+    return undefined;
+  }
+  if (typeof range !== "string") return undefined;
+  const match = /(\d+)/.exec(range);
+  return match ? Number(match[1]) : undefined;
 }
 
 function isSuperseded(source: string, hashes: readonly string[]): boolean {
@@ -147,6 +172,10 @@ export function retrofitServerErrorScrub(
     return { outcome, writes: [] };
   }
   if (outcome !== "patched" && outcome !== "upgraded") return { outcome, writes: [] };
+  const sdkMajor = serverSentryMajor(ledger.read(SERVER_PACKAGE_JSON_REL_PATH));
+  if (sdkMajor !== undefined && sdkMajor < SENTRY_OPTIONS_SDK_MAJOR) {
+    return { outcome: "sdk-too-old", writes: [] };
+  }
 
   // Read before any write: an instrument.ts that imports a
   // sentry-options.ts nobody copied would stop the server from booting.
