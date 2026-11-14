@@ -2,7 +2,7 @@
 name: __PROJECT_SLUG__-newsletter
 services:
   ingress:
-    image: nginx:1.28-alpine
+    image: nginx:1.30-alpine
     restart: unless-stopped
     user: "101:101"
     entrypoint: ["nginx"]
