@@ -171,7 +171,7 @@
     "@inquirer/prompts": "^7.10.1",
     "bcryptjs": "^3.0.3",
     "chalk": "^6.0.1",
-    "conf": "^13.1.0",
+    "conf": "^16.0.0",
     "eciesjs": "^0.4.18",
     "execa": "^10.2.1",
     "handlebars": "^4.7.9",
