@@ -1026,7 +1026,7 @@ check("a deploy job with its own checkout keeps it and gains the history", () =>
     "",
   ].join("\n");
   const after = withDeployCheckoutHistory(withCheckout);
-  assert.match(after, /- uses: actions\/checkout@v4\n {8}with:\n {10}fetch-depth: 0/);
+  assert.match(after, /- uses: actions\/checkout@v7\n {8}with:\n {10}fetch-depth: 0/);
   assert.equal(withDeployCheckoutHistory(after), after, "idempotent");
 });
 
