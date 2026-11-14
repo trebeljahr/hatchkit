@@ -2324,7 +2324,7 @@ export async function ensureSes(): Promise<SesConfig> {
   );
 
   const { SES_SMTP_REGIONS } = await import("./provision/ses.js");
-  const region = await select({
+  const region = await select<string>({
     message: "AWS region for SES (must have an SMTP endpoint):",
     default: existing?.region ?? "eu-west-1",
     choices: SES_SMTP_REGIONS.map((r) => ({ name: r, value: r })),

@@ -1056,7 +1056,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
         c.deployTarget !== "new" ||
         presets.serverSize !== undefined,
       run: async (c) => {
-        const serverSize = await select({
+        const serverSize = await select<string>({
           message: "Server size:",
           default: c.serverSize ?? "cpx21",
           choices: [
@@ -1075,7 +1075,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
         c.deployTarget !== "new" ||
         presets.serverLocation !== undefined,
       run: async (c) => {
-        const serverLocation = await select({
+        const serverLocation = await select<string>({
           message: "Server location:",
           default: c.serverLocation ?? "nbg1",
           choices: [
@@ -2180,7 +2180,7 @@ async function editSection(cfg: ProjectConfig, section: string): Promise<Project
       };
     }
     // New Hetzner
-    const serverSize = await select({
+    const serverSize = await select<string>({
       message: "Hetzner server size:",
       choices: [
         { name: "cpx21 (3 vCPU, 4GB RAM)", value: "cpx21" },
