@@ -12,7 +12,7 @@
     "lint:fix": "eslint . --fix"
   },
   "dependencies": {
-    "@sentry/nextjs": "^11.11.0",
+    "@sentry/nextjs": "^11.12.0",
     "@starter/core": "workspace:*",
     "@starter/shared": "workspace:*",
     "@tanstack/react-query": "^5.104.0",
