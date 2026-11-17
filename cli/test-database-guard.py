@@ -79,4 +79,41 @@ class GuardTests(unittest.TestCase):
   reordered=[*rows[:3],rows[4],rows[3],rows[5]]
   self.assertNotEqual(g.normalize_table({'nftables':reordered}),rows)
 
+def _table(chains):
+ """chains: [(name, veth or None, daddr)] -> (JSON listing without devices, native listing)."""
+ rows=[{'table':{'family':'netdev','name':g.TABLE,'handle':1}}]
+ native=['table netdev %s {'%g.TABLE]
+ for i,(name,dev,addr) in enumerate(chains):
+  rows.append({'chain':{'family':'netdev','table':g.TABLE,'name':name,'handle':10+i,'type':'filter','hook':'ingress','prio':-500,'policy':'accept'}})
+  rows.append({'rule':{'family':'netdev','table':g.TABLE,'chain':name,'handle':20+i,'expr':[{'match':{'op':'==','left':{'payload':{'protocol':'ip','field':'daddr'}},'right':addr}},{'drop':None}],'comment':g.TAG}})
+  hook='type filter hook ingress device "%s" priority -500; policy accept;'%dev if dev else 'type filter hook ingress priority -500; policy accept;'
+  native+=['\tchain %s {'%name,'\t\t'+hook,'\t\tip daddr %s drop'%addr,'\t}']
+ return json.dumps({'nftables':[{'metainfo':{}},*rows]}),'\n'.join(native+['}'])
+
+class UnboundChains(unittest.TestCase):
+ def run_table(self,chains):
+  listing,native=_table(chains)
+  tables=json.dumps({'nftables':[{'table':{'family':'netdev','name':g.TABLE}}]})
+  def fake(args,**kw):
+   if args[:3]==['nft','-j','list']:return tables if args[3]=='tables' else listing
+   if args[:2]==['nft','list']:return native
+   raise AssertionError(args)
+  with patch.object(g,'run',fake):return g.current_table()
+
+ def test_a_chain_whose_veth_vanished_reads_as_removed(self):
+  rows=self.run_table([('proxy0','vethaaa','172.20.0.3'),('proxy1',None,'172.20.0.4')])
+  self.assertEqual([r['chain']['name']for r in rows if 'chain'in r],['proxy0'])
+  self.assertEqual([r['rule']['chain']for r in rows if 'rule'in r],['proxy0'])
+  self.assertEqual(rows[1]['chain']['dev'],'vethaaa')
+
+ def test_the_device_loss_rule_then_explains_it_against_the_recorded_rules(self):
+  prior=g.wanted([(4,'vethaaa','172.20.0.3'),(4,'vethbbb','172.20.0.4')])
+  rows=self.run_table([('proxy0','vethaaa','172.20.0.3'),('proxy1',None,'172.20.0.4')])
+  self.assertEqual(rows,g.after_device_loss(prior,{'vethaaa'}))
+
+ def test_all_chains_unbound_leaves_only_the_table_to_replace(self):
+  rows=self.run_table([('proxy0',None,'172.20.0.3')])
+  self.assertEqual(rows,[{'table':{'family':'netdev','name':g.TABLE}}])
+  self.assertEqual(json.loads(g.transaction(rows,rows))['nftables'][0],{'delete':{'table':{'family':'netdev','name':g.TABLE}}})
+
 if __name__=='__main__':unittest.main()

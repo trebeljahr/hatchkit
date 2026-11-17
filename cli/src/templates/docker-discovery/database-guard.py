@@ -125,6 +125,12 @@ def current_table():
     # in its bounded native rendering; never discard that security property.
     native=run(['nft','list','table','netdev',TABLE]);assert len(native)<4*1024**2
     devices=dict(re.findall(r'^\s*chain (proxy[0-9]+) \{\n\s*type filter hook ingress device "(veth[A-Za-z0-9]+)" priority -500; policy accept;\s*$',native,re.M))
+    # Some kernels (seen on 6.8) keep a netdev chain whose veth disappeared, with no
+    # device: it hooks nothing. Read it as removed, which is what it enforces, so the
+    # device-loss rule below can explain it and the protection is applied again.
+    unbound=set(re.findall(r'^\s*chain (proxy[0-9]+) \{\n\s*type filter hook ingress priority -500; policy accept;\s*$',native,re.M))
+    assert not unbound&set(devices)
+    rows=[r for r in rows if not('chain'in r and r['chain']['name']in unbound)and not('rule'in r and r['rule']['chain']in unbound)]
     chains=[r['chain']for r in rows if 'chain'in r]
     assert set(devices)=={r['name']for r in chains},'Ingress binding not established'
     for chain in chains:
