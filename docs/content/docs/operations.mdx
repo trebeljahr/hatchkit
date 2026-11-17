@@ -38,7 +38,22 @@ Five events mail at once: a new known-exploited finding, a failed backup, a host
 
 Unreviewed scanner matches stay in the ledger and keep their deadlines. They cause a digest once a week, after 09:00 on Monday in Sydney. A known-exploited match or lost coverage is not held for that review.
 
-Digests are per host because package findings do not leave a host. The independent monitor sees only fixed timestamps and counts for each host. It mails a dark check at once and incomplete coverage once a day. A failed or missing digest counts as a dark check. Mail changes when you are told, not what is recorded: the ledger stays complete.
+Without pooling, digests are per host. The independent monitor sees only fixed timestamps and counts for each host. It mails a dark check at once and incomplete coverage once a day. A failed or missing digest counts as a dark check. Mail changes when you are told, not what is recorded: the ledger stays complete.
+
+A known-exploited finding with no fix reported is listed under Waiting on vendor, not Needs you. It moves to Needs you once the ledger reports a fix.
+
+### One mail for every host (pooled digest)
+
+With `"pool": true` in the host's `alerts` settings (`/etc/hatchkit-backups/config.json`) and `POOL_MAIL=1` on the monitor Worker, no host sends mail of its own. Every hour each host posts its open items to the monitor (`POST /digest/<host>`, with the health publisher's key). The monitor sends one mail a day at the digest hour, for all hosts:
+
+- The daily mail lists only what someone can act on: Needs you and Not checked. The same finding on two hosts is one line naming both. A day with nothing to act on sends no mail.
+- The weekly review (Sunday 22:00 UTC, Monday morning in eastern Australia; `WEEKLY_UTC_DAY`) adds Waiting on vendor, Fixed automatically and the raw scanner matches.
+- The monitor's own findings (a dark check, a host that stopped posting its digest) go into the same daily mail.
+- If the monitor has not accepted a host's post for 26 hours, that host mails its own digest again.
+
+Pooling sends finding text to the monitor: package, advisory, container name, deadline and command. No application records, logs, environment values or secrets.
+
+Each item in the mail carries an ID. `hatchkit alerts open` lists the open items and `hatchkit alerts resolve <ID>` marks one done. Only the machine holding the resolver key can do that (`hatchkit alerts setup`). A resolved item stays hidden for 26 hours while the checks rescan, and comes back flagged if a host still reports it.
 
 ### Installation prerequisites
 

@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import chalk from "chalk";
+import { ALERTS_USAGE, runAlertsCommand } from "./alerts/command.js";
 import { AUDIT_USAGE, runAuditCommand } from "./audit/command.js";
 import { AUTH_USAGE } from "./auth-providers/usage.js";
 import { BACKUP_USAGE, runBackupCommand } from "./backups/command.js";
@@ -185,6 +186,9 @@ async function main(): Promise<void> {
       break;
     case "audit":
       await runAuditCommand(args.slice(1));
+      break;
+    case "alerts":
+      await runAlertsCommand(args.slice(1));
       break;
     case "map": {
       const { runMapCommand } = await import("./map/command.js");
@@ -4519,6 +4523,9 @@ function printCommandHelp(cmd: string | undefined): void {
     case "audit":
       console.log(AUDIT_USAGE);
       return;
+    case "alerts":
+      console.log(ALERTS_USAGE);
+      return;
     case "map":
       console.log(MAP_USAGE);
       return;
@@ -6672,6 +6679,7 @@ function printHelp(topic?: HelpTopic): void {
     host integrity  Scan host/container integrity (install = five-minute checks + daily CPU sample)
     host updates    Flag shared services (Coolify, Traefik, Plausible, …) that a high/critical advisory covers (read-only; install = four-hour checks + daily image scan)
     audit cloudflare  Report tokens, audit-log entries and resources hatchkit did not create (read-only)
+    alerts open|resolve  List the pooled digest's open items; mark one done (see alerts setup)
     infra plan|apply <stack>  Run one of hatchkit's own Terraform stacks (ota-updates) with a minted run token
     email           Set up Cloudflare Email Routing + MX/SPF/DMARC (setup/status)
     keys show <p>   Print the dotenvx private key for a project

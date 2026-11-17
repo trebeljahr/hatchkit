@@ -128,6 +128,9 @@ export const SECRET_KEYS = {
   /** Signs what hatchkit writes to the audit Worker's bucket; the Worker
    *  holds the same key as a secret. See audit/signed-state.ts. */
   cloudflareAuditHmacKey: "cloudflare:audit-hmac",
+  /** Lets this machine mark pooled-digest items done on the security monitor
+   *  Worker (`hatchkit alerts resolve`); the Worker holds it as RESOLVER_KEY. */
+  securityMonitorResolverKey: "security-monitor:resolver-key",
   /** The audit Worker's own SES key: ses:SendEmail from one address to
    *  Rico only. Not hatchkit's SES admin key (`ses:*` above). */
   cloudflareAuditSesAccessKeyId: "cloudflare:audit-ses:access-key-id",

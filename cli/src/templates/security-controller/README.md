@@ -11,11 +11,25 @@ A Cloudflare Worker outside the VPSs. It does two jobs on a `*/5 * * * *` cron:
    one account. It mails when one passes 80 % of its limit or grows more than
    a set amount in a day.
 
-Both send the same mail document as the hosts' digests (`mail-core.mjs`, a
+3. **Pooled digest** (`digest-pool.mjs`, on with `POOL_MAIL=1`). Hosts with
+   `alerts.pool` post their open digest items hourly to `POST /digest/<host>`
+   (the host's ping key) and send no mail. The Worker mails once a day at the
+   digest hour for all hosts: Needs you and Not checked only, merged across
+   hosts, nothing on a quiet day. On `WEEKLY_UTC_DAY` (default 0, Sunday) the
+   mail also lists Waiting on vendor, Fixed automatically and the raw scanner
+   matches. With `POOL_MAIL=1` the VPS monitor's own issues go into that mail
+   instead of mailing at once. `GET /open` (READER_KEY or RESOLVER_KEY) lists
+   the merged items with IDs; `POST /resolve {ids, note}` (RESOLVER_KEY only)
+   hides items for 26 h, after which an item a host still reports comes back
+   flagged. Mac side: `hatchkit alerts setup|open|resolve`.
+
+All three send the same mail document as the hosts' digests (`mail-core.mjs`, a
 copy of `backups/hatchkit_mail.py`; `cli/test-ops-digest.py` compares them).
 
-Only fixed health metadata crosses this boundary: timestamps, counts, sizes
-and resource names. No application records, logs or secrets.
+Heartbeats carry fixed health metadata only: timestamps, counts, sizes and
+resource names. Pooled digest posts also carry finding text (package,
+advisory, container name, deadline, command). No application records, logs or
+secrets.
 
 ## Files
 
@@ -26,6 +40,7 @@ Upload as one ES-module Worker, `worker.mjs` as the main module:
 | `worker.mjs` | Entry point; wraps the `send_email` binding |
 | `worker-core.mjs` | Pings, VPS sweep, `/status`, `/test` |
 | `storage-watch.mjs` | Cloudflare storage watch |
+| `digest-pool.mjs` | Pooled digest: `/digest`, `/open`, `/resolve`, the daily and weekly mail |
 | `mail-core.mjs` | Mail renderer and raw MIME message |
 
 ## Bindings
@@ -37,7 +52,10 @@ Upload as one ES-module Worker, `worker.mjs` as the main module:
 | `MAIL_FROM`, `MAIL_TO` | variables | |
 | `PING_KEYS` | variable | JSON, host → ping-secret binding name, e.g. `{"app-vps":"APP_PING_KEY"}` |
 | `<HOST>_PING_KEY` | secrets | One per host, named in `PING_KEYS` |
-| `READER_KEY` | secret | Bearer for `GET /status` and `POST /test` |
+| `READER_KEY` | secret | Bearer for `GET /status`, `GET /open` and `POST /test` |
+| `POOL_MAIL` | variable | `1`: send the pooled digest instead of the monitor's own mail |
+| `RESOLVER_KEY` | secret | Bearer for `POST /resolve`; set by `hatchkit alerts setup` |
+| `WEEKLY_UTC_DAY` | variable | Optional, 0-6, default 0 (Sunday) |
 | `DIGEST_UTC_HOUR` | variable | Optional, default 22 |
 | `CF_ACCOUNT_ID` | variable | Storage watch: the account to watch |
 | `CF_USAGE_TOKEN` | secret | Storage watch: Account Analytics Read token (below) |

@@ -51,6 +51,7 @@
   "test-routed-worker-site.ts",
   "test-newsletter-worker.ts",
   "test-listmonk-broker.ts",
+  "test-alerts-command.ts",
   "test-lead-magnet.ts",
   "test-paid-unlock.ts",
   "test-stripe-config.ts",

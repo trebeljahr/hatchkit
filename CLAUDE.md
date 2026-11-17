@@ -157,7 +157,14 @@ rotation URL, scopes, and `hatchkit config add <provider>` command.
   records findings for the daily digest and mails only a crash or a new urgent
   finding (production write; ask first). See `cli/src/host/updates.ts`.
 - Alert mail: `cli/src/templates/backups/ops_digest.py` builds one digest per host
-  inside the hourly backup-alerts service. `hatchkit_mail.py` and
+  inside the hourly backup-alerts service. With `alerts.pool` (host) and
+  `POOL_MAIL=1` (monitor Worker) every host posts its items to the Worker
+  (`security-controller/digest-pool.mjs`), which sends one mail a day for all
+  hosts, only when something is actionable, plus a weekly review; check mails
+  stay local (`alerts.send_email` returns `POOLED`). `hatchkit alerts
+  setup|open|resolve` (`cli/src/alerts/command.ts`) lists and resolves items
+  with the keychain's `security-monitor:resolver-key`. Tests:
+  `test-digest-pool.mjs`, `test-alerts-command.ts`, `test-ops-digest.py`. `hatchkit_mail.py` and
   `security-controller/mail-core.mjs` render the same bytes;
   `cli/test-ops-digest.py` pins that, the gating and the size cap.
 - App image fixes come from each repo's own pipeline, never from a host (no

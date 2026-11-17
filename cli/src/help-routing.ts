@@ -115,6 +115,7 @@ export const CLI_COMMANDS = [
   "backup",
   "host",
   "audit",
+  "alerts",
   "map",
   "auth",
   "mac-runner",
