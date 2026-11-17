@@ -13,7 +13,6 @@
     server add      Retrofit a server into a client-only project
     add             Create GlitchTip / Plausible / Listmonk + SES / email / search clients for an existing project
     add i18n        Give a scaffolded project a second language (writes local files only)
-    dev-setup       Configure local Tailscale development URLs
     signing         Configure installer signing and store uploads
     regen-infra     Regenerate owned infrastructure and release files
     provision s3    Provision project R2 buckets and scoped credentials

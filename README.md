@@ -201,7 +201,6 @@ Hatchkit is free and MIT-licensed. If it saves you time, you can support its dev
 hatchkit/
 ├─ cli/              # the npm package (published as `hatchkit`)
 ├─ mcp/              # @hatchkit/mcp — MCP server for agents
-├─ packages/         # @hatchkit/dev-shared + Next.js and Vite dev plugins (local-dev URLs)
 ├─ starter/          # full-stack starter template (subtree-merged)
 ├─ infra/            # Terraform + Coolify automation (subtree-merged)
 ├─ services/ml/      # eight GPU service templates: subtitles, image recognition,

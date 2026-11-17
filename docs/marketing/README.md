@@ -46,7 +46,7 @@ magick docs/marketing/social-preview/og-wordmark.png -strip -interlace Plane -sa
 
 ## How the screenshots are made
 
-`capture-screenshots.mjs` runs each command in a throwaway sandbox: `HATCHKIT_CONF_DIR` is a fresh temp dir, `HATCHKIT_KEYCHAIN_ACCESS=deny` and `HATCHKIT_LOCAL_DEV=0`. No stored credentials or projects are read, and nothing is written outside the temp dir. `create` runs with `--dry-run`. The one machine-dependent line is the GitHub check, which reads the local `gh` login.
+`capture-screenshots.mjs` runs each command in a throwaway sandbox: `HATCHKIT_CONF_DIR` is a fresh temp dir and `HATCHKIT_KEYCHAIN_ACCESS=deny`. No stored credentials or projects are read, and nothing is written outside the temp dir. `create` runs with `--dry-run`. The one machine-dependent line is the GitHub check, which reads the local `gh` login.
 
 The secrets shot (`create-secrets.png`) scaffolds a real project, so it needs a keychain. It loads the CLI test suite's fixture keychain (`cli/test-support/setup.mjs`), which keeps every key in files inside the sandbox. The OS keychain is never read or written, so the CLI's "stored in macOS Keychain" line refers to that fixture store. The run uses `--deployment-mode scaffold-only --no-github --no-install`, so no provider is called. A source checkout's `create` writes `infra/stacks/nimbus.env` and a `nimbus.tfvars`. The script refuses to start if either exists and deletes both afterwards. The encrypted values on the card are random sandbox values whose key is deleted with the sandbox.
 

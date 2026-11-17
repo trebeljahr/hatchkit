@@ -66,7 +66,6 @@ Use `hatchkit help <command>` for current options. The families below have diffe
 | `audit cloudflare` | Read account drift; accept/forget change local expectations, deploy/publish write remotely |
 | `mac-runner status/on/off/run/serve` | Inspect or run private-repo Apple CI on this Mac |
 | `infra plan/apply/output` | Manage maintained Terraform stacks; apply changes remote resources |
-| `dev-setup` | Configure host-wide or per-project local HTTPS development |
 | `completion` | Print Bash, Zsh, or Fish completion |
 
 ## Provider and feature choices
@@ -101,7 +100,6 @@ hatchkit create --yes --dry-run --name blog --domain blog.example.com \
 | `--ml-services` | `3d-sam-objects` `3d-sam-body` `3d-hunyuan` `3d-trellis` `3d-extraction` `subtitles` `image-recognition` `background-removal` `custom-hf` |
 | `--gpu-platforms` | `modal` `runpod` `hf` `replicate`; first sets default `ML_BACKEND` |
 | `--github-visibility` | `private` `public`; also `--private` / `--public` |
-| `--local-dev[=SLUG]` / `--no-local-dev` | Enable or skip Tailscale/Caddy development URLs |
 
 For the remaining name/domain, storage, forwarding, install, scaffold, GitHub, and deploy flags, read current create help. Prefer a private `--config` file over command-line secrets.
 

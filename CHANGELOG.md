@@ -78,6 +78,11 @@ This project follows npm package versions for the `hatchkit` CLI. Dates use `YYY
 - Static Worker workflows apply routing settings after version activation. Documentation separates operator domain provisioning from scoped CI version deployment.
 - Repository staging and packaging continue to reject private key material and generated infrastructure state. New operations, backup, and migration guides expose recovery paths and scope limits.
 
+### Removed
+
+- **Local-dev URLs are gone.** Hatchkit no longer serves dev servers at `https://<slug>.local.<your-domain>/` over Tailscale and Caddy. Removed: the `hatchkit dev-setup` command (`init`, `status`, `enable`, `disable`), the `create --local-dev` / `--no-local-dev` flags and prompt, the `update` opt-in, doctor's Local-dev checks, the `@hatchkit/dev-plugin-next`, `@hatchkit/dev-plugin-vite` and `@hatchkit/dev-shared` packages, and the `localDev` field of `.hatchkit.json`. A manifest that still has `localDev` loads as before; `hatchkit update` writes it without the field. `pnpm dev:android` no longer picks the Tailscale URL for a phone; pass `LAN_IP` or `CAP_DEV_URL`.
+  - In a project that used it: remove `@hatchkit/dev-plugin-next` (or `@hatchkit/dev-plugin-vite`) from the client's `package.json`, take the `withLocalDev` wrapper out of `next.config.ts` (or the plugin out of `vite.config.ts`), and delete `docs/dev-setup.md`.
+  - On a machine where `dev-setup init` ran: `launchctl bootout gui/$(id -u)/com.hatchkit.dev-caddy`, delete `~/Library/LaunchAgents/com.hatchkit.dev-caddy.plist` and `~/.config/dev`, and run `tailscale serve --tcp=443 off`. In Cloudflare, delete the `*.local.<your-domain>` A record, and revoke the Caddy ACME token; delete its keychain item with `security delete-generic-password -s caddy-dev -a cloudflare-acme`.
 
 ## 0.3.1 — 2026-10-21
 

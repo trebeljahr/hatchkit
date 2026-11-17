@@ -102,6 +102,25 @@ hardcodes the package manager's content-addressed store paths, so any lockfile
 refresh renames those directories — re-run the build after an install and before
 opening the iOS project directly.
 
+## Live reload
+
+For simulator and emulator work, use the scaffolded scripts:
+
+```bash
+pnpm dev:ios
+pnpm dev:android
+```
+
+| Target | Default dev URL |
+|---|---|
+| iOS Simulator | `http://localhost:<NEXT_PORT>` |
+| Android Emulator | `http://10.0.2.2:<NEXT_PORT>` |
+| Physical Android phone on Wi-Fi | `LAN_IP=<your-lan-ip> pnpm dev:android` |
+| Any device, any network | `CAP_DEV_URL=<reachable HTTPS URL of the dev server>` |
+
+The scripts start Next on `0.0.0.0`, wait for `localhost:<NEXT_PORT>`, export
+`CAP_DEV_URL`, run `cap sync`, then install and launch the app.
+
 ## Origins
 
 | Host | Document origin |

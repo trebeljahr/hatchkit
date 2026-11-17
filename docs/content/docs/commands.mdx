@@ -127,8 +127,6 @@ prompting. That makes `create` CI-safe.
 | `--reuse-github-repo` | The repo `<owner>/<name>` already exists: commit the scaffold on its `main`, on top of its history, after a clean-slate commit. The repo is not recorded for `destroy`, which never deletes it. Without the flag, create stops before writing anything when the name is taken by a repo with history. |
 | `--github-visibility <value>` | `private` · `public`. `--public` / `--private` are shorthands. A private repo keeps its GHCR images private; the Coolify host pulls them with the `ghcr` token (`hatchkit config add ghcr`). Only the `compose` runtime also needs a Coolify GitHub App (`coolify-github-app`). |
 | `--install` / `--no-install` | Run `pnpm install` after scaffolding. |
-| `--local-dev[=<slug>]` | Enable the Tailscale/Caddy dev URL and optionally set its slug (defaults to the project name). Defaults on for new projects. |
-| `--no-local-dev` | Skip local-dev wiring for this project. |
 
 ### Examples
 
@@ -153,15 +151,14 @@ hatchkit create --yes --name blog --domain blog.example.com \
 
 1. Prompts for name, domain, deploy target, features, services, ML services, **database engine** (MongoDB or Postgres), and **database provider** (Coolify-provisioned container or external URI).
 2. Scaffolds the starter, strips unselected features, assigns unique ports. When `dbEngine: postgres` is selected, the starter's Mongoose stack is rewritten to Drizzle ORM + `pg` + better-auth's `drizzleAdapter`, and the `docker-compose` mongo service is swapped for a `postgres:16-alpine` container. The project ships its initial migration in `packages/server/drizzle/`; the server applies pending migrations at startup, and `pnpm --filter @starter/server db:generate` writes the next one after a schema change.
-3. Auto-wires local-dev unless disabled: `.hatchkit.json` gets `localDev.slug`, `docs/dev-setup.md` is generated, and the Next/Vite dev plugin plus Caddy fragment are added.
-4. Installs deps (if `pnpm` is available and you opt in).
-5. `git init` + first commit + GitHub repo.
-6. Optionally provisions GlitchTip/Plausible, Listmonk + SES, Email Routing, and Search Console via the same path as `hatchkit add`.
-7. Generates Terraform tfvars + Coolify `.env`.
-8. Runs Terraform (DNS + optionally server).
-9. Runs Coolify app setup and pushes the dotenvx private key.
-10. With GlitchTip selected, writes the DSN to `SENTRY_DSN` on the server's Coolify app and to the `NEXT_PUBLIC_SENTRY_DSN` repo variable, then pushes the first commit. The first build and the first boot read it. See [GlitchTip DSN delivery](#glitchtip-dsn-delivery).
-11. Deploys ML services and prints env endpoints to set.
+3. Installs deps (if `pnpm` is available and you opt in).
+4. `git init` + first commit + GitHub repo.
+5. Optionally provisions GlitchTip/Plausible, Listmonk + SES, Email Routing, and Search Console via the same path as `hatchkit add`.
+6. Generates Terraform tfvars + Coolify `.env`.
+7. Runs Terraform (DNS + optionally server).
+8. Runs Coolify app setup and pushes the dotenvx private key.
+9. With GlitchTip selected, writes the DSN to `SENTRY_DSN` on the server's Coolify app and to the `NEXT_PUBLIC_SENTRY_DSN` repo variable, then pushes the first commit. The first build and the first boot read it. See [GlitchTip DSN delivery](#glitchtip-dsn-delivery).
+10. Deploys ML services and prints env endpoints to set.
 
 ---
 
@@ -313,32 +310,6 @@ clipboard after each read. Client IDs are stored plain and secrets encrypted in
 | `--json` | With `--dry-run` or `--verify`: print JSON |
 
 See [Sign-in methods](/docs/sign-in-methods) for each provider's steps.
-
----
-
-## `hatchkit dev-setup`
-
-Host-wide and per-project setup for stable HTTPS dev URLs over Tailscale:
-
-```bash
-hatchkit dev-setup init
-hatchkit dev-setup status
-hatchkit dev-setup enable
-hatchkit dev-setup disable
-```
-
-### What it automates
-
-| Command | Effect |
-|---|---|
-| `dev-setup init` | Writes `~/.config/dev/Caddyfile`, writes/loads the launchd Caddy job, registers `tailscale serve --tcp=443`, and upserts `*.local.<your-domain> A <tailnet-ip>` when Cloudflare credentials are available. Custom `--domain` values must use the dedicated `local.` prefix. |
-| `dev-setup status` | Prints the Local-dev checks from `hatchkit doctor`. |
-| `dev-setup enable [--slug <s>] [--port <p>] [--project-dir <path>]` | Retrofit an existing project: writes the Caddy fragment, generates `docs/dev-setup.md`, patches supported framework config, adds the dev plugin package, and persists `localDev.slug`. |
-| `dev-setup disable` | Removes the project Caddy fragment and generated docs file. Host-wide Caddy/Tailscale setup remains for other projects. |
-
-`dev-setup init` is one-time per machine and idempotent. New projects already run the per-project wiring during `hatchkit create`, so `dev-setup enable` is mainly for older projects.
-
-See [Local Dev On Mobile](./local-dev-mobile) for the Tailscale + Caddy + Capacitor flow.
 
 ---
 

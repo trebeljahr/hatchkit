@@ -212,7 +212,6 @@ Flags, with their valid values:
 | `--github` / `--no-github`, `--github-visibility` (`private` `public`), `--public`, `--private` | GitHub remote |
 | `--install` / `--no-install` | run `pnpm install` |
 | `--deploy` / `--no-deploy` | run the deploy |
-| `--local-dev[=<slug>]` / `--no-local-dev` | Tailscale dev URL |
 | `--config <path>` | JSON `Partial<ProjectConfig>`; individual flags win over it |
 
 Invalid values fail before anything is written, with the valid set in the
