@@ -25,7 +25,6 @@ on:
     paths:
       - "cli/**"
       - "starter/**"
-      - "packages/**"
       - "mcp/**"
       - "package.json"
       - "pnpm-lock.yaml"
@@ -35,7 +34,6 @@ on:
     paths:
       - "cli/**"
       - "starter/**"
-      - "packages/**"
       - "mcp/**"
       - "package.json"
       - "pnpm-lock.yaml"
@@ -73,8 +71,6 @@ jobs:
           export HATCHKIT_CONF_DIR
           HATCHKIT_CONF_DIR="$(mktemp -d)"
           trap 'rm -rf "$HATCHKIT_CONF_DIR"' EXIT
-
-          pnpm --filter @hatchkit/dev-shared run build
 
           # --dir, not --filter: a --filter exec is recursive, and when the
           # command exits non-zero pnpm appends its own failure report to
@@ -126,13 +122,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build dev-shared
-        run: pnpm --filter @hatchkit/dev-shared run build
-
       - name: Scaffold a static project
         env:
           HATCHKIT_CONF_DIR: ${{ runner.temp }}/hatchkit-conf
-          HATCHKIT_DEV_CONFIG_DIR: ${{ runner.temp }}/hatchkit-dev
         run: pnpm --filter hatchkit exec tsx scaffold-fixture.ts "${{ runner.temp }}/fixture" static
 
       # The scaffold has no lockfile of its own — resolve fresh.
@@ -254,12 +246,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      # The scaffolder's local-dev codegen imports @hatchkit/dev-shared from
-      # its build output, so the workspace package has to be compiled before
-      # scaffoldApp is loaded.
-      - name: Build dev-shared
-        run: pnpm --filter @hatchkit/dev-shared run build
 
       - name: Stamp a project
         shell: bash

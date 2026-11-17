@@ -27,8 +27,6 @@ import { join, resolve } from "node:path";
 
 process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "cf-mode-conf-"));
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
-const DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "cf-mode-dev-"));
-process.env.HATCHKIT_DEV_CONFIG_DIR = DEV_CONFIG_DIR;
 
 const STARTER = resolve(join(import.meta.dirname, "..", "starter"));
 if (!existsSync(join(STARTER, "package.json"))) {
@@ -463,7 +461,6 @@ await test("probe skips the zone-scoped grants when no zone is known", async () 
   await clearAllSecrets();
 }
 rmSync(process.env.HATCHKIT_CONF_DIR, { recursive: true, force: true });
-rmSync(DEV_CONFIG_DIR, { recursive: true, force: true });
 
 console.log("\n=== SUMMARY (cloudflare mode) ===");
 let allOk = true;

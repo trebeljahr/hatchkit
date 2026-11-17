@@ -45,7 +45,6 @@ export type HelpTopic =
   | "sync"
   | "regen-infra"
   | "doctor"
-  | "dev-setup"
   | "inventory"
   | "overview"
   | "status"
@@ -94,7 +93,6 @@ const HELP_TOPIC_BY_COMMAND: Readonly<Record<string, HelpTopic>> = {
   sync: "sync",
   "regen-infra": "regen-infra",
   doctor: "doctor",
-  "dev-setup": "dev-setup",
   overview: "overview",
   inventory: "inventory",
   assets: "assets",

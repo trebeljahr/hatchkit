@@ -9,8 +9,8 @@
 #   NEXT_PORT=<n>       Next.js port (default: 3000)
 #   LAN_IP=<ip>         override host (default: localhost — simulators
 #                       share the Mac's network namespace)
-#   CAP_DEV_URL=<url>   full WebView dev URL override, e.g.
-#                       https://<slug>.local.<your-domain>/
+#   CAP_DEV_URL=<url>   full WebView dev URL override, e.g. a reachable
+#                       HTTPS tunnel to the dev server
 
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"

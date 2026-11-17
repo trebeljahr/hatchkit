@@ -4,30 +4,17 @@
  * npm does not have yet. release.mjs runs it after build + typecheck
  * and before the push.
  *
- * Publish order is topological, with the CLI last so a scaffold made by
- * the just-published CLI finds its plugin dep on the registry:
- *   1. @hatchkit/dev-shared        (no @hatchkit/* deps)
- *   2. @hatchkit/dev-plugin-next   (depends on dev-shared)
- *   3. @hatchkit/dev-plugin-vite   (depends on dev-shared)
- *   4. @hatchkit/mcp              (operator tools; depends on the SDK)
- *   5. hatchkit                    (the CLI; depends on dev-shared)
- *
- * Version sync: every `@hatchkit/dev-*` package matches the CLI's
- * version. release-bump.mjs bumps them in lockstep; this script refuses
- * to publish if anything drifted (a manual `npm version` in one package
- * would do it).
+ * Publish order: @hatchkit/mcp, then the CLI (hatchkit). Both carry
+ * the same version; release-bump.mjs bumps them together.
  *
  * Safe to re-run: a package whose version `npm view` already finds is
  * skipped, so `pnpm release:resume` after a stopped publish only
  * publishes what is missing. Each publish gets the terminal, so npm can
  * ask for 2FA (see publishCommand in release-lib.mjs).
- *
- * RELEASE_SKIP_PACKAGES=1 skips the @hatchkit/dev-* packages; the CLI
- * is still published.
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { envWithPnpm, isPublished, publishCommand, resolvePnpm } from "./release-lib.mjs";
@@ -39,32 +26,10 @@ const repoRoot = execSync("git rev-parse --show-toplevel", {
   encoding: "utf-8",
 }).trim();
 
-const DEV_PACKAGES = ["dev-shared", "dev-plugin-next", "dev-plugin-vite"];
-
 const cliVersion = readJson(join(cliDir, "package.json")).version;
 if (!cliVersion) {
   console.error("  release-packages: couldn't read cli/package.json version. Aborting.");
   process.exit(1);
-}
-
-// Sanity check: every dev-* package must already be bumped to cliVersion.
-// release-bump.mjs does this; if someone skipped it, fail loud.
-for (const name of DEV_PACKAGES) {
-  const pkgPath = join(repoRoot, "packages", name, "package.json");
-  if (!existsSync(pkgPath)) {
-    console.error(`  release-packages: missing packages/${name}/package.json — aborting.`);
-    process.exit(1);
-  }
-  const pkg = readJson(pkgPath);
-  if (pkg.version !== cliVersion) {
-    console.error(
-      `  release-packages: packages/${name}/package.json is at ${pkg.version} but CLI is at ${cliVersion}.`,
-    );
-    console.error(
-      "  release-bump.mjs should have aligned these. Did you run a release flow out of order?",
-    );
-    process.exit(1);
-  }
 }
 
 if (readJson(join(repoRoot, "mcp", "package.json")).version !== cliVersion) {
@@ -78,9 +43,7 @@ if (!pnpm) {
 const { env, cleanup } = envWithPnpm(pnpm);
 process.on("exit", cleanup);
 
-const skipDev = process.env.RELEASE_SKIP_PACKAGES === "1";
-if (skipDev) console.log("  release-packages: RELEASE_SKIP_PACKAGES=1 — CLI and operator MCP only.");
-const dirs = [...(skipDev ? [] : DEV_PACKAGES.map((name) => join("packages", name))), "mcp", "cli"];
+const dirs = ["mcp", "cli"];
 
 console.log(`  release-packages: publishing v${cliVersion}.`);
 
@@ -94,7 +57,7 @@ for (const dir of dirs) {
     continue;
   }
 
-  // Each dev package builds itself (tsc → dist). The CLI was built by
+  // mcp builds itself (tsc → dist). The CLI was built by
   // release.mjs, and its prepublishOnly builds it again on publish.
   if (dir !== "cli") run(pnpm.command, [...pnpm.args, "run", "build"], pkgDir);
 

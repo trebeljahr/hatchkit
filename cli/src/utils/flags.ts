@@ -48,11 +48,6 @@ export interface ParsedCreateFlags {
   forceNoGithub: boolean;
   forceNoDeploy: boolean;
   forceNoInstall: boolean;
-  /** --no-local-dev hard-disables the Tailscale dev URL opt-in even when
-   *  `--local-dev` / a preset would have enabled it. Distinct from the
-   *  absence of `--local-dev`: a fresh `hatchkit create` without flags
-   *  still defaults to enabling the integration. */
-  forceNoLocalDev: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -204,7 +199,6 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
   const forceNoGithub = argv.includes("--no-github");
   const forceNoDeploy = argv.includes("--no-deploy");
   const forceNoInstall = argv.includes("--no-install");
-  const forceNoLocalDev = argv.includes("--no-local-dev");
 
   // Start from --config <path> if present, then layer individual flags on top.
   const presets: Partial<ProjectConfig> = {};
@@ -384,18 +378,8 @@ export function parseCreateFlags(argv: string[]): ParsedCreateFlags {
   if (forceNoGithub) presets.createGithubRepo = false;
   if (forceNoDeploy) presets.runDeployment = false;
   if (forceNoInstall) presets.installDeps = false;
-  if (forceNoLocalDev) presets.localDev = undefined;
 
-  // --local-dev=<slug> sets an explicit slug; --local-dev with no value
-  // signals "yes, enable, derive slug from project name" — that arrives
-  // as an empty slug the prompt layer fills in from the project name.
-  // Conflicts with --no-local-dev resolve in favour of --no-local-dev
-  // (it's the safer choice).
-  if (has("local-dev") && !forceNoLocalDev) {
-    presets.localDev = { slug: get("local-dev") ?? "" };
-  }
-
-  return { yes, dryRun, presets, forceNoGithub, forceNoDeploy, forceNoInstall, forceNoLocalDev };
+  return { yes, dryRun, presets, forceNoGithub, forceNoDeploy, forceNoInstall };
 }
 
 /** `--email <none|transactional|mailing-list|both>` → the manifest's

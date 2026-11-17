@@ -2284,16 +2284,6 @@ export async function collectDoctorResults(progress?: DoctorProgress): Promise<C
         return guardedDoctorCheck("checkUpdateWatch", () => checkUpdateWatch());
       },
     },
-    // Local-dev (Tailscale-served per-project URLs). Returns [] when the
-    // user hasn't run `hatchkit dev-setup init`, so doctor stays quiet for
-    // anyone not opted in.
-    {
-      label: "local dev",
-      run: async () => {
-        const { checkLocalDevHost } = await import("./dev-setup.js");
-        return guardedDoctorCheck("checkLocalDevHost", () => checkLocalDevHost());
-      },
-    },
     // Project-local checks — they only find something when doctor was
     // invoked inside a hatchkit-managed project (manifest at cwd).
     // Globally they're a no-op, so `hatchkit doctor` from $HOME stays clean.

@@ -18,7 +18,6 @@ import { join, resolve } from "node:path";
 
 process.env.HATCHKIT_CONF_DIR ??= mkdtempSync(join(tmpdir(), "fixture-conf-"));
 process.env.HATCHKIT_KEYTAR_SERVICE ??= `hatchkit-fixture-${process.pid}`;
-process.env.HATCHKIT_DEV_CONFIG_DIR ??= mkdtempSync(join(tmpdir(), "fixture-dev-"));
 
 const { scaffoldApp } = await import("./src/scaffold/app.js");
 type ProjectConfig = import("./src/prompts.js").ProjectConfig;

@@ -40,7 +40,6 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 process.env.HATCHKIT_CONF_DIR ??= mkdtempSync(join(tmpdir(), "server-error-scrub-conf-"));
-process.env.HATCHKIT_DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "server-error-scrub-devdir-"));
 
 const { FeatureLedger } = await import("./src/features/contract.js");
 const {
@@ -489,7 +488,6 @@ async function runUpdateQuietly(dir: string, dryRun: boolean): Promise<string> {
       dryRun,
       presets: {
         confirmAddFeatures: true,
-        enableLocalDev: false,
         pushNativeOrigins: false,
         desiredFeatures: [],
       },

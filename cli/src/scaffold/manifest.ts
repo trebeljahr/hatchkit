@@ -30,7 +30,6 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { localDevDomainFromProjectDomain } from "@hatchkit/dev-shared";
 import { type CoolifyRuntime, DEFAULT_NEW_PROJECT_RUNTIME } from "../deploy/image-runtime.js";
 import {
   type ClientHost,
@@ -172,17 +171,6 @@ export interface ProjectManifest {
   /** Ports assigned to this project. They're already public in the
    *  scaffolded .env.development files and docker-compose.yml. */
   ports: { server: number; client: number; nativeHmr?: number };
-  /** Tailscale-served local-dev integration. Present when the project
-   *  opted in at scaffold time (or later via `hatchkit dev-setup enable`).
-   *  `slug` is the left-hand label and `domain` is the local-dev
-   *  wildcard suffix the project is reachable at:
-   *    https://<slug>.<domain>/
-   *  The host-wide Caddy bridge (set up once via `hatchkit dev-setup
-   *  init`) routes by Host header to the dev port. Removing this field
-   *  is enough to disable the feature for this project; the Caddy
-   *  fragment cleanup happens via `hatchkit dev-setup disable` or
-   *  destroy. */
-  localDev?: { slug: string; domain?: string };
   /** Provider integrations that don't write runtime env, but should
    *  still be treated as already added for project-level menus. */
   /** The project's own Stripe account per mode (`acct_…`). `hatchkit
@@ -637,13 +625,6 @@ export function toManifest(
       client: ports.client,
       nativeHmr: ports.nativeHmr,
     },
-    localDev: config.localDev
-      ? {
-          slug: config.localDev.slug,
-          domain:
-            config.localDev.domain ?? localDevDomainFromProjectDomain(config.domain) ?? undefined,
-        }
-      : undefined,
     email: config.email,
   };
 }
@@ -874,6 +855,17 @@ export function readManifestWithMigrationInfo(projectDir: string): ReadManifestR
   if (fileVersion !== undefined && fileVersion < 4 && obj.topology === undefined) {
     obj.topology = "single-origin";
     migrationNotes.push('Seeded topology: "single-origin" (matches what pre-v4 hatchkit deployed)');
+  }
+
+  // The local-dev integration (Tailscale + Caddy dev URLs) was removed.
+  // Manifests written before that carry a `localDev` block; drop it so
+  // nothing reads it and `hatchkit update` stops writing it back. Any
+  // schema version can hold it, so this is not gated on one.
+  if ("localDev" in obj) {
+    delete obj.localDev;
+    migrationNotes.push(
+      "Dropped the removed localDev field (hatchkit no longer sets up local-dev URLs)",
+    );
   }
 
   // v4 -> v5: the Tauri desktop wrapper was removed. Strip the flag so

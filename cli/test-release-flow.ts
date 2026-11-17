@@ -170,8 +170,7 @@ function wrapper(path: string, target: string): void {
 
 // ── scratch monorepo ──────────────────────────────────────────────────
 
-const DEV = ["dev-shared", "dev-plugin-next", "dev-plugin-vite"];
-const ALL = [...DEV.map((name) => `@hatchkit/${name}`), "@hatchkit/mcp", "hatchkit"];
+const ALL = ["@hatchkit/mcp", "hatchkit"];
 let repoCount = 0;
 
 interface Repo {
@@ -196,12 +195,7 @@ function makeRepo(version = "0.3.0"): Repo {
     name: "hatchkit",
     version,
     packageManager: "pnpm@10.33.2",
-    dependencies: { "@hatchkit/dev-shared": "workspace:*" },
   });
-  for (const name of DEV) {
-    mkdirSync(join(dir, "packages", name), { recursive: true });
-    writeJson(join(dir, "packages", name, "package.json"), { name: `@hatchkit/${name}`, version });
-  }
   mkdirSync(join(dir, "mcp"));
   writeJson(join(dir, "mcp", "package.json"), { name: "@hatchkit/mcp", version });
   const repo: Repo = {
@@ -398,13 +392,13 @@ await test("a stopped publish pushes nothing; resume publishes the rest and push
   const before = remoteGit(repo, ["rev-parse", "refs/heads/main"]).stdout;
 
   const stopped = release(repo, ["patch"], {
-    env: { FAKE_PUBLISH_FAIL: "@hatchkit/dev-plugin-vite" },
+    env: { FAKE_PUBLISH_FAIL: "@hatchkit/mcp" },
   });
   assert.notEqual(stopped.status, 0);
   assert.match(stopped.stderr, /nothing is pushed yet/);
   assert.match(stopped.stderr, /pnpm release:resume/);
-  assert.deepEqual(publishAttempts(repo), ALL.slice(0, 3), "stops at the failed publish");
-  assert.ok(!readFileSync(repo.registry, "utf-8").includes("dev-plugin-vite@0.3.1"));
+  assert.deepEqual(publishAttempts(repo), ALL.slice(0, 1), "stops at the failed publish");
+  assert.ok(!readFileSync(repo.registry, "utf-8").includes("@hatchkit/mcp@0.3.1"));
   assert.equal(remoteGit(repo, ["rev-parse", "refs/heads/main"]).stdout, before, "main not pushed");
   assert.notEqual(remoteGit(repo, ["rev-parse", "--verify", "refs/tags/v0.3.1"]).status, 0);
 
@@ -417,7 +411,7 @@ await test("a stopped publish pushes nothing; resume publishes the rest and push
   const mark = calls(repo).length;
   const resumed = release(repo, ["resume"]);
   assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
-  assert.deepEqual(publishAttempts(repo, mark), ["@hatchkit/dev-plugin-vite", "@hatchkit/mcp", "hatchkit"]);
+  assert.deepEqual(publishAttempts(repo, mark), ["@hatchkit/mcp", "hatchkit"]);
   assert.equal(
     remoteGit(repo, ["rev-parse", "refs/tags/v0.3.1^{commit}"]).stdout,
     git(repo, ["rev-parse", "HEAD"]),

@@ -5,7 +5,6 @@
   "test-help-safety.ts",
   "test-documentation-contracts.ts",
   "test-remove-ownership.ts",
-  "test-dev-setup.ts",
   "test-dns-preflight.ts",
   "test-dns-link.ts",
   "test-dns-legacy-migration.ts",

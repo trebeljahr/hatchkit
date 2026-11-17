@@ -191,11 +191,6 @@ export interface UpdateResult {
   /** True when the run was a `--dry-run`: `added` then lists what WOULD
    *  be added and nothing on disk was touched. */
   dryRun?: boolean;
-  /** Populated when this `update` run opted the project into the
-   *  Tailscale-served local-dev integration. Distinct from a project
-   *  that was already opted in — the latter shows up as `undefined`
-   *  here. */
-  localDevEnabled?: { slug: string; domain?: string };
 }
 
 export interface UpdateOptions {
@@ -228,8 +223,6 @@ export interface UpdateOptions {
   presets?: {
     desiredFeatures?: Feature[];
     confirmAddFeatures?: boolean;
-    enableLocalDev?: boolean;
-    localDevSlug?: string;
     /** Account-security sub-options for a headless run. Undefined means
      *  the interactive multiselect runs (or, in a preset run, the
      *  documented defaults apply). */
@@ -595,47 +588,6 @@ export async function runUpdate(
       })),
     }));
 
-  // Local-dev opt-in offer. Projects scaffolded before this integration
-  // landed have no `manifest.localDev`; surface the choice here so
-  // `hatchkit update` becomes the canonical retrofit path. Anyone who's
-  // already opted in (or who'd rather wire it by hand via
-  // `hatchkit dev-setup enable`) just declines once and never sees the
-  // prompt again — the next update run skips it because manifest.localDev
-  // is now set.
-  let localDevEnabled: { slug: string; domain?: string } | undefined;
-  if (!manifest.localDev && !dryRun) {
-    const { localDevDomainFromProjectDomain, localDevUrl, sanitiseSlug } = await import(
-      "@hatchkit/dev-shared"
-    );
-    const localDevDomain = localDevDomainFromProjectDomain(manifest.domain) ?? undefined;
-    const offerLocalDev =
-      options.presets?.enableLocalDev ??
-      (await confirm({
-        message: `Enable Tailscale dev URL for this project (${localDevUrl("<slug>", localDevDomain)})?`,
-        default: true,
-      }));
-    if (offerLocalDev) {
-      const defaultSlug = sanitiseSlug(manifest.name);
-      let slugInput: string;
-      if (options.presets?.localDevSlug !== undefined) {
-        slugInput = options.presets.localDevSlug || defaultSlug;
-      } else {
-        const { input } = await import("@inquirer/prompts");
-        slugInput = await input({
-          message: "Slug (subdomain):",
-          default: defaultSlug,
-          validate: (v) => {
-            const s = sanitiseSlug(v);
-            if (s.length === 0) return "Slug must contain at least one [a-z0-9-] character.";
-            if (s !== v) return `Use only [a-z0-9-]. Did you mean "${s}"?`;
-            return true;
-          },
-        });
-      }
-      localDevEnabled = { slug: sanitiseSlug(slugInput), domain: localDevDomain };
-    }
-  }
-
   const current = new Set(manifest.features);
   const next = new Set(desired);
   let added: Feature[] = [...next].filter((f) => !current.has(f));
@@ -725,10 +677,8 @@ export async function runUpdate(
   }
 
   // The feature-add work runs only if there's something to add AND the
-  // user confirms. The local-dev opt-in is independent — we apply it
-  // even when the rest of the update is a no-op (this is the canonical
-  // retrofit path for pre-existing projects). `skippedAdditions` carries
-  // the declined-add list so the result still reports it.
+  // user confirms. `skippedAdditions` carries the declined-add list so
+  // the result still reports it.
   let actuallyAdded: Feature[] = [];
   let skippedAdditions: Feature[] = [];
   let authSecurityOptions: string[] | undefined;
@@ -939,37 +889,11 @@ export async function runUpdate(
     }
   }
 
-  // Apply local-dev opt-in (if user said yes earlier). Calls the same
-  // surface scaffold uses, so the on-disk shape (Caddy fragment, docs,
-  // next.config wrap, package.json dep) is identical regardless of
-  // whether the project picked it up at scaffold or via this retrofit.
-  if (localDevEnabled) {
-    const devPort = manifest.surfaces === "backend" ? manifest.ports.server : manifest.ports.client;
-    const { enableProjectLocalDev } = await import("../dev-setup.js");
-    const { localDevUrl } = await import("@hatchkit/dev-shared");
-    await enableProjectLocalDev({
-      projectDir,
-      slug: localDevEnabled.slug,
-      localDevDomain: localDevEnabled.domain,
-      devPort,
-    });
-    console.log(
-      chalk.green(
-        `\n  ✓ Tailscale dev URL enabled: ${localDevUrl(localDevEnabled.slug, localDevEnabled.domain)}`,
-      ),
-    );
-  }
-
   // Skip the manifest write only if NOTHING changed (no features added,
-  // no local-dev opt-in) — keeps the file mtime stable for the no-op
+  // no migration) — keeps the file mtime stable for the no-op
   // case so update-then-doctor doesn't re-read a touched-but-identical
   // manifest.
-  if (
-    actuallyAdded.length > 0 ||
-    mobileRefreshed.length > 0 ||
-    localDevEnabled ||
-    manifestRead?.migrated
-  ) {
+  if (actuallyAdded.length > 0 || mobileRefreshed.length > 0 || manifestRead?.migrated) {
     const updatedManifest: ProjectManifest = {
       ...manifest,
       version: manifest.version,
@@ -977,7 +901,6 @@ export async function runUpdate(
       scaffoldedAt: manifest.scaffoldedAt,
       features: [...updatedFeatures] as Feature[],
       ports: updatedPorts,
-      localDev: localDevEnabled ?? manifest.localDev,
       authSecurity: authSecurityOptions ? { options: authSecurityOptions } : manifest.authSecurity,
       i18n: i18nConfig ?? manifest.i18n,
     };
@@ -1088,7 +1011,6 @@ export async function runUpdate(
     added: actuallyAdded,
     skipped: [...skippedAdditions, ...prerequisiteSkipped],
     removed,
-    localDevEnabled,
   };
 }
 

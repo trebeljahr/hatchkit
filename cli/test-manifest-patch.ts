@@ -84,13 +84,33 @@ await expect("the fixture really migrates in memory (else this file tests nothin
 await expect("writes only the given keys onto the file as it is on disk", () => {
   const dir = project();
   try {
-    const localDev = { slug: "studio-site", domain: "studio-site.localhost" };
-    assert.equal(patchManifest(dir, { localDev }), true);
-    assert.deepEqual(onDisk(dir), { ...V1, localDev });
-    assert.deepEqual(Object.keys(onDisk(dir)), [...Object.keys(V1), "localDev"]);
+    const stripe = { accounts: { test: "acct_studio" } };
+    assert.equal(patchManifest(dir, { stripe }), true);
+    assert.deepEqual(onDisk(dir), { ...V1, stripe });
+    assert.deepEqual(Object.keys(onDisk(dir)), [...Object.keys(V1), "stripe"]);
 
-    patchManifest(dir, { localDev: undefined, description: "After" });
+    patchManifest(dir, { stripe: undefined, description: "After" });
     assert.deepEqual(onDisk(dir), { ...V1, description: "After" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await expect("a legacy localDev block still loads, and is dropped in memory", () => {
+  // Local-dev URLs were removed; manifests written before that carry
+  // `"localDev": {...}`. The reader must load them, drop the block and
+  // flag a migration, so `hatchkit update` writes the file without it.
+  const dir = mkdtempSync(join(tmpdir(), "manifest-patch-"));
+  try {
+    const legacy = { ...V1, localDev: { slug: "studio-site", domain: "local.example.com" } };
+    writeFileSync(join(dir, ".hatchkit.json"), `${JSON.stringify(legacy, null, 2)}\n`);
+    const read = readManifestWithMigrationInfo(dir);
+    assert.ok(read, "the manifest loads");
+    assert.equal(read.manifest.name, "studio-site");
+    assert.ok(!("localDev" in read.manifest), "localDev is dropped");
+    assert.equal(read.migrated, true);
+    assert.ok(read.migrationNotes.some((note) => note.includes("localDev")));
+    assert.ok("localDev" in onDisk(dir), "reading leaves the file alone");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

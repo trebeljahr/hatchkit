@@ -23,11 +23,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-// Isolate from the real user config, keychain and Caddy dir — see
+// Isolate from the real user config and keychain — see
 // test-scaffold.ts for why these must be set before the dynamic imports.
 process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "mobile-scaffold-conf-"));
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
-process.env.HATCHKIT_DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "mobile-scaffold-devdir-"));
 
 const STARTER = resolve(join(import.meta.dirname, "..", "starter"));
 if (!existsSync(join(STARTER, "package.json"))) {
@@ -362,7 +361,6 @@ try {
       presets: {
         desiredFeatures: ["mobile"] as Feature[],
         confirmAddFeatures: true,
-        enableLocalDev: false,
         pushNativeOrigins: false,
       },
     });
@@ -411,7 +409,6 @@ try {
       presets: {
         desiredFeatures: ["mobile"] as Feature[],
         confirmAddFeatures: true,
-        enableLocalDev: false,
         pushNativeOrigins: false,
       },
     });
@@ -442,7 +439,6 @@ try {
       presets: {
         desiredFeatures: ["mobile"] as Feature[],
         confirmAddFeatures: true,
-        enableLocalDev: false,
         pushNativeOrigins: false,
       },
     });
@@ -498,7 +494,6 @@ try {
   await clearAllSecrets();
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
   rmSync(process.env.HATCHKIT_CONF_DIR!, { recursive: true, force: true });
-  rmSync(process.env.HATCHKIT_DEV_CONFIG_DIR!, { recursive: true, force: true });
 }
 
 console.log();

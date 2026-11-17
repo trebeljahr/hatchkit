@@ -33,7 +33,6 @@ import { join, resolve } from "node:path";
 
 process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "update-conf-"));
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
-process.env.HATCHKIT_DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "update-devdir-"));
 
 const { scaffoldApp } = await import("./src/scaffold/app.js");
 const { runUpdate } = await import("./src/scaffold/update.js");
@@ -141,7 +140,7 @@ function firstFileUnder(dir: string): string {
   return "";
 }
 
-const presets = { confirmAddFeatures: true, enableLocalDev: false, pushNativeOrigins: false };
+const presets = { confirmAddFeatures: true, pushNativeOrigins: false };
 
 // ── --dry-run writes nothing, and says what it would do ──────────────
 await withProject("dry-run", async (dir) => {
@@ -375,7 +374,6 @@ for (const feature of ["mcp", "raycast"] as const) {
   await clearAllSecrets();
 }
 rmSync(process.env.HATCHKIT_CONF_DIR!, { recursive: true, force: true });
-rmSync(process.env.HATCHKIT_DEV_CONFIG_DIR!, { recursive: true, force: true });
 
 console.log("\n=== SUMMARY ===");
 let allOk = true;

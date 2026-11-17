@@ -4,10 +4,10 @@
 //   node scripts/marketing/capture-screenshots.mjs      (or: pnpm marketing:screenshots)
 //
 // Each shot runs the CLI from this repo's source (tsx) in a throwaway sandbox:
-// HATCHKIT_CONF_DIR points at a fresh temp dir, the keychain is denied and
-// local-dev wiring is off, so no stored credentials or projects are read and
-// nothing is written outside the temp dir. The coloured output is rendered
-// into a terminal frame with Playwright and saved to docs/marketing/screenshots/.
+// HATCHKIT_CONF_DIR points at a fresh temp dir and the keychain is denied,
+// so no stored credentials or projects are read and nothing is written
+// outside the temp dir. The coloured output is rendered into a terminal
+// frame with Playwright and saved to docs/marketing/screenshots/.
 //
 // The secrets shot scaffolds a real project, which needs a keychain. It uses
 // the CLI test suite's fixture keychain (cli/test-support/setup.mjs swaps the
@@ -61,7 +61,6 @@ function runCli(args, { cwd = workDir, keychain = "deny" } = {}) {
     ...process.env,
     HATCHKIT_CONF_DIR: confDir,
     HATCHKIT_KEYCHAIN_ACCESS: "deny",
-    HATCHKIT_LOCAL_DEV: "0",
     NODE_NO_WARNINGS: "1",
     FORCE_COLOR: "1",
     COLUMNS: "110",
@@ -144,7 +143,7 @@ const shots = [];
   const command = [
     "hatchkit create --dry-run --yes --name nimbus",
     "--domain nimbus.example.com --deploy-target new",
-    "--features websocket,stripe,analytics --no-local-dev",
+    "--features websocket,stripe,analytics",
   ];
   const lines = runCli(command.join(" ").split(" ").slice(1));
   const start = findLine(lines, /^\s*✓ GitHub/);
@@ -201,7 +200,7 @@ const shots = [];
   const command = [
     `hatchkit create --yes --name ${name} --domain ${name}.example.com`,
     "--features websocket,analytics --deployment-mode scaffold-only",
-    "--no-github --no-install --no-local-dev",
+    "--no-github --no-install",
   ];
   let created;
   try {

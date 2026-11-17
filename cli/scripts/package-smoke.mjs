@@ -15,7 +15,7 @@ if (!pnpm) throw new Error("pnpm is required for the packed install check.");
 const { env: base, cleanup } = envWithPnpm(pnpm);
 const env = { ...base, HATCHKIT_KEYCHAIN_ACCESS: "deny", HATCHKIT_CONF_DIR: join(scratch, "conf"),
   NEXT_PUBLIC_API_URL: "https://packed-app.example.invalid",
-  HATCHKIT_DEV_CONFIG_DIR: join(scratch, "dev"), HATCHKIT_TEST_KEYCHAIN_DIR: join(scratch, "keychain"),
+  HATCHKIT_TEST_KEYCHAIN_DIR: join(scratch, "keychain"),
   NODE_OPTIONS: `${base.NODE_OPTIONS ?? ""} --import=${new URL("../test-support/setup.mjs", import.meta.url).href}`.trim(),
   GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Package test",
   GIT_AUTHOR_EMAIL: "package-test@example.invalid", GIT_COMMITTER_NAME: "Package test", GIT_COMMITTER_EMAIL: "package-test@example.invalid" };
@@ -26,9 +26,9 @@ function run(command, args, cwd, accepted = [0]) {
   return result.stdout;
 }
 try {
-  console.log("Packing CLI, operator MCP and development plugins...");
+  console.log("Packing CLI and operator MCP...");
   const archives = [];
-  for (const dir of ["packages/dev-shared", "packages/dev-plugin-next", "packages/dev-plugin-vite", "mcp", "cli"]) {
+  for (const dir of ["mcp", "cli"]) {
     const pkg = JSON.parse(readFileSync(join(repo, dir, "package.json"), "utf8"));
     run(pnpm.command, [...pnpm.args, "pack", "--pack-destination", scratch], join(repo, dir));
     archives.push(join(scratch, `${pkg.name.replace(/^@/, "").replaceAll("/", "-")}-${pkg.version}.tgz`));
@@ -86,7 +86,7 @@ try {
   // The native backend is still replaced by fixtures; only the synthetic
   // dotenvx key written for this temporary project is accessible here.
   env.HATCHKIT_KEYCHAIN_ACCESS = "allow";
-  run(process.execPath, [binary, "create", "--yes", "--config", configFile, "--no-github", "--no-install", "--no-deploy", "--no-local-dev"], work);
+  run(process.execPath, [binary, "create", "--yes", "--config", configFile, "--no-github", "--no-install", "--no-deploy"], work);
   for (const path of [".hatchkit.json", "packages/server/package.json", "packages/client/package.json", "packages/core/package.json", "packages/mcp/package.json", "packages/raycast/package.json"]) {
     assert.ok(existsSync(join(work, "packed-app", path)), `packed scaffold missing ${path}`);
   }

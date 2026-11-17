@@ -54,29 +54,7 @@ pkg.version = next;
 writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, "utf-8");
 console.log(`  release-bump: ${current} → ${next}`);
 
-// Bump `@hatchkit/dev-*` workspace packages in lockstep with the CLI.
-// The CLI's runtime references the plugin version range as
-// `^${cliVersion}` (see devPluginNextVersionRange in dev-setup.ts), so
-// every release must guarantee the plugin packages exist on npm at the
-// same version. release-packages.mjs publishes them after this script
-// bumps + commits the lockstep set.
 const stagedPaths = [join("cli", "package.json")];
-const lockstepPackages = ["dev-shared", "dev-plugin-next", "dev-plugin-vite"];
-for (const name of lockstepPackages) {
-  const subPath = join(repoRoot, "packages", name, "package.json");
-  let subPkg;
-  try {
-    subPkg = JSON.parse(readFileSync(subPath, "utf-8"));
-  } catch (err) {
-    console.error(`  release-bump: missing packages/${name}/package.json — ${err.message}`);
-    process.exit(1);
-  }
-  if (subPkg.version === next) continue;
-  subPkg.version = next;
-  writeFileSync(subPath, `${JSON.stringify(subPkg, null, 2)}\n`, "utf-8");
-  stagedPaths.push(join("packages", name, "package.json"));
-  console.log(`  release-bump: packages/${name} → ${next}`);
-}
 
 const mcpPath = join(repoRoot, "mcp", "package.json");
 const mcp = JSON.parse(readFileSync(mcpPath, "utf8"));

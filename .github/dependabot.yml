@@ -54,39 +54,6 @@ updates:
       - "dependencies"
 
   - package-ecosystem: "npm"
-    directory: "/packages/dev-plugin-next"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      dev-dependencies:
-        dependency-type: "development"
-    labels:
-      - "dependencies"
-
-  - package-ecosystem: "npm"
-    directory: "/packages/dev-plugin-vite"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      dev-dependencies:
-        dependency-type: "development"
-    labels:
-      - "dependencies"
-
-  - package-ecosystem: "npm"
-    directory: "/packages/dev-shared"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      dev-dependencies:
-        dependency-type: "development"
-    labels:
-      - "dependencies"
-
-  - package-ecosystem: "npm"
     directory: "/starter"
     schedule:
       interval: "weekly"

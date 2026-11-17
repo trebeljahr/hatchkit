@@ -620,7 +620,7 @@ function fakeFacts(): FleetFacts {
     },
     launchd: [
       {
-        label: "com.hatchkit.dev-caddy",
+        label: "com.hatchkit.ops-sync",
         when: "always on",
         running: true,
         lastExit: 0,
@@ -721,7 +721,7 @@ await check("builder: edges, jobs and findings", () => {
   assert.ok(!map.edges.some((x) => x.from === x.to));
 
   const job = (name: string) => map.jobs.find((j) => j.name === name);
-  assert.equal(job("dev-caddy")?.tier, "made");
+  assert.equal(job("ops-sync")?.tier, "made");
   assert.equal(job("digest")?.health, "fail");
   assert.equal(job("guard-check")?.detail, "failed on app-vps");
   assert.equal(job("backups")?.where, "app-vps · hatchkit timers");
@@ -793,7 +793,7 @@ await check("builder: extras merge, rename, hide, add and report unknown edges",
   assert.ok(map.findings.some((f) => f.title.includes("edge-vps → nowhere")));
   assert.ok(map.findings.some((f) => f.title === "Bot has no backups."));
   assert.equal(map.jobs.find((j) => j.name === "bot")?.where, "edge-vps · systemd");
-  assert.equal(map.jobs.find((j) => j.name === "dev-caddy")?.where, "My laptop · launchd");
+  assert.equal(map.jobs.find((j) => j.name === "ops-sync")?.where, "My laptop · launchd");
   // Without the extras the same facts give one outside piece fewer per extra.
   const plain = buildFleetMap(fakeFacts());
   assert.equal(map.tiers.outside, plain.tiers.outside + 2);

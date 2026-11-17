@@ -434,16 +434,6 @@ export interface ProjectConfig {
    *  `runDeployment` is always false in a dry run, so the summary reads
    *  this to show the plan the real run carries out. */
   plannedDeployment?: boolean;
-  /** Tailscale-served dev URL opt-in. When set, scaffold:
-   *    · writes ~/.config/dev/projects/<slug>.caddy at the project's
-   *      client dev port,
-   *    · drops docs/dev-setup.md into the project explaining the host
-   *      plumbing,
-   *    · wraps next.config with `withLocalDev` from
-   *      @hatchkit/dev-plugin-next and adds it as a dep.
-   *  Absent → feature disabled for this project (no fragment, no
-   *  plugin wiring, no docs). */
-  localDev?: { slug: string; domain?: string };
   /** Captured email-intent — answered by `askEmailIntent()` during
    *  create/adopt, persisted in the manifest, drives downstream env
    *  rendering. Absent means the prompt wasn't asked (legacy / scripted
@@ -787,9 +777,6 @@ export interface CollectOptions {
   /** Non-interactive mode: any missing value falls back to its
    *  default if one exists, else throws. */
   nonInteractive?: boolean;
-  /** Hard-disable local-dev wiring, even though new projects default
-   *  to enabling it. Used by `hatchkit create --no-local-dev`. */
-  forceNoLocalDev?: boolean;
   /** Runs after config is assembled but before the review loop (and
    *  again after each in-review edit). Use to run provider pre-flight
    *  checks so credentials are collected before "Proceed". Idempotent
@@ -859,7 +846,6 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     deploymentMode: presets.deploymentMode ?? "coolify",
     runDeployment: presets.runDeployment ?? !dryRun,
     envValues: presets.envValues,
-    localDev: options.forceNoLocalDev ? undefined : presets.localDev,
     email: presets.email,
     emailForwarding: presets.emailForwarding,
     dryRun,
@@ -1359,34 +1345,6 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
       },
     },
     {
-      name: "Local dev URL",
-      skip: () => !!options.forceNoLocalDev || presets.localDev !== undefined,
-      run: async (c) => {
-        const { localDevDomainFromProjectDomain, localDevUrl, sanitiseSlug } = await import(
-          "@hatchkit/dev-shared"
-        );
-        const localDevDomain = localDevDomainFromProjectDomain(c.domain) ?? undefined;
-        const enabled = await confirm({
-          message: `Enable Tailscale dev URL (${localDevUrl("<slug>", localDevDomain)})?`,
-          default: !!c.localDev,
-        });
-        if (!enabled) return { ...c, localDev: undefined };
-        const defaultSlug = c.localDev?.slug || sanitiseSlug(c.name);
-        const slug = await input({
-          message: "Slug (subdomain) for this project:",
-          default: defaultSlug,
-          validate: (v: string) => {
-            const sanitised = sanitiseSlug(v);
-            if (sanitised.length === 0)
-              return "Slug must contain at least one [a-z0-9-] character.";
-            if (sanitised !== v) return `Use only [a-z0-9-]. Did you mean "${sanitised}"?`;
-            return true;
-          },
-        });
-        return { ...c, localDev: { slug: sanitiseSlug(slug), domain: localDevDomain } };
-      },
-    },
-    {
       name: "Deploy now",
       skip: (c) =>
         c.deploymentMode === "scaffold-only" ||
@@ -1449,25 +1407,7 @@ export async function collectProjectConfig(options: CollectOptions): Promise<Pro
     },
   ];
 
-  // Derive localDev default if not preset and not force-disabled
-  if (!options.forceNoLocalDev && !presets.localDev && initial.name) {
-    const { localDevDomainFromProjectDomain, sanitiseSlug } = await import("@hatchkit/dev-shared");
-    const localDevDomain = localDevDomainFromProjectDomain(initial.domain) ?? undefined;
-    initial.localDev = { slug: sanitiseSlug(initial.name), domain: localDevDomain };
-  }
-
   let config = await runSteps(steps, initial);
-
-  // A bare `--local-dev` (no `=slug`) means "enable it, derive the slug
-  // from the project name" — and the name isn't known until the name
-  // step has run, so it's filled in here rather than in the parser.
-  if (config.localDev && !config.localDev.slug) {
-    const { localDevDomainFromProjectDomain, sanitiseSlug } = await import("@hatchkit/dev-shared");
-    config.localDev = {
-      slug: sanitiseSlug(config.name),
-      domain: config.localDev.domain ?? localDevDomainFromProjectDomain(config.domain) ?? undefined,
-    };
-  }
 
   // Derive env values from final domain
   config.envValues = {
@@ -1621,17 +1561,6 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
   const envValues: Record<string, string> = { ...(presets.envValues ?? {}) };
   envValues.FRONTEND_URL ??= `https://${domain}`;
   envValues.BETTER_AUTH_URL ??= `https://${domain}`;
-  let localDev: { slug: string; domain?: string } | undefined;
-  if (!options.forceNoLocalDev) {
-    const { localDevDomainFromProjectDomain, sanitiseSlug } = await import("@hatchkit/dev-shared");
-    const localDevDomain = localDevDomainFromProjectDomain(domain) ?? undefined;
-    localDev = presets.localDev
-      ? {
-          slug: sanitiseSlug(presets.localDev.slug || name),
-          domain: presets.localDev.domain ?? localDevDomain,
-        }
-      : { slug: sanitiseSlug(name), domain: localDevDomain };
-  }
 
   return {
     name,
@@ -1677,7 +1606,6 @@ async function collectProjectConfigNonInteractive(options: CollectOptions): Prom
     runDeployment,
     plannedDeployment: dryRun ? plannedDeployment : undefined,
     envValues,
-    localDev,
     email,
     emailForwarding: presets.emailForwarding,
     dryRun,

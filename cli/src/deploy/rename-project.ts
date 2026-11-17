@@ -1019,31 +1019,14 @@ function printChecklist(
     ),
   );
 
-  if (manifest.localDev?.slug) {
-    console.log(chalk.bold("\n  6. Local-dev (Tailscale + Caddy)"));
-    console.log(
-      chalk.dim(`     Caddy fragment: ~/.config/dev/projects/${manifest.localDev.slug}.caddy`),
-    );
-    console.log(
-      chalk.dim(
-        `       hatchkit dev-setup disable       ${chalk.dim("# (in project dir, old name)")}`,
-      ),
-    );
-    console.log(
-      chalk.dim(
-        `       hatchkit dev-setup enable        ${chalk.dim("# (after rename, picks up new slug)")}`,
-      ),
-    );
-  }
-
-  console.log(chalk.bold("\n  7. App code"));
+  console.log(chalk.bold("\n  6. App code"));
   console.log(
     chalk.dim(
       `     grep -rni "${oldName}" . — there may be README badges, CI workflows, or docs links left over.`,
     ),
   );
 
-  console.log(chalk.bold("\n  8. Local dir"));
+  console.log(chalk.bold("\n  7. Local dir"));
   console.log(
     chalk.dim(
       `     hatchkit didn't move the project directory itself — rename it if you want the path to match:\n         mv ../${oldName} ../${newName}`,

@@ -375,11 +375,6 @@ async function main(): Promise<void> {
       });
       break;
     }
-    case "dev-setup": {
-      const { runDevSetupCli } = await import("./dev-setup.js");
-      await runDevSetupCli(args.slice(1));
-      break;
-    }
     case "overview": {
       const { runOverview } = await import("./overview.js");
       await runOverview({ json: isJson, all: args.includes("--all") });
@@ -2994,7 +2989,6 @@ async function handleCreate(): Promise<void> {
     forceNoGithub,
     forceNoDeploy,
     forceNoInstall,
-    forceNoLocalDev,
   } = flags;
 
   // Check if first run (skip onboarding when non-interactive — the
@@ -3011,7 +3005,6 @@ async function handleCreate(): Promise<void> {
     dryRun,
     presets,
     nonInteractive,
-    forceNoLocalDev,
     beforeReview: nonInteractive ? undefined : ensureRequiredProviders,
   });
   if (forceNoGithub) config.createGithubRepo = false;
@@ -3020,7 +3013,6 @@ async function handleCreate(): Promise<void> {
     config.plannedDeployment = false;
   }
   if (forceNoInstall) config.installDeps = false;
-  if (forceNoLocalDev) config.localDev = undefined;
 
   // In non-interactive mode the beforeReview hook doesn't run (no review
   // loop), so we still need the provider pre-flight here. For interactive
@@ -3095,7 +3087,6 @@ async function handleCreate(): Promise<void> {
   }
   console.log(`  Email:      ${summarizeEmailIntent(config.email)}`);
   console.log(`  Forwarding: ${summarizeEmailForwarding(config.emailForwarding)}`);
-  console.log(`  Local dev:  ${config.localDev ? config.localDev.slug : "off"}`);
   console.log(`  Scaffold:   ${config.scaffoldRepo ? "yes" : "no"}`);
   console.log(
     `  GitHub:     ${config.createGithubRepo ? `${config.reuseGithubRepo ? "reuse existing repo" : "yes"} (${config.githubRepoVisibility ?? "public"})` : "no"}`,
@@ -3153,9 +3144,6 @@ async function handleCreate(): Promise<void> {
           kind: "keychain",
           account: SECRET_KEYS.dotenvxPrivateKey(config.name),
         });
-      }
-      if (scaffoldResult.localDev) {
-        ledger?.record({ kind: "localDevFragment", slug: scaffoldResult.localDev.slug });
       }
       const { ports } = scaffoldResult;
       console.log(
@@ -4193,7 +4181,6 @@ async function handleUpdate(): Promise<void> {
       ? {
           ...(desiredFeatures !== undefined ? { desiredFeatures } : {}),
           confirmAddFeatures: true,
-          ...(yes ? { enableLocalDev: false } : {}),
           ...(authSecurityOptions !== undefined ? { authSecurityOptions } : {}),
         }
       : undefined;
@@ -4217,13 +4204,6 @@ async function handleUpdate(): Promise<void> {
   }
   if (result.removed.length > 0) {
     console.log(chalk.yellow(`  ⚠ Removal requested but skipped: ${result.removed.join(", ")}`));
-  }
-  if (result.localDevEnabled) {
-    console.log(
-      chalk.yellow(
-        "  Run `pnpm install` to pick up @hatchkit/dev-plugin-next, then `hatchkit doctor` to confirm host plumbing.",
-      ),
-    );
   }
   // The same pointer `hatchkit create` prints for the same feature set.
   // A wrapper reached through `update` ships the identical unsigned
@@ -4915,9 +4895,6 @@ function printHelp(topic?: HelpTopic): void {
                                    scaffold on its main, on top of its history (a
                                    clean-slate commit first). destroy never deletes it.
     --install / --no-install       Run \`pnpm install\` after scaffolding
-    --local-dev[=<slug>]           Enable the Tailscale dev URL (slug defaults to the
-                                   project name). On by default for new projects.
-    --no-local-dev                 Skip local-dev wiring entirely
 
   ${chalk.bold("Examples:")}
     ${chalk.dim("# Hybrid — name + stack from flags, everything else still prompted")}
@@ -5599,60 +5576,6 @@ function printHelp(topic?: HelpTopic): void {
               piece of the SES bounce feedback path. Exits 0 when every
               failure was repaired. Ignored with --json.
     --yes     With --fix, apply every offered repair without prompting.
-`);
-    return;
-  }
-  if (topic === "dev-setup") {
-    console.log(`
-  ${chalk.bold("hatchkit dev-setup")} — Tailscale-served dev URLs
-
-  Wires up the host-wide plumbing that makes every scaffolded project
-  reachable from any Tailscale peer at:
-
-    ${chalk.cyan("https://<slug>.local.<your-domain>/")}
-
-  …without per-project DNS, port juggling, or framework basePath config.
-
-  ${chalk.bold("Host-wide subcommands (run once per machine):")}
-    dev-setup init [--force]   Auto-write ~/.config/dev/Caddyfile, register
-                               a launchd job to run Caddy on a free port
-                               (default 9443, auto-bumps on collision),
-                               register a tailscale serve TCP=443 bridge,
-                               and auto-upsert the wildcard DNS A record
-                               when Cloudflare credentials are available.
-                               Idempotent — safe to re-run.
-    dev-setup status           Print the same Local-dev rows that
-                               ${chalk.cyan("hatchkit doctor")} would show.
-
-  ${chalk.bold("Per-project subcommands (retrofit existing projects):")}
-    dev-setup enable [--slug <s>] [--port <p>] [--project-dir <path>]
-                               Wire the project at cwd (or --project-dir)
-                               for Tailscale dev URLs: writes Caddy fragment,
-                               docs/dev-setup.md, patches next.config to
-                               wrap with ${chalk.cyan("withLocalDev")}, adds
-                               ${chalk.cyan("@hatchkit/dev-plugin-next")} to
-                               package.json. Persists slug in .hatchkit.json.
-                               New scaffolds auto-enable this — only needed
-                               for projects created before the integration
-                               landed.
-    dev-setup disable          Remove the Caddy fragment + docs file. Leaves
-                               next.config + dep in place (they're inert
-                               without the fragment).
-
-  ${chalk.bold("DNS:")}
-    ${chalk.cyan("dev-setup init")} auto-upserts a DNS-only A record on a
-    dedicated ${chalk.cyan("local.")} subdomain:
-    *.local.<your-domain>  A  <your-tailnet-ip>  (DNS-only)
-
-    Custom ${chalk.cyan("--domain")} values must use that ${chalk.cyan("local.")} prefix so
-    Hatchkit never overwrites a production wildcard such as *.example.com.
-
-    If Cloudflare credentials are unavailable, add that record manually.
-
-  This feature is fully optional: until you run ${chalk.cyan("dev-setup init")},
-  ${chalk.cyan("hatchkit doctor")} surfaces zero Local-dev rows. Within a project,
-  set ${chalk.cyan("HATCHKIT_LOCAL_DEV=0")} in env to suppress the plugin entirely
-  on a single dev run.
 `);
     return;
   }
@@ -6419,7 +6342,6 @@ function printHelp(topic?: HelpTopic): void {
     - GlitchTip / Plausible project slugs + Listmonk list
       names — no rename API. Recreating drops history; leave them or
       ${chalk.dim("hatchkit add <new> <svc>")} + ${chalk.dim("hatchkit remove <old> <svc>")}.
-    - Tailscale local-dev Caddy fragment (re-run dev-setup if enabled).
     - The project directory itself (${chalk.dim("mv ../<old> ../<new>")} if you want it).
     - Old GHCR images at ${chalk.dim("ghcr.io/<owner>/<old>-*")} — left in registry by
       design (easy rollback). Delete recipe printed in the checklist.
@@ -6725,7 +6647,6 @@ function printHelp(topic?: HelpTopic): void {
     server add      Retrofit a server into a client-only project
     add             Create GlitchTip / Plausible / Listmonk + SES / email / search clients for an existing project
     add i18n        Give a scaffolded project a second language (writes local files only)
-    dev-setup       Configure local Tailscale development URLs
     signing         Configure installer signing and store uploads
     regen-infra     Regenerate owned infrastructure and release files
     provision s3    Provision project R2 buckets and scoped credentials
@@ -6781,8 +6702,6 @@ function printHelp(topic?: HelpTopic): void {
     --yes, -y       (with \`create\`) skip prompts, use defaults / --config values
     --config <path> (with \`create\`) load JSON overrides for ProjectConfig fields
     --name <name>   (with \`create\`) set project name without prompting
-    --local-dev[=<slug>] (with \`create\`) enable Tailscale dev URL, optionally with slug
-    --no-local-dev  (with \`create\`) skip local-dev wiring
     --no-github     (with \`create\`) skip GitHub repo creation
     --github-visibility {private|public}
                     (with \`create\`) visibility for a newly-created GitHub repo.

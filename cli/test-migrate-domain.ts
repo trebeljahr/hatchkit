@@ -122,7 +122,6 @@ const TRACKTIME = {
   surfaces: "fullstack",
   publicService: "client",
   ports: { server: 5159, client: 6477, nativeHmr: 7130 },
-  localDev: { slug: "tracktime", domain: "local.trebeljahr.com" },
   email: { transactional: "listmonk-ses", mailingList: "listmonk-ses" },
   ses: {
     identity: "mail.tracktime.trebeljahr.com",

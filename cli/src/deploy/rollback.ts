@@ -416,8 +416,6 @@ function recipeFor(step: LedgerStep, ledgerName: string): string | null {
       return chalk.dim(
         `# manual: revoke account API token hatchkit-${step.worker}-worker (${step.tokenId.slice(0, 4)}…) at https://dash.cloudflare.com/${step.accountId}/api-tokens`,
       );
-    case "localDevFragment":
-      return `rm -f ~/.config/dev/projects/${shellEscape(step.slug)}.caddy`;
     case "appleBundleId":
       return chalk.dim(
         `# manual: delete Apple Bundle ID ${step.identifier} (resource ${step.resourceId}) at https://developer.apple.com/account/resources/identifiers/list`,
@@ -721,8 +719,6 @@ export function describeStep(step: LedgerStep): string {
       return `delete the redirect rule for ${chalk.cyan(step.host)}`;
     case "cloudflareWorkerToken":
       return `revoke Worker deploy token ${chalk.cyan(`hatchkit-${step.worker}-worker`)}`;
-    case "localDevFragment":
-      return `remove local-dev Caddy fragment ${chalk.cyan(`${step.slug}.caddy`)}`;
     case "appleBundleId":
       return `delete Apple Bundle ID ${chalk.cyan(step.identifier)}`;
     case "appleAppRecord":
@@ -1356,11 +1352,6 @@ async function undoStep(
         deleteCloudflareDeployTokenRecord(step.worker);
       }
       return res === "not-found" ? "not-found" : "done";
-    }
-    case "localDevFragment": {
-      const { removeProjectFragment } = await import("@hatchkit/dev-shared");
-      const removed = removeProjectFragment(step.slug);
-      return removed ? "done" : "not-found";
     }
     case "appleBundleId":
     case "appleAppRecord":

@@ -43,12 +43,11 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-// Keep the real user config, keychain and Caddy directory out of reach. ESM
+// Keep the real user config and keychain out of reach. ESM
 // hoists static imports above assignments, so every hatchkit module below is
 // imported dynamically, after these are set.
 process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "desktop-conf-"));
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
-process.env.HATCHKIT_DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "desktop-devdir-"));
 
 const {
   DESKTOP_DEV_DEPS,
@@ -420,7 +419,6 @@ await runUpdate(updated, {
   presets: {
     desiredFeatures: ["desktop"],
     confirmAddFeatures: true,
-    enableLocalDev: false,
     pushNativeOrigins: false,
   },
 });
@@ -459,7 +457,6 @@ await runUpdate(updated, {
   presets: {
     desiredFeatures: ["desktop"],
     confirmAddFeatures: true,
-    enableLocalDev: false,
     pushNativeOrigins: false,
   },
 });
@@ -472,7 +469,6 @@ check("a second update run clobbers no user edit", () => {
 
 for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
 rmSync(process.env.HATCHKIT_CONF_DIR as string, { recursive: true, force: true });
-rmSync(process.env.HATCHKIT_DEV_CONFIG_DIR as string, { recursive: true, force: true });
 try {
   await clearAllSecrets();
 } catch {

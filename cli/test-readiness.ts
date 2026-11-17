@@ -64,7 +64,7 @@ try {
   const stdout = (() => {
     try {
       return execFileSync(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "src/index.ts"), "doctor", "--json"], {
-        cwd: dir, encoding: "utf8", env: { ...process.env, HATCHKIT_CONF_DIR: join(dir, "config"), HATCHKIT_DEV_CONFIG_DIR: join(dir, "dev"), HATCHKIT_KEYCHAIN_ACCESS: "deny", PATH: `${bin}${delimiter}${process.env.PATH}` },
+        cwd: dir, encoding: "utf8", env: { ...process.env, HATCHKIT_CONF_DIR: join(dir, "config"), HATCHKIT_KEYCHAIN_ACCESS: "deny", PATH: `${bin}${delimiter}${process.env.PATH}` },
       });
     } catch (error) {
       const result = error as { status: number; stdout: string; stderr?: string };

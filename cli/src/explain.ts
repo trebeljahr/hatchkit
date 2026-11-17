@@ -127,7 +127,7 @@ const MODEL: ExplainModel = {
     {
       name: "hatchkit create",
       summary:
-        "Scaffold (and optionally deploy) a new project. Interactive by default; every prompt (name, domain, surfaces, deployment mode, deploy target, features, analytics providers, services, email, email forwarding, S3, database engine/provider, ML services, GPU platforms, scaffold/GitHub/install/deploy, local-dev) has a matching flag. Supplying a flag skips its prompt; `--yes` / `--non-interactive` takes defaults for the rest and hard-fails instead of prompting. `hatchkit create --help` lists every flag with its valid values.",
+        "Scaffold (and optionally deploy) a new project. Interactive by default; every prompt (name, domain, surfaces, deployment mode, deploy target, features, analytics providers, services, email, email forwarding, S3, database engine/provider, ML services, GPU platforms, scaffold/GitHub/install/deploy) has a matching flag. Supplying a flag skips its prompt; `--yes` / `--non-interactive` takes defaults for the rest and hard-fails instead of prompting. `hatchkit create --help` lists every flag with its valid values.",
       when: "Starting a new project. Use the flags (or `--yes`) to drive it from a script or CI.",
     },
     {

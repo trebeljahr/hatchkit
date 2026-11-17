@@ -48,12 +48,11 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-// Same isolation contract as test-scaffold.ts: a throwaway config dir, a
-// throwaway secret-store service (every scaffold mints a dotenvx key) and a
-// throwaway local-dev root, all removed at the end.
+// Same isolation contract as test-scaffold.ts: a throwaway config dir and a
+// throwaway secret-store service (every scaffold mints a dotenvx key), both
+// removed at the end.
 process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "matrix-conf-"));
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
-process.env.HATCHKIT_DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "matrix-devdir-"));
 
 const { scaffoldApp } = await import("./src/scaffold/app.js");
 const { expandFeatureSelection } = await import("./src/features/all.js");
@@ -365,7 +364,6 @@ for (const combo of COMBOS) {
   await clearAllSecrets();
 }
 rmSync(process.env.HATCHKIT_CONF_DIR!, { recursive: true, force: true });
-rmSync(process.env.HATCHKIT_DEV_CONFIG_DIR!, { recursive: true, force: true });
 
 console.log("\n=== SUMMARY ===");
 let allOk = true;

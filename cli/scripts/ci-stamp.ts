@@ -15,8 +15,8 @@
  *
  * Host safety: nothing here talks to a provider, DNS, Coolify, Terraform or
  * S3. The config sets createGithubRepo/runDeployment/installDeps to false, so
- * the only side effects are file writes under --out plus the throwaway config,
- * keychain and local-dev dirs allocated below.
+ * the only side effects are file writes under --out plus the throwaway config
+ * and keychain dirs allocated below.
  */
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,10 +33,6 @@ process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "ci-stamp-conf-"));
 // or clobber a real user's "hatchkit" entries. On the CI runner this lands in
 // an ephemeral session keyring that dies with the job.
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-ci-${process.pid}`;
-// The Tailscale local-dev integration writes Caddy fragments under
-// ~/.config/dev/projects/. Redirect that root too, even though no preset here
-// opts into localDev — a future preset that does must not touch the host.
-process.env.HATCHKIT_DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "ci-stamp-devdir-"));
 
 const { scaffoldApp } = await import("../src/scaffold/app.js");
 type Feature = import("../src/prompts.js").Feature;

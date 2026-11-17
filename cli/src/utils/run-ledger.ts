@@ -300,12 +300,6 @@ export type LedgerStep =
    *  project's new domain (deploy/client-host.ts). Undo deletes that
    *  rule by its `ref`. */
   | { kind: "cloudflareHostRedirect"; zoneId: string; host: string }
-  /** Tailscale-served local-dev Caddy fragment dropped at
-   *  `~/.config/dev/projects/<slug>.caddy`. Recorded only when the
-   *  project opted into the local-dev integration. Destroy removes the
-   *  fragment file — host-wide Caddy + tailscale serve stay put (they
-   *  belong to the user, not this project). */
-  | { kind: "localDevFragment"; slug: string }
   /** Apple Bundle ID resource created via App Store Connect API.
    *  Recorded only when this run CREATED the bundle id (ASC's POST
    *  returned 201, not when GET found it). Destroy issues
@@ -350,6 +344,15 @@ export interface LedgerData {
  *  already validated to be slug-shaped, but belt-and-braces. */
 function sanitize(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+/** Step kinds older hatchkit versions recorded for features that are
+ *  gone. A ledger on disk may still hold them; they have nothing left
+ *  to undo, so they are dropped on load. */
+const RETIRED_STEP_KINDS: ReadonlySet<string> = new Set(["localDevFragment"]);
+
+function withoutRetiredSteps(steps: LedgerStep[]): LedgerStep[] {
+  return steps.filter((step) => !RETIRED_STEP_KINDS.has(step.kind));
 }
 
 function runsDir(): string {
@@ -486,7 +489,7 @@ export function loadAllLedgers(): Array<{
     try {
       const data = JSON.parse(readFileSync(join(dir, entry), "utf-8")) as LedgerData;
       if (data?.name && Array.isArray(data.steps)) {
-        out.push({ name: data.name, steps: data.steps });
+        out.push({ name: data.name, steps: withoutRetiredSteps(data.steps) });
       }
     } catch {
       // Skip malformed ledgers — they're surfaced elsewhere if needed.
@@ -528,6 +531,7 @@ export class RunLedger {
       ) {
         return null;
       }
+      data.steps = withoutRetiredSteps(data.steps);
       return new RunLedger(path, data);
     } catch {
       return null;

@@ -77,7 +77,7 @@ A Linux server, a container or WSL often has no Secret Service running. hatchkit
 
 Unattended runs (no terminal) still need `HATCHKIT_KEYCHAIN_ACCESS=allow` to open the OS store, on every platform. Neither the environment variables nor the file store need it.
 
-`hatchkit dev-setup init` still supports macOS only: it installs a launchd agent and reads its Cloudflare token with the macOS `security` command. Used by [dotenvx](https://dotenvx.com) to encrypt `.env.production` in the generated repo. The encrypted file is safe to commit, and should be — it is the at-rest store, see below.
+Used by [dotenvx](https://dotenvx.com) to encrypt `.env.production` in the generated repo. The encrypted file is safe to commit, and should be — it is the at-rest store, see below.
 
 ### Where production values live at runtime
 

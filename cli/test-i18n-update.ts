@@ -17,8 +17,7 @@
  *     projects people are working in.
  *
  * Runs entirely offline: `pushNativeOrigins: false` keeps the Coolify check
- * out of it, `enableLocalDev: false` skips the Tailscale opt-in, and the i18n
- * presets answer every prompt.
+ * out of it, and the i18n presets answer every prompt.
  *
  * Run: pnpm --filter hatchkit test:i18n-update
  */
@@ -123,7 +122,6 @@ console.log("\n── update: add i18n to an existing project ──────
       presets: {
         desiredFeatures: ["websocket", "i18n"],
         confirmAddFeatures: true,
-        enableLocalDev: false,
         pushNativeOrigins: false,
         i18n: I18N_PRESETS,
       },
@@ -166,7 +164,6 @@ console.log("\n── update: add i18n to an existing project ──────
       presets: {
         desiredFeatures: ["websocket", "i18n"],
         confirmAddFeatures: true,
-        enableLocalDev: false,
         pushNativeOrigins: false,
         i18n: I18N_PRESETS,
       },
@@ -207,7 +204,6 @@ console.log("\n── update: a project with no client surface ─────�
       presets: {
         desiredFeatures: ["i18n"],
         confirmAddFeatures: true,
-        enableLocalDev: false,
         pushNativeOrigins: false,
         i18n: I18N_PRESETS,
       },
@@ -275,7 +271,6 @@ console.log("\n── update: removal stays refused ─────────�
       presets: {
         desiredFeatures: ["i18n"],
         confirmAddFeatures: true,
-        enableLocalDev: false,
         pushNativeOrigins: false,
         i18n: I18N_PRESETS,
       },
@@ -287,7 +282,6 @@ console.log("\n── update: removal stays refused ─────────�
       presets: {
         desiredFeatures: [],
         confirmAddFeatures: true,
-        enableLocalDev: false,
         pushNativeOrigins: false,
       },
     });
@@ -355,7 +349,6 @@ console.log("\n── update --dry-run: itemised, and writes nothing ───�
         presets: {
           desiredFeatures: ["websocket", "i18n"],
           confirmAddFeatures: true,
-          enableLocalDev: false,
           pushNativeOrigins: false,
           i18n: I18N_PRESETS,
         },

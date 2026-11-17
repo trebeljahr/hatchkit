@@ -112,10 +112,6 @@ export interface ScaffoldResult {
   /** Populated by seedDotenvxProduction on real (non-dry-run) scaffolds.
    *  The private key is also mirrored into the OS keychain. */
   dotenvx?: DotenvxSeedResult;
-  /** Populated when the project opted into Tailscale-served local-dev
-   *  (config.localDev was set). The caller uses `slug` to record the
-   *  ledger step so `hatchkit destroy` cleans up the Caddy fragment. */
-  localDev?: { slug: string; domain?: string };
   /** What the operational features could not do for the user: a secret
    *  to set, a variable to create once on the platform, a DNS record to
    *  add. Repeated at the end of the run, because the per-modification
@@ -1041,32 +1037,6 @@ async function runScaffoldSteps(
     modifications.push("static: skipped server-side dotenvx seed (provisioners may mint later)");
   }
 
-  // Tailscale-served local-dev opt-in. The host plumbing is the user's
-  // own one-time setup (`hatchkit dev-setup init`); here we just write
-  // the per-project pieces: the Caddy fragment at the client dev port
-  // (or server port for backend surfaces), docs/dev-setup.md, the
-  // next.config wrapper, and the @hatchkit/dev-plugin-next dep. None of
-  // this is required for the project to function — the dev plugin
-  // gracefully no-ops when the host bridge isn't active.
-  let localDev: { slug: string; domain?: string } | undefined;
-  if (config.localDev) {
-    const devPort = config.surfaces === "backend" ? ports.server : ports.client;
-    const { enableProjectLocalDev } = await import("../dev-setup.js");
-    const { localDevDomainFromProjectDomain } = await import("@hatchkit/dev-shared");
-    const localDevDomain =
-      config.localDev.domain ?? localDevDomainFromProjectDomain(config.domain) ?? undefined;
-    const result = await enableProjectLocalDev({
-      projectDir: outputDir,
-      slug: config.localDev.slug,
-      localDevDomain,
-      devPort,
-    });
-    localDev = { slug: config.localDev.slug, domain: localDevDomain };
-    modifications.push(
-      `local-dev: framework ${result.framework}, fragment ${result.wroteFragment}, docs ${result.wroteDocs ? "wrote" : "unchanged"}, config ${result.patchedConfig}, package.json ${result.patchedPackageJson}`,
-    );
-  }
-
   // The operational layer: verified deploy + rollback, the topology
   // write-up, the API-origin agreement, the self-host path, the docs in
   // the client image, deploy recovery in an open tab, client error
@@ -1104,7 +1074,7 @@ async function runScaffoldSteps(
   // platform, a DNS record to add.
   const manualSteps = operational.manualSteps;
 
-  return { modifications, ports, dotenvx, localDev, manualSteps };
+  return { modifications, ports, dotenvx, manualSteps };
 }
 
 /** Generate the i18n tree during `hatchkit create`.

@@ -29,8 +29,6 @@ import { join } from "node:path";
 // this assignment, so everything below is imported dynamically.
 process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "create-flags-conf-"));
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
-const DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "create-flags-dev-"));
-process.env.HATCHKIT_DEV_CONFIG_DIR = DEV_CONFIG_DIR;
 
 const { KNOWN_DEPLOYMENT_MODES, KNOWN_SURFACES, parseCreateFlags } = await import(
   "./src/utils/flags.js"
@@ -104,7 +102,6 @@ await test("no flags leaves everything to the prompts", () => {
   assert.equal(flags.forceNoGithub, false);
   assert.equal(flags.forceNoDeploy, false);
   assert.equal(flags.forceNoInstall, false);
-  assert.equal(flags.forceNoLocalDev, false);
 });
 
 await test("identity + layout flags land in presets", () => {
@@ -282,14 +279,6 @@ await test("repo flags land in presets", () => {
   assert.equal(parseCreateFlags(["--deploy"]).presets.runDeployment, true);
 });
 
-await test("--local-dev derives a slug when given none; --no-local-dev wins", () => {
-  assert.deepEqual(parseCreateFlags(["--local-dev"]).presets.localDev, { slug: "" });
-  assert.deepEqual(parseCreateFlags(["--local-dev=blog"]).presets.localDev, { slug: "blog" });
-  const both = parseCreateFlags(["--local-dev=blog", "--no-local-dev"]);
-  assert.equal(both.forceNoLocalDev, true);
-  assert.equal(both.presets.localDev, undefined);
-});
-
 await test("--docs / --no-docs set docsSite; --no-docs wins; absent leaves it to the prompt", () => {
   assert.equal(parseCreateFlags(["--no-docs"]).presets.docsSite, false);
   assert.equal(parseCreateFlags(["--docs"]).presets.docsSite, true);
@@ -379,7 +368,6 @@ const FULL_PRESETS: Partial<ProjectConfig> = {
   githubRepoVisibility: "public",
   installDeps: true,
   runDeployment: true,
-  localDev: { slug: "blog" },
 };
 
 await test("bare `hatchkit create` still starts at the first prompt", async () => {
@@ -430,7 +418,6 @@ await test("a partial flag set still prompts for what is missing", async () => {
     ["emailForwarding", "Email forwarding"],
     ["provisionServices", "Extra services"],
     ["mlServices", "ML services"],
-    ["localDev", "Local dev URL"],
     ["runDeployment", "Deploy now"],
     ["dbEngine", "Database engine"],
     ["dbProvider", "Database provider"],
@@ -445,22 +432,6 @@ await test("a partial flag set still prompts for what is missing", async () => {
       `omitting ${String(omitted)} should stop at "${expectedStep}", got "${step}"`,
     );
   }
-});
-
-await test("a bare --local-dev derives its slug from the project name", async () => {
-  const { presets } = parseCreateFlags(["--local-dev"]);
-  let resolved: ProjectConfig | undefined;
-  const step = await firstPromptedStep({ ...FULL_PRESETS, localDev: presets.localDev }, (c) => {
-    resolved = c;
-  });
-  assert.equal(step, null);
-  assert.deepEqual(resolved?.localDev?.slug, "blog");
-
-  const viaYes = await collectProjectConfig({
-    presets: { name: "blog", domain: "blog.example.com", localDev: { slug: "" } },
-    nonInteractive: true,
-  });
-  assert.equal(viaYes.localDev?.slug, "blog");
 });
 
 await test("--no-scaffold skips the scaffold/GitHub/install questions", async () => {
@@ -717,7 +688,6 @@ await test("a --yes dry run shows the deploy and defaults the real run would use
   await clearAllSecrets();
 }
 rmSync(process.env.HATCHKIT_CONF_DIR!, { recursive: true, force: true });
-rmSync(DEV_CONFIG_DIR, { recursive: true, force: true });
 
 console.log("\n=== SUMMARY (create flags) ===");
 let allOk = true;

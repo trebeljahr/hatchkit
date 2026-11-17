@@ -38,7 +38,6 @@ import { dirname, join, resolve } from "node:path";
 // config.ts resolves these at module load.
 process.env.HATCHKIT_CONF_DIR ??= mkdtempSync(join(tmpdir(), "client-core-conf-"));
 process.env.HATCHKIT_KEYTAR_SERVICE ??= `hatchkit-client-core-${process.pid}`;
-process.env.HATCHKIT_DEV_CONFIG_DIR ??= mkdtempSync(join(tmpdir(), "client-core-devdir-"));
 
 const {
   CLIENT_CORE_CHECKLIST_PATH,

@@ -4224,13 +4224,11 @@ async function importKeyToKeychain(
  *
  *    · `ports` was overwritten with a hardcoded `{server:3000,
  *      client:3001}`, losing e.g. tracktime's `{5159, 6477, 7130}` —
- *      the ports its Dockerfiles EXPOSE, its compose pins and its
- *      local-dev bridge routes to.
+ *      the ports its Dockerfiles EXPOSE and its compose pins.
  *    · the whole `ses` block vanished: identity, MAIL FROM domain and
  *      the record-by-record list of DNS rows hatchkit manages. Without
  *      it `email ses-mail-from remove` can no longer tell hatchkit's
  *      rows from the user's, so it stops being able to clean up.
- *    · `localDev` vanished, orphaning the project's Caddy fragment.
  *    · `s3Provider` flipped `"r2"` → `"existing"`, because adopt infers
  *      it from feature flags alone and can't see that create had
  *      provisioned R2 buckets.
@@ -4303,7 +4301,7 @@ export function buildAdoptManifest(
     // ── Existing value wins: adopt cannot observe these ─────────────
     //
     // Ports come from the scaffold (Dockerfile EXPOSE, compose PORT
-    // pins, the local-dev bridge). Adopt has no way to rediscover them,
+    // pins). Adopt has no way to rediscover them,
     // so its 3000/3001 default is only a last resort for a project that
     // never had a manifest.
     ports: existing?.ports ?? { server: 3000, client: 3001 },
@@ -4315,7 +4313,6 @@ export function buildAdoptManifest(
 
     // Straight carry-overs. Spread conditionally so absent stays absent
     // rather than becoming an explicit `undefined` in the JSON.
-    ...(existing?.localDev ? { localDev: existing.localDev } : {}),
     ...(existing?.ses ? { ses: existing.ses } : {}),
     ...(existing?.s3Buckets ? { s3Buckets: existing.s3Buckets } : {}),
     ...(existing?.integrations ? { integrations: existing.integrations } : {}),

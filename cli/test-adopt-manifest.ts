@@ -9,12 +9,11 @@
  *
  *   · `ports` overwritten with a hardcoded {server:3000, client:3001},
  *     losing tracktime's {5159, 6477, 7130} — the ports its Dockerfiles
- *     EXPOSE, its compose pins, and its local-dev bridge routes to.
+ *     EXPOSE and its compose pins.
  *   · the whole `ses` block dropped: identity, MAIL FROM domain, and
  *     the record-by-record list of DNS rows hatchkit manages. Without
  *     it `email ses-mail-from remove` can't tell hatchkit's rows from
  *     the user's any more.
- *   · `localDev` dropped, orphaning the project's Caddy fragment.
  *   · `s3Provider` flipped "r2" → "existing", because adopt infers it
  *     from feature flags and can't see the provisioned R2 buckets.
  *
@@ -57,7 +56,6 @@ const CREATE_SCAFFOLDED: ProjectManifest = {
   publicService: "client",
   topology: "single-origin",
   ports: { server: 5159, client: 6477, nativeHmr: 7130 },
-  localDev: { slug: "tracktime", domain: "local.trebeljahr.com" },
   email: { transactional: "listmonk-ses", mailingList: "listmonk-ses" },
   ses: {
     identity: "mail.tracktime.trebeljahr.com",
@@ -128,10 +126,6 @@ try {
     assert.deepEqual(merged.ses, CREATE_SCAFFOLDED.ses);
   });
 
-  check("preserves localDev", () => {
-    assert.deepEqual(merged.localDev, { slug: "tracktime", domain: "local.trebeljahr.com" });
-  });
-
   check('preserves s3Provider "r2" (was downgraded to "existing")', () => {
     assert.equal(merged.s3Provider, "r2");
   });
@@ -175,7 +169,6 @@ try {
     assert.equal(fresh.s3Provider, "existing", "s3 feature is on, but no provider is known");
     assert.equal(fresh.topology, "single-origin");
     assert.equal(fresh.ses, undefined, "absent stays absent rather than becoming null");
-    assert.equal(fresh.localDev, undefined);
     assert.ok(fresh.scaffoldedAt, "a fresh adopt stamps a timestamp");
   });
 

@@ -16,7 +16,7 @@ const d = mkdtempSync(join(tmpdir(), "fp-proj-"));
 await scaffoldApp({ name: "up-idem", domain: "up.example.dev", surfaces: "fullstack",
   topology: "single-origin", features: [], mlServices: [], s3Provider: "none",
   deployTarget: "existing", scaffoldRepo: true, envValues: {} } as any, d);
-const presets = { desiredFeatures: ["mobile"], enableLocalDev: false, confirmAll: true };
+const presets = { desiredFeatures: ["mobile"], confirmAll: true };
 await runUpdate(d, { presets } as any);
 const a = fp(d);
 await runUpdate(d, { presets } as any);

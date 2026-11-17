@@ -52,7 +52,6 @@ import { join, resolve } from "node:path";
 // the real preferences dir. Same reasoning as the header of test-scaffold.ts.
 process.env.HATCHKIT_CONF_DIR = mkdtempSync(join(tmpdir(), "shared-exports-conf-"));
 process.env.HATCHKIT_KEYTAR_SERVICE = `hatchkit-test-${process.pid}`;
-process.env.HATCHKIT_DEV_CONFIG_DIR = mkdtempSync(join(tmpdir(), "shared-exports-dev-"));
 
 const { scaffoldApp } = await import("./src/scaffold/app.js");
 type Feature = import("./src/prompts.js").Feature;
@@ -365,7 +364,6 @@ group("the probe is not vacuous: the old mapping still breaks it", () => {
 }
 for (const dir of temps) rmSync(dir, { recursive: true, force: true });
 rmSync(process.env.HATCHKIT_CONF_DIR, { recursive: true, force: true });
-rmSync(process.env.HATCHKIT_DEV_CONFIG_DIR, { recursive: true, force: true });
 
 console.log("\n=== SUMMARY ===");
 let allOk = true;

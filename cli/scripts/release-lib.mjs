@@ -59,9 +59,8 @@ export function resolvePnpm({
 
 /**
  * An env in which a bare `pnpm` runs the resolved pnpm, for every child
- * process. package.json scripts call `pnpm` themselves (the CLI's build
- * runs `pnpm --filter @hatchkit/dev-shared run build`, and publishing
- * runs `prepublishOnly`), so resolving pnpm for our own calls is not
+ * process. package.json scripts call `pnpm` themselves (publishing runs
+ * `prepublishOnly`), so resolving pnpm for our own calls is not
  * enough. Unless the resolved pnpm IS `pnpm` on PATH, a one-line shell
  * shim goes first on PATH. `cleanup()` removes it.
  */
@@ -112,7 +111,7 @@ function runNpm(args, env) {
  *
  * pnpm, not npm, also for the CLI: it rewrites `workspace:*` to the
  * real version. `npm publish` shipped hatchkit 0.2.16–0.2.19 with
- * `"@hatchkit/dev-shared": "workspace:*"`, which npm cannot install.
+ * a `"workspace:*"` dependency, which npm cannot install.
  *
  * `--no-git-checks`: the release commit and tag are made by
  * release-bump.mjs, and release-prep.mjs checked the tree first.
