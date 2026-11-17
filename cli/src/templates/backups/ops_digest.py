@@ -508,7 +508,9 @@ def pool_payload(state, host, now):
 def post_pool(payload, publisher=PUBLISHER, opener=None):
     url, token = pool_target(publisher)
     request = urllib.request.Request(url, data=json.dumps(payload).encode(), method='POST', headers={
-        'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+        'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+        # Cloudflare refuses urllib's default agent at the edge (error 1010) before the Worker runs.
+        'User-Agent': 'hatchkit-digest/1.0'})
     opener = opener or urllib.request.build_opener(_NoRedirect)
     with opener.open(request, timeout=30) as response:
         if response.status != 200:
@@ -528,14 +530,17 @@ def run(config, work, send, host, now=None, backup_issues=(), units=UNITS, post=
     pool = None
     if settings.get('pool'):
         state = collect(work, host, now, list(backup_issues), units)
-        pool = {'lastPostedAt': previous.get('lastPostedAt')}
+        # The fallback clock starts at the first pooled run, not at the first success:
+        # a host that never got a post through still gives the Worker POOL_FALLBACK.
+        pool = {'lastPostedAt': previous.get('lastPostedAt'),
+                'poolSince': previous.get('poolSince') or now.isoformat(timespec='seconds')}
         try:
             post(pool_payload(state, host, now))
             pool.update(lastPostedAt=now.isoformat(timespec='seconds'), postError=None)
         except Exception as error:  # an HTTP error body is not ours to log; keep the type only
             pool['postError'] = type(error).__name__
-        last = pool['lastPostedAt']
-        if pool['postError'] is None or (last and now - dt.datetime.fromisoformat(last) < POOL_FALLBACK):
+        last = pool['lastPostedAt'] or pool['poolSince']
+        if pool['postError'] is None or now - dt.datetime.fromisoformat(last) < POOL_FALLBACK:
             record = {'checkedAt': now.isoformat(timespec='seconds'), 'ok': pool['postError'] is None,
                       'mode': 'pooled', **pool}
             if pool['postError']:

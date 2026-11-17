@@ -309,6 +309,33 @@ class Pooled(DigestCase):
         self.assertTrue(self.sent[0][2], 'the fallback mails directly, past the pool switch')
         self.assertEqual(json.loads((self.work / digest.STATUS_NAME).read_text())['mode'], 'fallback')
 
+    def test_a_host_that_never_got_a_post_through_still_waits_before_mailing(self):
+        self.write_watch([package(knownExploited=True)])
+        def down(payload):
+            raise OSError('refused')
+        self.run_pooled(post=down)
+        self.assertEqual(self.sent, [], 'the first failure is not a fallback')
+        self.run_pooled(NOW + digest.POOL_FALLBACK + dt.timedelta(minutes=1), post=down)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_the_post_names_itself_to_cloudflare(self):
+        path = self.work / 'publisher.json'
+        path.write_text(json.dumps({'url': 'https://monitor.example.test/ping/' + HOST, 'token': 'k' * 43}))
+        seen = []
+        class Opener:
+            def open(self, request, timeout):
+                seen.append(request)
+                class Response:
+                    status = 200
+                    def __enter__(self):
+                        return self
+                    def __exit__(self, *args):
+                        return False
+                return Response()
+        digest.post_pool({'schema': 1}, path, Opener())
+        self.assertEqual(seen[0].get_header('User-agent'), 'hatchkit-digest/1.0')
+        self.assertEqual(seen[0].full_url, 'https://monitor.example.test/digest/' + HOST)
+
     def test_the_target_is_the_publishers_monitor_with_the_digest_path(self):
         path = self.work / 'publisher.json'
         path.write_text(json.dumps({'url': 'https://monitor.example.test/ping/' + HOST, 'token': 'k' * 43}))
